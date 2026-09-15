@@ -1,27 +1,56 @@
 🔐 Secret Leak Detector
 
-A cybersecurity dashboard prototype for detecting, investigating, tracing, and remediating accidentally exposed secrets in software repositories.
+A developer-first secret protection system designed to detect accidentally exposed credentials before they are committed or pushed to a Git repository.
 
-🌐 Live Demo
+Secret Leak Detector is a cybersecurity project focused on preventing one of the most common developer security mistakes:
 
-Live Application:
-https://secret-leak-detector-three.vercel.app/
+A developer accidentally puts a secret inside the source code
+                         ↓
+                 git commit / push
+                         ↓
+              Secret reaches repository
+                         ↓
+                 Security incident
 
+The idea behind this project is to move secret detection closer to the developer and earlier into the development workflow.
 
-GitHub Repository:
-MokuLakshithReddy/Secret_Leak_Detector
+Instead of waiting for a repository, CI/CD pipeline, or security team to discover the exposed credential, Secret Leak Detector is designed as a VS Code extension that can identify the problem while the developer is committing or pushing code.
 
 ⸻
 
-📌 Overview
+🎯 The Core Idea
 
-Secret Leak Detector is a web-based cybersecurity prototype designed to demonstrate how accidentally exposed secrets can be detected and managed throughout their security lifecycle.
+The main idea is simple:
 
-Instead of treating secret detection as simply:
+Don’t wait until a secret reaches the repository. Stop it before it leaves the developer’s machine.
 
-"Potential secret found"
+The intended workflow is:
 
-the prototype focuses on a complete investigation workflow:
+Developer writes code
+        ↓
+Developer accidentally adds a secret
+        ↓
+Developer runs git commit / git push
+        ↓
+Secret Leak Detector checks the changes
+        ↓
+Secret detected?
+     ↙        ↘
+   YES         NO
+    ↓           ↓
+BLOCK          ALLOW
+    ↓
+Explain the problem
+    ↓
+Show where it was detected
+    ↓
+Tell developer how to fix it
+    ↓
+Developer fixes the secret
+    ↓
+Retry commit / push
+
+The system is therefore designed around:
 
 DETECT
    ↓
@@ -29,712 +58,967 @@ PROVE
    ↓
 TRACE
    ↓
+BLOCK
+   ↓
 FIX
    ↓
 RESCAN
    ↓
-SECURE
-
-The dashboard allows users to investigate security findings, understand their risk, review verification status, examine repository exposure and Git history, view blast radius, apply remediation guidance, and rescan after remediation.
+ALLOW
 
 ⸻
 
-🎯 Project Goal
+💡 What Makes This Approach Different?
 
-The goal of this project is to demonstrate a security workflow that helps answer:
+Traditional secret detection often happens after code has already reached a remote repository or CI/CD environment.
 
-WHAT was detected?
-        ↓
-WHY is it suspicious?
-        ↓
-WHERE does it exist?
-        ↓
-HOW serious is it?
-        ↓
-WHERE else did it appear?
-        ↓
-HOW should it be fixed?
-        ↓
-IS it actually resolved?
+The approach proposed by Secret Leak Detector is developer-workflow-first.
 
-This makes the prototype more than a simple detection interface. It demonstrates the investigation and remediation experience around a potential secret leak.
+Instead of:
+
+Developer
+    ↓
+Commit
+    ↓
+Push
+    ↓
+Remote Repository
+    ↓
+CI/CD
+    ↓
+Security Scanner
+    ↓
+Alert
+
+the intended approach is:
+
+Developer
+    ↓
+VS Code
+    ↓
+Commit / Push
+    ↓
+Secret Leak Detector
+    ↓
+Scan Before Code Leaves
+    ↓
+┌───────────────────┐
+│ Secret detected?  │
+└─────────┬─────────┘
+          │
+     ┌────┴────┐
+     ↓         ↓
+    YES        NO
+     ↓         ↓
+   BLOCK      ALLOW
+     ↓
+ Explain + Remediate
+
+The key principle
+
+Security should happen where the developer is already working.
+
+The developer should not have to leave VS Code and open another security dashboard just to understand why a commit failed.
 
 ⸻
 
-✨ Features
+🧩 VS Code Extension Concept
 
-🔎 Secret Findings
+The final product is intended to operate as a VS Code extension.
 
-The dashboard presents security findings with information such as:
+Once installed, the extension would integrate with the developer’s existing Git workflow.
 
-* Secret type
-* Provider
-* Status
-* Verification result
-* Signal score
-* Confidence
-* File location
-* Line number
-* Evidence
-* Blast radius
-* Remediation guidance
+┌─────────────────────────────────────────┐
+│              VS CODE                    │
+│                                         │
+│  Source Code                            │
+│      │                                  │
+│      ▼                                  │
+│  Developer writes code                  │
+│      │                                  │
+│      ▼                                  │
+│  Git Commit / Git Push                  │
+│      │                                  │
+│      ▼                                  │
+│  Secret Leak Detector Extension         │
+│      │                                  │
+│      ▼                                  │
+│  Secret Detection Engine                │
+│      │                                  │
+│      ├───────────────┐                  │
+│      │               │                  │
+│      ▼               ▼                  │
+│   Secret?          Safe?                │
+│      │               │                  │
+│      ▼               ▼                  │
+│    BLOCK            ALLOW               │
+│      │                                  │
+│      ▼                                  │
+│  Terminal Message                      │
+│  + Finding Details                     │
+│  + Fix Guidance                        │
+│                                         │
+└─────────────────────────────────────────┘
 
-Sensitive values are represented in redacted form rather than exposing the complete credential.
+⸻
+
+🏗️ Proposed Architecture
+
+The intended architecture consists of several components.
+
+                         ┌───────────────────────┐
+                         │       Developer       │
+                         └───────────┬───────────┘
+                                     │
+                                     ▼
+                         ┌───────────────────────┐
+                         │       VS Code         │
+                         │                       │
+                         │  Source Code Editor   │
+                         └───────────┬───────────┘
+                                     │
+                              git commit / push
+                                     │
+                                     ▼
+                    ┌────────────────────────────────┐
+                    │     Secret Leak Detector        │
+                    │       VS Code Extension         │
+                    └───────────────┬────────────────┘
+                                    │
+                                    ▼
+                    ┌────────────────────────────────┐
+                    │       Detection Engine          │
+                    │                                │
+                    │  • Pattern Detection            │
+                    │  • Secret Classification        │
+                    │  • Context Analysis             │
+                    │  • Entropy / Randomness         │
+                    │  • Risk Scoring                 │
+                    └───────────────┬────────────────┘
+                                    │
+                                    ▼
+                    ┌────────────────────────────────┐
+                    │       Verification Layer        │
+                    │                                │
+                    │  • Provider Identification      │
+                    │  • Verification Status           │
+                    │  • Confidence                   │
+                    └───────────────┬────────────────┘
+                                    │
+                                    ▼
+                    ┌────────────────────────────────┐
+                    │       Exposure Analysis         │
+                    │                                │
+                    │  • Current Changes              │
+                    │  • Staged Files                 │
+                    │  • Git History                  │
+                    │  • Blast Radius                 │
+                    └───────────────┬────────────────┘
+                                    │
+                                    ▼
+                    ┌────────────────────────────────┐
+                    │       Decision Engine           │
+                    │                                │
+                    │     Secret Found?              │
+                    └───────────────┬────────────────┘
+                                    │
+                         ┌──────────┴──────────┐
+                         ▼                     ▼
+                       BLOCK                 ALLOW
+                         │                     │
+                         ▼                     ▼
+                  Terminal Message        Git continues
+                         │
+                         ▼
+                    Remediation
+                         │
+                         ▼
+                       Rescan
+                         │
+                         ▼
+                      Commit
+
+⸻
+
+🔎 How Detection Works
+
+When the developer attempts to commit or push code, the extension is intended to inspect the relevant changes.
+
+For example, a developer might accidentally write:
+
+const AWS_ACCESS_KEY = "AKIAxxxxxxxxxxxxxxxx";
+
+or:
+
+const API_KEY = "sk-xxxxxxxxxxxxxxxx";
+
+The extension should identify that the value may represent a credential.
+
+The detection pipeline can consider multiple signals:
+
+Potential Secret
+       │
+       ├── Pattern Match
+       │
+       ├── Secret Type
+       │
+       ├── Provider
+       │
+       ├── Context
+       │
+       ├── Entropy
+       │
+       └── Location
+              │
+              ▼
+        Risk / Confidence
+
+The objective is not simply to search for one fixed string pattern.
+
+The system should combine multiple signals to determine whether something is likely to be a real secret.
+
+⸻
+
+🎯 Detection Scope
+
+The intended scanner can inspect:
+
+1. Current Changes
+
+Code that the developer has modified.
+
+2. Staged Changes
+
+Files currently staged for commit.
+
+3. Commit Content
+
+The changes that are about to become part of a Git commit.
+
+4. Push Content
+
+Changes that are about to be pushed to a remote repository.
+
+5. Git History
+
+Previous commits can also be inspected when investigating the exposure of an already detected secret.
+
+⸻
+
+🛑 Blocking the Commit
+
+One of the most important parts of the idea is that the extension should actively prevent the accidental commit.
+
+For example:
+
+$ git commit -m "Add API integration"
+🔐 Secret Leak Detector
+Scanning staged changes...
+✖ SECRET DETECTED
+Type:        API Key
+Provider:    Example Provider
+File:        src/config.js
+Line:        14
+Confidence:  96%
+Risk:        HIGH
+The detected credential appears to be hard-coded
+inside the source code.
+Commit blocked.
+Please remove the secret and use an environment
+variable or secure secret manager.
+Example:
+    API_KEY = process.env.API_KEY
+After fixing the issue, try committing again.
+
+The important part is:
+
+SECRET DETECTED
+       ↓
+COMMIT BLOCKED
+       ↓
+EXPLAIN WHY
+       ↓
+SHOW WHERE
+       ↓
+SHOW HOW TO FIX
+
+⸻
+
+🖥️ Terminal-First Communication
+
+A key part of the proposed experience is communicating directly through the terminal.
+
+The developer should not simply receive:
+
+ERROR: Commit failed
+
+Instead, the extension should provide actionable information:
+
+❌ Commit blocked by Secret Leak Detector
+Reason:
+A potential AWS credential was detected.
+File:
+src/config/aws.ts
+Line:
+18
+Risk:
+HIGH
+Confidence:
+94%
+Why:
+The value matches a known credential pattern and
+appears to be hard-coded in source code.
+Recommended fix:
+Move the credential into an environment variable.
+Example:
+AWS_ACCESS_KEY_ID = process.env.AWS_ACCESS_KEY_ID
+After fixing:
+1. Save the file
+2. Stage the changes
+3. Run the commit again
+
+This makes the security system developer-friendly rather than simply restrictive.
+
+⸻
+
+🔐 Secret Redaction
+
+The extension should never unnecessarily print the complete secret into the terminal.
+
+Instead of:
+
+Secret:
+sk-1234567890abcdef...
+
+it should display:
+
+Secret:
+[REDACTED]
+
+The user should receive enough information to locate and fix the issue without exposing the credential again.
+
+⸻
+
+📊 Risk & Confidence
+
+Each finding can have two important characteristics:
+
+Risk
+
+How dangerous the exposure could be.
+
+LOW
+MEDIUM
+HIGH
+CRITICAL
+
+Confidence
+
+How confident the detection system is that the value represents a real secret.
 
 Example:
 
-Value: [REDACTED]
+Confidence: 96%
+Risk: HIGH
+
+This allows the system to distinguish between:
+
+High-confidence secret
+
+and:
+
+Possible false positive
 
 ⸻
 
-📈 Risk & Signal Score
+🟢 Verification
 
-The prototype presents a signal score to communicate the potential risk associated with a finding.
+Where possible, the system can determine whether a detected credential appears to be valid.
 
-Example:
-
-Signal Score: XX / 100
-
-This helps users prioritize findings during investigation.
-
-⸻
-
-🟢 Verification Status
-
-The prototype supports different verification states:
+Possible states include:
 
 LIVE
 INVALID
 UNKNOWN
 NOT_SUPPORTED
 
-It also represents provider-specific verification concepts such as:
+The verification layer can identify the provider where possible.
 
-* GitHub Verifier
-* AWS Verifier
-* Generic / Unknown Verifier
+For example:
 
-The purpose is to distinguish between a value that looks like a secret and a finding that has additional evidence indicating its potential validity.
+Provider: GitHub
+Verifier: GitHub Verifier
+Status: LIVE
 
-⸻
+or:
 
-🌐 Provider Information
+Provider: AWS
+Verifier: AWS Verifier
+Status: UNKNOWN
 
-Findings can contain provider information.
-
-Examples represented in the prototype include:
-
-GitHub
-AWS
-
-Provider information helps provide context around the detected credential and its potential remediation path.
+Verification should be handled carefully because credentials are sensitive and external validation may have security implications.
 
 ⸻
 
 💥 Blast Radius
 
-The prototype includes a blast-radius concept for understanding how widely a potential secret may have been exposed.
+Finding a secret is only one part of the problem.
 
-The interface can represent exposure across:
+The next question is:
 
-Current Repository Files
-        ↓
-Staged Files
-        ↓
+Where else has this secret appeared?
+
+The system can investigate:
+
+Current File
+     ↓
+Other Current Files
+     ↓
+Staged Changes
+     ↓
+Previous Commits
+     ↓
+Deleted Files
+     ↓
 Git History
-        ↓
-Deleted / Previous Versions
 
-This helps answer:
+This creates a blast-radius view of the potential exposure.
 
-Has the secret only appeared in the current file, or has it existed elsewhere in the repository?
+For example:
 
-⸻
-
-🗂️ Git History
-
-The prototype includes a history-oriented investigation workflow.
-
-It represents different scanning scopes:
-
-Current Repository Files
-
-Files currently present in the repository.
-
-Staged Files
-
-Files that are about to be committed.
-
-Full Git History
-
-Previous commits and historical repository states.
-
-Deleted / Previous Versions
-
-Files or content that may have contained a secret in an earlier version of the repository.
-
-⸻
-
-🛑 Pre-commit Protection
-
-The application includes a dedicated Pre-commit Hook interface.
-
-The intended workflow is:
-
-Developer
-    ↓
-git commit
-    ↓
-Secret Scan
-    ↓
-Secret Found?
-   ↙      ↘
- YES       NO
-  ↓         ↓
-BLOCK     ALLOW
-COMMIT    COMMIT
-
-Prototype limitation
-
-The current application demonstrates the pre-commit security workflow through the frontend.
-
-It does not currently install or execute a real Git pre-commit hook.
+Secret Exposure
+Current files:       1
+Historical commits:  4
+Deleted versions:    2
+Total exposure:      7 locations
 
 ⸻
 
 🔧 Remediation
 
-The prototype includes a remediation workflow for detected secrets.
+Once a secret is detected, the extension should help the developer fix it.
 
-The general approach is to replace hard-coded credentials with environment variables.
+Unsafe
 
-Before
+const API_KEY = "my-secret-key";
 
-API_KEY = "actual-secret-value";
+Recommended
 
-After
+const API_KEY = process.env.API_KEY;
 
-API_KEY = process.env.API_KEY;
+The extension can also suggest:
 
-The interface can also provide .env.example-style guidance:
+.env
+.env.example
+Environment Variables
+Secret Manager
 
-# Secret Scanner — generated .env.example
-# Do NOT commit real values
-
-The objective is to encourage safer credential management.
-
-⸻
-
-🔄 Rescan Workflow
-
-After a finding has been remediated, the repository should be scanned again.
-
-The prototype represents this workflow as:
-
-Finding Detected
-      ↓
-Review Finding
-      ↓
-Review Evidence
-      ↓
-Review Risk
-      ↓
-Review Blast Radius
-      ↓
-Apply Remediation
-      ↓
-Rescan
-      ↓
-Verify Resolution
-
-This closes the loop between detection and remediation.
+depending on the project’s requirements.
 
 ⸻
 
-📊 Security Dashboard
+🔄 Rescan
 
-The main application is presented as an Exposure Dashboard.
+After the developer fixes the issue, the system should scan again.
 
-The dashboard provides an overview of the repository’s security state, including concepts such as:
+SECRET DETECTED
+       ↓
+COMMIT BLOCKED
+       ↓
+DEVELOPER FIXES CODE
+       ↓
+RESCAN
+       ↓
+┌──────────────────┐
+│ Secret still     │
+│ present?         │
+└────────┬─────────┘
+         │
+     ┌───┴───┐
+     ▼       ▼
+    YES      NO
+     │        │
+     ▼        ▼
+  BLOCK     ALLOW
+             │
+             ▼
+           COMMIT
 
-* Confirmed live findings
+This prevents a developer from simply being told that something is wrong without confirming that it has actually been fixed.
+
+⸻
+
+🖥️ Prototype Dashboard
+
+The current repository contains the web-based prototype/dashboard used to demonstrate this security workflow.
+
+The repository is currently implemented as a React + Vite frontend rather than as the final VS Code extension. The GitHub repository contains the frontend source and Vite configuration, and its current package.json defines the development, build, preview, and formatting commands.
+
+The dashboard represents concepts such as:
+
+* Security findings
+* Risk
+* Confidence
+* Verification
+* Provider
+* Git history
+* Blast radius
 * Blocked commits
-* Total findings
-* Signal scores
-* Verification status
-* Current files
-* Historical commits
-* Finding distribution
-* Repository exposure
+* Remediation
+* Rescanning
+* Compliance
 
-The dashboard is designed with both developers and security teams in mind.
+The dashboard therefore acts as a prototype representation of the security system and investigation workflow.
 
 ⸻
 
-📋 Finding Investigation
+🧪 How the Current Prototype Works
 
-The finding detail workflow is designed to provide context around why a finding was identified.
+The current repository is a frontend proof of concept.
 
-A typical investigation follows:
+The current architecture is:
 
-Finding
-   ↓
-Signal Score
-   ↓
-Confidence
-   ↓
-Verification
-   ↓
-File + Line
-   ↓
-Historical Exposure
-   ↓
-Blast Radius
-   ↓
-Remediation
-   ↓
-Rescan
+React
+  ↓
+TypeScript
+  ↓
+Vite
+  ↓
+Prototype Finding Data
+  ↓
+Security Dashboard
 
-This provides more context than simply showing a raw secret-scanning alert.
+The dashboard presents predefined security findings and allows the user to explore the intended workflow.
+
+The current prototype demonstrates the user experience and security logic concept rather than executing a production Git scanning engine.
 
 ⸻
 
-📊 Compliance View
+🚧 Prototype vs Intended Product
 
-The dashboard also includes a compliance-oriented perspective.
+It is important to distinguish between the current prototype and the final product vision.
 
-The intended relationship is:
+Capability	Current Prototype	Intended Product
+Security dashboard	✅	✅
+Finding investigation	✅	✅
+Risk presentation	✅	✅
+Confidence	✅	✅
+Verification UI	✅	✅
+Git history concept	✅	✅
+Blast-radius concept	✅	✅
+Remediation workflow	✅	✅
+Rescan workflow	✅	✅
+VS Code extension	🚧	✅
+Real Git integration	🚧	✅
+Commit interception	🚧	✅
+Push protection	🚧	✅
+Real scanning engine	🚧	✅
+Terminal security messages	🚧	✅
+Persistent scan history	🚧	Future
+Provider verification	🚧	Future
 
-Repository Security
-        ↓
-     Findings
-        ↓
-       Risk
-        ↓
-   Remediation
-        ↓
-    Verification
-        ↓
-    Compliance
-
-This provides a higher-level view of repository security.
-
-⸻
-
-⚙️ Settings
-
-The application contains a dedicated Settings section.
-
-This provides a place for future scanner configuration and security controls.
-
-The current implementation primarily demonstrates the interface and navigation for this functionality.
+The current repository is therefore a prototype of the intended security experience, while the VS Code extension represents the planned product implementation.
 
 ⸻
 
-🏗️ Architecture
+🏗️ Final Product Architecture
 
-The current version is a frontend application.
+The intended final system would look like:
 
-                    ┌─────────────────────┐
-                    │        USER         │
-                    │                     │
-                    │ Developer / Security│
-                    └──────────┬──────────┘
-                               │
-                               ▼
-                    ┌─────────────────────┐
-                    │   React Frontend    │
-                    │                     │
-                    │      App.tsx        │
-                    └──────────┬──────────┘
-                               │
-                               ▼
-                    ┌─────────────────────┐
-                    │ Prototype Findings  │
-                    │                     │
-                    │ • Secret Type       │
-                    │ • Risk              │
-                    │ • Confidence        │
-                    │ • Provider          │
-                    │ • Verification      │
-                    │ • Blast Radius      │
-                    │ • History           │
-                    └──────────┬──────────┘
-                               │
-                               ▼
-                    ┌─────────────────────┐
-                    │ Security Dashboard  │
-                    │                     │
-                    │ • Dashboard         │
-                    │ • Pre-commit Hook   │
-                    │ • History           │
-                    │ • Settings         │
-                    └─────────────────────┘
-
-⸻
-
-🛠️ Tech Stack
-
-The repository currently uses:
-
-Technology	Purpose
-React 19	Frontend UI
-React DOM 19	React rendering
-TypeScript	Type-safe development
-Vite	Development and build tooling
-Tailwind CSS 4	Styling
-CSS	Custom styling
-pnpm	Package management
-Oxfmt	Code formatting
-
-The current package.json confirms React 19, Vite, TypeScript, Tailwind CSS 4, Oxfmt, and the available npm scripts. (GitHub)
+                         DEVELOPER
+                             │
+                             ▼
+                       ┌───────────┐
+                       │  VS Code  │
+                       └─────┬─────┘
+                             │
+                             ▼
+                 ┌──────────────────────┐
+                 │ Secret Leak Detector │
+                 │    VS Code Extension │
+                 └──────────┬───────────┘
+                            │
+              ┌─────────────┼─────────────┐
+              │             │             │
+              ▼             ▼             ▼
+         Git Events      Scanner       UI/Terminal
+              │             │             │
+              │             ▼             │
+              │       Detection Engine    │
+              │             │             │
+              │       ┌─────┼─────┐       │
+              │       ▼     ▼     ▼       │
+              │    Pattern Context Entropy│
+              │       │     │     │       │
+              │       └─────┼─────┘       │
+              │             ▼             │
+              │      Risk + Confidence    │
+              │             │             │
+              └─────────────┼─────────────┘
+                            ▼
+                     Decision Engine
+                            │
+                 ┌──────────┴──────────┐
+                 ▼                     ▼
+              BLOCK                   ALLOW
+                 │                     │
+                 ▼                     ▼
+          Terminal Error          Git Continues
+                 │
+                 ▼
+            Remediation
+                 │
+                 ▼
+              Rescan
+                 │
+                 ▼
+              ALLOW
 
 ⸻
 
-📁 Project Structure
+🔄 Complete User Flow
 
-The repository currently contains a lightweight frontend structure:
-
-Secret_Leak_Detector/
-│
-├── .figma/
-│   └── make/
-│
-├── src/
-│
-├── .gitattributes
-├── .gitignore
-├── .mise.toml
-├── AGENTS.md
-├── CLAUDE.md
-├── index.html
-├── package.json
-├── pnpm-lock.yaml
-├── tsconfig.json
-└── vite.config.ts
-
-The repository is currently organized as a Vite-based frontend project. (GitHub)
+1. Developer opens a project in VS Code
+                ↓
+2. Secret Leak Detector extension is installed
+                ↓
+3. Developer writes code
+                ↓
+4. Developer accidentally hard-codes a credential
+                ↓
+5. Developer runs git add / git commit
+                ↓
+6. Secret Leak Detector scans the relevant changes
+                ↓
+7. Potential secret detected
+                ↓
+8. Risk + confidence calculated
+                ↓
+9. Finding is presented
+                ↓
+10. Commit is blocked
+                ↓
+11. Terminal explains the problem
+                ↓
+12. Developer fixes the secret
+                ↓
+13. Developer attempts commit again
+                ↓
+14. Extension rescans
+                ↓
+15. No secret detected
+                ↓
+16. Commit succeeds
+                ↓
+17. Developer pushes safely
 
 ⸻
 
-🚀 How to Run the Application
+🧠 Why VS Code?
 
-Follow these steps to run Secret Leak Detector locally.
+The VS Code extension approach is important because VS Code is already where the developer:
+
+* Writes code
+* Reviews files
+* Uses the integrated terminal
+* Stages changes
+* Commits code
+* Pushes code
+* Fixes errors
+
+Instead of introducing another security workflow, Secret Leak Detector aims to embed security into the developer’s existing workflow.
+
+The security system becomes:
+
+Developer Workflow
+        +
+Security Protection
+        =
+Secure Development Workflow
+
+⸻
+
+🚀 Running the Current Prototype
+
+Prerequisites
+
+Install:
+
+* Node.js
+* pnpm
+
+Check Node.js:
+
+node --version
+
+Check pnpm:
+
+pnpm --version
+
+⸻
 
 1. Clone the Repository
 
-Open a terminal and run:
-
 git clone https://github.com/MokuLakshithReddy/Secret_Leak_Detector.git
 
-Then move into the project directory:
+Move into the project:
 
 cd Secret_Leak_Detector
 
 ⸻
 
-2. Install Node.js
-
-Make sure Node.js is installed on your system.
-
-Check your installation:
-
-node --version
-
-You should receive a Node.js version number.
-
-⸻
-
-3. Install pnpm
-
-This project uses pnpm as its package manager.
-
-Check whether pnpm is already installed:
-
-pnpm --version
-
-If pnpm is not installed, you can enable it through Corepack:
-
-corepack enable
-
-Then check again:
-
-pnpm --version
-
-⸻
-
-4. Install Dependencies
-
-From the project directory, run:
+2. Install Dependencies
 
 pnpm install
 
-This installs all dependencies defined in package.json.
-
 ⸻
 
-5. Start the Development Server
-
-Run:
+3. Start the Prototype
 
 pnpm dev
 
 Vite will start the development server.
 
-You should see output similar to:
-
-VITE v8.x.x  ready in xxx ms
-➜  Local:   http://localhost:5173/
-
-Open the displayed local URL in your browser:
+You should see a local address similar to:
 
 http://localhost:5173/
 
-You should now see the Secret Leak Detector dashboard.
+Open that address in your browser.
 
 ⸻
 
-🏭 Build for Production
+4. Build the Prototype
 
-To create a production build, run:
+To create a production build:
 
 pnpm build
 
-This generates the optimized production files.
-
 ⸻
 
-👀 Preview the Production Build
-
-After building the project, run:
+5. Preview the Production Build
 
 pnpm preview
 
-Vite will start a local server for the production build.
-
-Open the URL displayed in the terminal.
-
 ⸻
 
-🧹 Format the Code
-
-The project includes an Oxfmt formatting script.
-
-Run:
+6. Format the Project
 
 pnpm format
 
-⸻
-
-📜 Available Commands
-
-Command	Description
-pnpm install	Install project dependencies
-pnpm dev	Start development server
-pnpm build	Create production build
-pnpm preview	Preview production build
-pnpm format	Format project files
-
-These commands correspond to the scripts currently defined in the repository’s package.json. (GitHub)
+These commands correspond to the scripts currently defined in the repository’s package.json.
 
 ⸻
 
-⚠️ Current Prototype Scope
+🛠️ Technology Stack
 
-This project is currently a frontend proof of concept.
+Current Prototype
 
-✅ Currently Demonstrated
+React 19
+TypeScript
+Vite
+Tailwind CSS 4
+CSS
+pnpm
 
-* Security dashboard
-* Finding management interface
-* Finding details
-* Risk / signal score presentation
-* Confidence presentation
-* Provider information
-* Verification states
-* Blast-radius presentation
-* Git history workflow
-* Pre-commit protection interface
-* Remediation workflow
-* .env.example-style guidance
-* Rescan workflow
-* Compliance-oriented interface
-* Security-focused navigation
+Intended Extension
 
-🚧 Not Currently Implemented
+The final VS Code implementation is expected to introduce:
 
-The current repository does not yet contain a production backend scanning engine.
-
-The following capabilities are future development areas:
-
-* Real secret scanning engine
-* Regex-based secret detection engine
-* Entropy analysis
-* Real Git pre-commit executable hook
-* Real Git pre-push hook
-* Backend API
-* Persistent database
-* Real-time repository scanning
-* Actual Git history scanning engine
-* Live provider API verification
-* External credential validation
-* Automatic credential rotation
-* Persistent scan-history storage
-
-Therefore, the current project should be considered a functional UI prototype, not a production-ready secret scanning platform.
-
-⸻
-
-🔐 Security Considerations
-
-Never commit real secrets into this repository.
-
-Do not commit:
-
-.env
-.env.local
-API keys
-Access tokens
-Private keys
-Passwords
-Cloud credentials
-Database credentials
-OAuth secrets
-
-For real applications, use environment variables or a dedicated secret-management system.
-
-The prototype uses redacted representations such as:
-
-[REDACTED]
-
-instead of displaying complete credentials.
-
-⸻
-
-🧠 Core Concept
-
-The project is built around five core stages:
-
-1. DETECT
-
-Identify a potentially exposed credential.
-
-2. PROVE
-
-Gather evidence and determine whether the finding is likely to be a real secret.
-
-3. TRACE
-
-Understand where the secret exists and whether it appeared in repository history.
-
-4. FIX
-
-Remove the exposed credential and move it to a safer configuration mechanism.
-
-5. RESCAN
-
-Check the repository again and verify that the finding has been resolved.
-
-DETECT → PROVE → TRACE → FIX → RESCAN
+VS Code Extension API
+        +
+Git Integration
+        +
+Secret Detection Engine
+        +
+Risk / Confidence Engine
+        +
+Terminal Communication
+        +
+Remediation Workflow
 
 ⸻
 
 🔮 Future Development
 
-The frontend prototype can eventually be connected to a complete security backend.
+The next major development stage is converting the prototype into a real VS Code extension.
 
-A potential future architecture could include:
+Phase 1 — Extension Foundation
 
-Developer
-    │
-    ▼
-Git Repository
-    │
-    ├───────────────┐
-    ▼               ▼
-Pre-commit       CI/CD
-Scanner          Scanner
-    │               │
-    └───────┬───────┘
-            ▼
-     Secret Detection
-          Engine
-            │
-      ┌─────┼─────┐
-      ▼     ▼     ▼
-   Pattern Entropy Context
-   Analysis Analysis Analysis
-      │     │     │
-      └─────┼─────┘
-            ▼
-      Risk & Confidence
-            │
-            ▼
-       Verification
-            │
-            ▼
-       Git History
-            │
-            ▼
-        Blast Radius
-            │
-            ▼
-        Remediation
-            │
-            ▼
-          Rescan
-            │
-            ▼
-        Dashboard
+Create VS Code Extension
+        ↓
+Register Commands
+        ↓
+Detect Workspace
+        ↓
+Access Git Repository
+
+Phase 2 — Secret Detection
+
+Changed Files
+      ↓
+Secret Scanner
+      ↓
+Pattern Detection
+      ↓
+Context Analysis
+      ↓
+Risk Score
+      ↓
+Confidence
+
+Phase 3 — Git Protection
+
+git commit
+     ↓
+Secret Scan
+     ↓
+Secret?
+  ↙     ↘
+YES      NO
+ ↓        ↓
+BLOCK    ALLOW
+
+Phase 4 — Terminal Communication
+
+Commit Blocked
+      ↓
+Terminal Output
+      ↓
+Finding
+      ↓
+File + Line
+      ↓
+Risk
+      ↓
+Recommended Fix
+
+Phase 5 — Rescan
+
+Fix
+ ↓
+Retry
+ ↓
+Rescan
+ ↓
+Safe
+ ↓
+Allow Commit
+
+Phase 6 — Advanced Protection
+
+Future versions could include:
+
+* Push protection
+* Git history scanning
+* Provider-specific verification
+* Secret rotation guidance
+* Repository-wide scanning
+* CI/CD integration
+* Team dashboards
+* Persistent finding history
+* Security policies
+* Organization-level configuration
 
 ⸻
 
-📌 Project Status
+🔐 Security Philosophy
 
-                    STATUS
-Frontend                    ✅
-Security Dashboard          ✅
-Finding Workflow            ✅
-Risk Presentation           ✅
-Confidence UI               ✅
-Verification UI             ✅
-Blast Radius UI             ✅
-History Workflow            ✅
-Remediation UI              ✅
-Rescan Workflow             ✅
-Compliance UI               ✅
-Real Scanner Engine         🚧
-Backend API                 🚧
-Database                    🚧
-Git Hooks                   🚧
-Live Verification           🚧
-Automatic Rotation           🚧
-Production Deployment       🚧
+Secret Leak Detector is based on a simple security principle:
 
-⸻
+Prevent the secret from becoming an incident in the first place.
 
-🏆 Summary
+Instead of:
 
-Secret Leak Detector is a cybersecurity dashboard prototype that explores a complete workflow for managing accidentally exposed credentials.
+LEAK
+ ↓
+DISCOVER
+ ↓
+ALERT
+ ↓
+INVESTIGATE
+ ↓
+FIX
 
-Instead of stopping at detection, the prototype focuses on:
+the intended workflow is:
 
 DETECT
-   ↓
-PROVE
-   ↓
-TRACE
-   ↓
+ ↓
+BLOCK
+ ↓
+EXPLAIN
+ ↓
 FIX
-   ↓
+ ↓
 RESCAN
-   ↓
-SECURE
+ ↓
+ALLOW
 
-It demonstrates how developers and security teams could investigate a finding, understand its risk and exposure, trace it through repository history, remediate it, and verify the result.
+This shifts secret security from post-exposure detection toward prevention during development.
 
 ⸻
 
-🔐 Secret Leak Detector
+📌 Current Project Status
 
-Don’t just detect secrets. Understand the exposure. Fix it. Verify it.
+                    PROJECT STATUS
+Web Prototype              ✅
+Security Dashboard         ✅
+Finding UI                 ✅
+Risk / Confidence UI       ✅
+Verification UI            ✅
+Blast Radius UI            ✅
+History Concept             ✅
+Remediation UI             ✅
+Rescan Workflow             ✅
+VS Code Extension           🚧
+Git Integration             🚧
+Commit Blocking             🚧
+Push Blocking               🚧
+Real Secret Scanner         🚧
+Terminal Integration        🚧
+Live Verification           🚧
+Production Backend          🚧
+
+⸻
+
+🏆 Final Concept
+
+Secret Leak Detector is not intended to be just another dashboard that tells a developer:
+
+“You leaked a secret.”
+
+The intended experience is:
+
+Developer writes code
+        ↓
+Developer tries to commit
+        ↓
+Secret Leak Detector intercepts the workflow
+        ↓
+Secret detected
+        ↓
+Commit blocked
+        ↓
+Developer receives a clear terminal explanation
+        ↓
+Developer fixes the issue
+        ↓
+Extension rescans
+        ↓
+Problem resolved
+        ↓
+Commit allowed
+
+In one sentence:
+
+Secret Leak Detector is a VS Code-centered security layer that detects and blocks accidentally exposed secrets during the Git commit/push workflow, explains the problem directly to the developer, guides remediation, and allows the operation only after the issue is resolved.
+
+⸻
+
+
+
+Prototype live demo link 
+
+https://secret-leak-detector-three.vercel.app/
+🔐 DETECT → PROVE → TRACE → BLOCK → FIX → RESCAN → ALLOW
+
+Stop secrets before they become security incidents.
