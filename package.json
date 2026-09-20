@@ -152,7 +152,9 @@
     "build": "node esbuild.js --production",
     "watch": "node esbuild.js --watch",
     "compile": "tsc -p ./",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test": "node esbuild.js --test && node dist/test-suite.js",
+    "demo": "node esbuild.js --demo && node dist/demo-cli.js"
   },
   "devDependencies": {
     "@types/node": "^20.11.24",
