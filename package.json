@@ -1,27 +1,162 @@
 {
-  "name": "figma-make-app",
-  "private": true,
+  "name": "secret-leak-detector",
+  "displayName": "Secret Leak Detector",
+  "description": "Developer-first credential protection. Detect, trace, block, and fix secret leaks before they leave your machine.",
   "version": "1.0.0",
-  "type": "module",
-  "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview",
-    "format": "oxfmt"
+  "publisher": "security-labs",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MokuLakshithReddy/Secret_Leak_Detector.git"
   },
-  "dependencies": {
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Security",
+    "Linters",
+    "SCM Providers"
+  ],
+  "keywords": [
+    "secret",
+    "security",
+    "git",
+    "leak",
+    "credentials",
+    "api-key",
+    "pre-commit"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "secret-leak-detector.scanWorkspace",
+        "title": "Secret Leak Detector: Scan Workspace for Secrets",
+        "category": "Security",
+        "icon": "$(search)"
+      },
+      {
+        "command": "secret-leak-detector.scanStaged",
+        "title": "Secret Leak Detector: Scan Git Staged Changes",
+        "category": "Security",
+        "icon": "$(git-commit)"
+      },
+      {
+        "command": "secret-leak-detector.openDashboard",
+        "title": "Secret Leak Detector: Open Security Dashboard",
+        "category": "Security",
+        "icon": "$(shield)"
+      },
+      {
+        "command": "secret-leak-detector.installGitHook",
+        "title": "Secret Leak Detector: Install Git Pre-Commit Hook",
+        "category": "Security",
+        "icon": "$(check)"
+      },
+      {
+        "command": "secret-leak-detector.clearFindings",
+        "title": "Secret Leak Detector: Clear Findings",
+        "category": "Security",
+        "icon": "$(clear-all)"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "secret-leak-detector-sidebar",
+          "title": "Secret Leak Detector",
+          "icon": "media/shield.svg"
+        }
+      ]
+    },
+    "views": {
+      "secret-leak-detector-sidebar": [
+        {
+          "id": "secret-leak-detector.findingsView",
+          "name": "Active Leaks & Findings"
+        },
+        {
+          "id": "secret-leak-detector.overviewView",
+          "name": "Security Overview"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "secret-leak-detector.scanWorkspace",
+          "when": "view == secret-leak-detector.findingsView",
+          "group": "navigation@1"
+        },
+        {
+          "command": "secret-leak-detector.openDashboard",
+          "when": "view == secret-leak-detector.findingsView",
+          "group": "navigation@2"
+        },
+        {
+          "command": "secret-leak-detector.clearFindings",
+          "when": "view == secret-leak-detector.findingsView",
+          "group": "navigation@3"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Secret Leak Detector",
+      "properties": {
+        "secretLeakDetector.enableRealtimeScanning": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically scan open documents on save or change."
+        },
+        "secretLeakDetector.blockGitCommits": {
+          "type": "boolean",
+          "default": true,
+          "description": "Intercept commits and block them if unredacted credentials are staged."
+        },
+        "secretLeakDetector.minEntropy": {
+          "type": "number",
+          "default": 3.4,
+          "description": "Minimum Shannon entropy threshold for generic secret detection."
+        },
+        "secretLeakDetector.redactSecrets": {
+          "type": "boolean",
+          "default": true,
+          "description": "Mask credential values in the UI and terminal to avoid secondary leaks."
+        },
+        "secretLeakDetector.excludeGlobs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "**/node_modules/**",
+            "**/.git/**",
+            "**/dist/**",
+            "**/build/**",
+            "**/*.min.js",
+            "**/*.lock",
+            "**/package-lock.json",
+            "**/pnpm-lock.yaml"
+          ],
+          "description": "File patterns excluded from workspace secret scans."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm.cmd run build",
+    "build": "node esbuild.js --production",
+    "watch": "node esbuild.js --watch",
+    "compile": "tsc -p ./",
+    "lint": "tsc --noEmit"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
-    "@types/react": "^19.0.0",
-    "@types/react-dom": "^19.0.0",
-    "@vitejs/plugin-react": "^6.0.0",
-    "tailwindcss": "^4.0.0",
-    "@tailwindcss/vite": "^4.0.0",
-    "oxfmt": "^0.2.0",
-    "typescript": "^5.7.0",
-    "vite": "^8.0.5"
+    "@types/node": "^20.11.24",
+    "@types/vscode": "^1.85.0",
+    "esbuild": "^0.20.1",
+    "typescript": "^5.3.3"
   }
 }

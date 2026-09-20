@@ -1,0 +1,8 @@
+.vscode/**
+src/**
+test/**
+samples/**
+scripts/**
+tsconfig.json
+esbuild.js
+dist/test-suite*
