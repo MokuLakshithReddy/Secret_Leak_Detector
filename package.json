@@ -3,7 +3,8 @@
   "displayName": "Secret Leak Detector",
   "description": "Developer-first credential protection. Detect, trace, block, and fix secret leaks before they leave your machine.",
   "version": "1.0.0",
-  "publisher": "security-labs",
+  "publisher": "MokuLakshithReddy",
+  "icon": "media/icon.png",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -13,9 +14,9 @@
     "vscode": "^1.85.0"
   },
   "categories": [
-    "Security",
     "Linters",
-    "SCM Providers"
+    "SCM Providers",
+    "Other"
   ],
   "keywords": [
     "secret",
