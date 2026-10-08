@@ -28,6 +28,9 @@
     "pre-commit"
   ],
   "main": "./dist/extension.js",
+  "bin": {
+    "secret-leak-detector": "./dist/cli.js"
+  },
   "activationEvents": [
     "onStartupFinished"
   ],
@@ -153,7 +156,9 @@
     "watch": "node esbuild.js --watch",
     "compile": "tsc -p ./",
     "lint": "tsc --noEmit",
+    "cli": "node esbuild.js --cli && node dist/cli.js",
     "test": "node esbuild.js --test && node dist/test-suite.js",
+    "benchmark": "node esbuild.js --benchmark && node dist/benchmark.js",
     "demo": "node esbuild.js --demo && node dist/demo-cli.js"
   },
   "devDependencies": {

@@ -70,12 +70,23 @@ export class GitService {
     }
   }
 
-  /**
-   * Generates a terminal-formatted remediation message conforming to the project spec.
-   */
   public formatTerminalBlockedMessage(findings: SecretFinding[]): string {
     const criticals = findings.filter((f) => f.risk === 'CRITICAL');
     const primary = criticals[0] || findings[0];
+
+    const remediationText =
+      typeof primary.remediation === 'string'
+        ? primary.remediation
+        : primary.remediation?.steps?.join('\n') || 'Rotate and move to .env';
+
+    const signalsList =
+      primary.evidence?.items?.map((i) => `  - [${i.confidenceImpact >= 0 ? '+' : ''}${i.confidenceImpact}] ${i.description}`).join('\n') ||
+      primary.signals?.map((s) => `  - ${s}`).join('\n') ||
+      '  - Known pattern match';
+
+    const blastRadiusText = primary.riskAssessment?.blastRadius
+      ? `${primary.riskAssessment.blastRadius.level} (${primary.riskAssessment.blastRadius.summary})`
+      : 'Local Working Tree';
 
     const banner = `
 ============================================================
@@ -89,19 +100,19 @@ Finding Details:
 • Provider:    ${primary.provider}
 • File:        ${primary.file} (Line ${primary.line})
 • Secret:      ${primary.redactedSecret}
-• Risk Level:  ${primary.risk}
+• Risk Level:  ${primary.risk} (Score: ${primary.riskAssessment?.score ?? 95}/100)
 • Confidence:  ${primary.confidence}%
-• Entropy:     ${primary.entropy} bits/char
+• Blast Radius: ${blastRadiusText}
 
-Signals Detected:
-${primary.signals.map((s) => `  - ${s}`).join('\n')}
+Evidence & Signals Detected:
+${signalsList}
 
 Recommended Remediation:
 ------------------------------------------------------------
-${primary.remediation}
+${remediationText}
 
 Example Fix:
-  ${primary.exampleFix}
+  ${primary.exampleFix || primary.remediation?.replacementCode}
 
 After fixing:
   1. Replace the secret in ${primary.file} with an environment variable.

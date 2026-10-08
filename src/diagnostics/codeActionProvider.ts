@@ -98,18 +98,20 @@ export class SecretCodeActionProvider implements vscode.CodeActionProvider {
     const envPath = path.join(workspaceRoot, '.env');
     const gitignorePath = path.join(workspaceRoot, '.gitignore');
 
-    // Generate appropriate environment variable name
-    let envVarName = 'SECRET_KEY';
-    if (finding.type.includes('AWS Access Key')) envVarName = 'AWS_ACCESS_KEY_ID';
-    else if (finding.type.includes('AWS Secret')) envVarName = 'AWS_SECRET_ACCESS_KEY';
-    else if (finding.type.includes('GitHub')) envVarName = 'GITHUB_TOKEN';
-    else if (finding.type.includes('OpenAI')) envVarName = 'OPENAI_API_KEY';
-    else if (finding.type.includes('Anthropic')) envVarName = 'ANTHROPIC_API_KEY';
-    else if (finding.type.includes('Stripe')) envVarName = 'STRIPE_SECRET_KEY';
-    else if (finding.type.includes('Slack')) envVarName = 'SLACK_TOKEN';
-    else if (finding.type.includes('Database')) envVarName = 'DATABASE_URL';
-    else {
-      envVarName = `${finding.provider.replace(/[^a-zA-Z0-9]/g, '_').toUpperCase()}_API_KEY`;
+    // Generate appropriate environment variable name from remediation plan if available
+    let envVarName = finding.remediation?.envVarName;
+    if (!envVarName) {
+      if (finding.type.includes('AWS Access Key')) envVarName = 'AWS_ACCESS_KEY_ID';
+      else if (finding.type.includes('AWS Secret')) envVarName = 'AWS_SECRET_ACCESS_KEY';
+      else if (finding.type.includes('GitHub')) envVarName = 'GITHUB_TOKEN';
+      else if (finding.type.includes('OpenAI')) envVarName = 'OPENAI_API_KEY';
+      else if (finding.type.includes('Anthropic')) envVarName = 'ANTHROPIC_API_KEY';
+      else if (finding.type.includes('Stripe')) envVarName = 'STRIPE_SECRET_KEY';
+      else if (finding.type.includes('Slack')) envVarName = 'SLACK_TOKEN';
+      else if (finding.type.includes('Database')) envVarName = 'DATABASE_URL';
+      else {
+        envVarName = `${finding.provider.replace(/[^a-zA-Z0-9]/g, '_').toUpperCase()}_API_KEY`;
+      }
     }
 
     // Append to .env
@@ -129,6 +131,13 @@ export class SecretCodeActionProvider implements vscode.CodeActionProvider {
       }
     } else {
       fs.writeFileSync(gitignorePath, '# Credentials\n.env\n.env.*.local\n', 'utf8');
+    }
+
+    // Update .env.example
+    const envExamplePath = path.join(workspaceRoot, '.env.example');
+    const exampleLine = `${envVarName}=your_${envVarName.toLowerCase()}_here\n`;
+    if (!fs.existsSync(envExamplePath) || !fs.readFileSync(envExamplePath, 'utf8').includes(envVarName)) {
+      fs.appendFileSync(envExamplePath, exampleLine, 'utf8');
     }
 
     // Replace the secret in the active file with process.env.<NAME>
