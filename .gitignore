@@ -3,6 +3,8 @@ dist/*
 !dist/extension.js
 !dist/cli.js
 build/
+tools/
+evaluation/corpus/
 .cache/
 .env*
 .vite/

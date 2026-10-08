@@ -36,6 +36,34 @@ async function buildAll() {
     return;
   }
 
+  if (process.argv.includes('--multi-benchmark')) {
+    await esbuild.build({
+      entryPoints: ['evaluation/benchmarks/multiScannerRunner.ts'],
+      bundle: true,
+      outfile: 'dist/multi-benchmark.js',
+      format: 'cjs',
+      platform: 'node',
+      target: 'node18',
+      sourcemap: true,
+    });
+    console.log('Build completed: dist/multi-benchmark.js');
+    return;
+  }
+
+  if (process.argv.includes('--regression-gate')) {
+    await esbuild.build({
+      entryPoints: ['evaluation/benchmarks/ciRegressionGate.ts'],
+      bundle: true,
+      outfile: 'dist/regression-gate.js',
+      format: 'cjs',
+      platform: 'node',
+      target: 'node18',
+      sourcemap: true,
+    });
+    console.log('Build completed: dist/regression-gate.js');
+    return;
+  }
+
   if (process.argv.includes('--profile')) {
     await esbuild.build({
       entryPoints: ['evaluation/benchmarks/largeRepoBenchmark.ts'],
