@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import { CORE_RULES } from '../detectors/rules';
 import { analyzeFileContext, analyzeLexicalContext } from '../context/contextAnalyzer';
+import { analyzeAstContext } from '../context/astAnalyzer';
 import { buildEvidenceModel } from '../evidence/evidenceEngine';
 import { calculateRiskAssessment } from '../risk/riskEngine';
 import { buildRemediationPlan } from '../remediation/remediationEngine';
@@ -49,8 +50,9 @@ export function scanContent(
       const lineNumber = linesBefore.length;
       const columnNumber = linesBefore[linesBefore.length - 1].length + 1;
 
-      // Extract lexical context
+      // Extract lexical context and AST assignment semantics
       const lexicalContext = analyzeLexicalContext(lines, lineNumber - 1);
+      const astContext = analyzeAstContext(lines, lineNumber - 1);
 
       // Build Evidence Model & calculate confidence
       const evidenceResult = buildEvidenceModel(
@@ -58,7 +60,8 @@ export function scanContent(
         rawSecret,
         fileContext,
         lexicalContext,
-        filePath
+        filePath,
+        astContext
       );
 
       // If classified as a false positive or placeholder, suppress it

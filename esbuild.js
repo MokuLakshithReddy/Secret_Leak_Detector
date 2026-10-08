@@ -24,7 +24,7 @@ async function buildAll() {
 
   if (isBenchmark) {
     await esbuild.build({
-      entryPoints: ['evaluation/benchmarks/benchmarkRunner.ts'],
+      entryPoints: ['evaluation/benchmarks/reproducibleBenchmark.ts'],
       bundle: true,
       outfile: 'dist/benchmark.js',
       format: 'cjs',
@@ -33,6 +33,20 @@ async function buildAll() {
       sourcemap: true,
     });
     console.log('Build completed: dist/benchmark.js');
+    return;
+  }
+
+  if (process.argv.includes('--profile')) {
+    await esbuild.build({
+      entryPoints: ['evaluation/benchmarks/largeRepoBenchmark.ts'],
+      bundle: true,
+      outfile: 'dist/profile.js',
+      format: 'cjs',
+      platform: 'node',
+      target: 'node18',
+      sourcemap: true,
+    });
+    console.log('Build completed: dist/profile.js');
     return;
   }
 

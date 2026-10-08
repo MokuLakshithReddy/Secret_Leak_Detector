@@ -183,6 +183,35 @@ assert(comparison.resolvedFindings.length === 1, 'Rescan accurately identifies 1
 assert(comparison.remainingFindings.length === 1, 'Rescan accurately identifies 1 remaining finding');
 assert(!comparison.isFullyClean, 'Rescan correctly marks incomplete remediation as not fully clean');
 
+// --- 9. AST & Structural Validators Tests ---
+console.log('\n--- 9. AST Analysis & Provider Structural Validators ---');
+const envFallbackFinding = scanContent('const apiKey = process.env.API_KEY || "AKIA1234567890ABCDEF";', 'server.ts')[0];
+assert(envFallbackFinding !== undefined, 'Detected secret in environment fallback expression');
+assert(
+  envFallbackFinding.evidence.items.some((i) => i.signal === 'ENV_FALLBACK_ASSIGNMENT'),
+  'Evidence contains ENV_FALLBACK_ASSIGNMENT signal'
+);
+
+const synthStripe = synth(['sk_', 'live_', '51M0XYZ982734bca81923456789']);
+const objFinding = scanContent(`config.auth.stripeKey = "${synthStripe}";`, 'auth.ts')[0];
+assert(objFinding !== undefined, 'Detected secret in nested object property assignment');
+assert(
+  objFinding.evidence.items.some((i) => i.signal === 'STRUCTURAL_VALIDATION_PASSED'),
+  'Evidence contains STRUCTURAL_VALIDATION_PASSED signal from Stripe validator'
+);
+
+// --- 10. Adversarial Evasion Test Suite ---
+console.log('\n--- 10. Adversarial Evasion Suite ---');
+const splitAdv = scanContent('const token = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";', 'auth.ts');
+assert(splitAdv.length > 0, 'Adversarial: Detected split token concatenation');
+
+const synthOpenAI = synth(['sk-proj-', 'AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfGhIjKlMn']);
+const multilineAdv = scanContent(`const\n  API_KEY\n  =\n  "${synthOpenAI}";`, 'secrets.ts');
+assert(multilineAdv.length > 0, 'Adversarial: Detected multiline whitespace stretching');
+
+const commentAdv = scanContent(`const KEY /* internal secret */ = "${synthStripe}";`, 'pay.ts');
+assert(commentAdv.length > 0, 'Adversarial: Detected inline comment disruption');
+
 console.log('\n============================================================');
 console.log(`🎉 TEST SUMMARY: ${passed} PASSED, ${failed} FAILED`);
 console.log('============================================================\n');

@@ -3,9 +3,11 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { scanFile, scanContent, buildScanResult } from '../core/scanner/scanner';
 import { GitHistoryEngine } from '../core/history/gitHistoryEngine';
+import { GitTimelineEngine } from '../core/history/gitTimeline';
 import { BaselineEngine, DEFAULT_BASELINE_FILENAME } from '../core/baseline/baselineEngine';
 import { VerificationEngine } from '../core/verification/verificationEngine';
 import { applyControlledRemediation } from '../core/remediation/remediationEngine';
+import { redactSecret } from '../core/redactor/redactor';
 import { formatAsSarif } from '../core/sarif/sarifFormatter';
 import { SecretFinding, Risk } from '../core/types';
 
@@ -26,6 +28,10 @@ async function main() {
 
     case 'trace':
       await runTrace(args.slice(1), cwd);
+      break;
+
+    case 'timeline':
+      await runTimeline(args.slice(1), cwd);
       break;
 
     case 'baseline':
@@ -302,6 +308,19 @@ async function runTrace(cmdArgs: string[], cwd: string) {
   }
 
   console.log('============================================================\n');
+}
+
+async function runTimeline(cmdArgs: string[], cwd: string) {
+  const secret = cmdArgs[0];
+  if (!secret) {
+    console.error('Usage: secret-leak-detector timeline <secret-string>');
+    process.exit(1);
+  }
+
+  const redacted = redactSecret(secret);
+  const timelineEngine = new GitTimelineEngine(cwd);
+  const report = await timelineEngine.buildTimeline(secret, redacted);
+  console.log(report.timelineAscii);
 }
 
 async function runBaseline(cmdArgs: string[], cwd: string) {

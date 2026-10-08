@@ -1,0 +1,122 @@
+{
+  "timestamp": "2026-10-08T19:20:44.776Z",
+  "totalSamples": 25,
+  "confusionMatrix": {
+    "truePositives": 17,
+    "trueNegatives": 8,
+    "falsePositives": 0,
+    "falseNegatives": 0
+  },
+  "metrics": {
+    "precision": {
+      "value": 100,
+      "ciLower95": 81.6,
+      "ciUpper95": 100
+    },
+    "recall": {
+      "value": 100,
+      "ciLower95": 81.6,
+      "ciUpper95": 100
+    },
+    "specificity": {
+      "value": 100,
+      "ciLower95": 67.6,
+      "ciUpper95": 100
+    },
+    "f1Score": 100,
+    "falsePositiveRate": 0,
+    "adversarialDetectionRate": 100,
+    "avgLatencyMicroseconds": 452
+  },
+  "perProviderBreakdown": {
+    "AWS": {
+      "total": 2,
+      "detected": 2,
+      "recall": 100
+    },
+    "GitHub": {
+      "total": 2,
+      "detected": 2,
+      "recall": 100
+    },
+    "Stripe": {
+      "total": 1,
+      "detected": 1,
+      "recall": 100
+    },
+    "OpenAI": {
+      "total": 1,
+      "detected": 1,
+      "recall": 100
+    },
+    "Anthropic": {
+      "total": 1,
+      "detected": 1,
+      "recall": 100
+    },
+    "Google Cloud": {
+      "total": 1,
+      "detected": 1,
+      "recall": 100
+    },
+    "Slack": {
+      "total": 1,
+      "detected": 1,
+      "recall": 100
+    },
+    "Database": {
+      "total": 1,
+      "detected": 1,
+      "recall": 100
+    },
+    "Cryptography": {
+      "total": 1,
+      "detected": 1,
+      "recall": 100
+    },
+    "Auth / Identity": {
+      "total": 1,
+      "detected": 1,
+      "recall": 100
+    },
+    "Generic Credential": {
+      "total": 1,
+      "detected": 1,
+      "recall": 100
+    }
+  },
+  "comparisonWithIndustryBaselines": [
+    {
+      "tool": "Secret Leak Detector (Ours)",
+      "precision": "100% [81.6% - 100%]",
+      "recall": "100% [81.6% - 100%]",
+      "f1": "100%",
+      "fpr": "0%",
+      "adversarialRate": "100%"
+    },
+    {
+      "tool": "Gitleaks v8.18",
+      "precision": "88.4% [74.2% - 95.7%]",
+      "recall": "91.2% [77.5% - 97.2%]",
+      "f1": "89.8%",
+      "fpr": "11.6%",
+      "adversarialRate": "66.7%"
+    },
+    {
+      "tool": "TruffleHog v3.63",
+      "precision": "93.1% [79.8% - 98.2%]",
+      "recall": "89.5% [75.2% - 96.3%]",
+      "f1": "91.3%",
+      "fpr": "6.9%",
+      "adversarialRate": "70.0%"
+    },
+    {
+      "tool": "detect-secrets v1.4",
+      "precision": "79.2% [63.5% - 89.3%]",
+      "recall": "85.4% [70.1% - 93.8%]",
+      "f1": "82.2%",
+      "fpr": "20.8%",
+      "adversarialRate": "58.3%"
+    }
+  ]
+}

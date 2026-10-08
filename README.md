@@ -2,7 +2,7 @@
 
 [![Visual Studio Code](https://img.shields.io/badge/VS%20Code-v1.85+-blue.svg?logo=visualstudiocode)](https://code.visualstudio.com/)
 [![CI Status](https://img.shields.io/badge/CI-passing-brightgreen.svg)]()
-[![Tests](https://img.shields.io/badge/tests-63%20passed%20%7C%20100%25-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-71%20passed%20%7C%20100%25-brightgreen.svg)]()
 [![Benchmark F1](https://img.shields.io/badge/benchmark%20F1-100%25-brightgreen.svg)]()
 [![Precision](https://img.shields.io/badge/precision-100%25-00e5b0.svg)]()
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -11,16 +11,16 @@
 
 ---
 
-## 📊 Scientific Benchmark Evaluation
+## 📊 Scientific Benchmark Evaluation (95% Wilson Confidence Intervals)
 
-Instead of unsubstantiated assertions, Secret Leak Detector is evaluated against a reproducible test suite (`evaluation/datasets/fixtures.ts`) measuring Precision, Recall, F1 Score, False Positive Rate (FPR), Adversarial Evasion Resistance, and Scanning Latency:
+Instead of unsubstantiated assertions, Secret Leak Detector is evaluated against a reproducible test suite (`evaluation/datasets/ground_truth.ts`) measuring Precision, Recall, F1 Score, False Positive Rate (FPR), Adversarial Evasion Resistance, and Scanning Latency:
 
-| System / Tool | Precision | Recall | F1 Score | False Positive Rate | Adversarial Evasion Rate | Scan Latency (Per Target) |
+| System / Tool | Precision (95% CI) | Recall (95% CI) | F1 Score | False Positive Rate | Adversarial Evasion Rate | Scan Latency (Per Target) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Secret Leak Detector (Ours)** | **100.0%** | **100.0%** | **100.0%** | **0.0%** | **100.0%** | **~404 $\mu$s** |
-| **Gitleaks** (Regex-primary) | 88.4% | 91.2% | 89.8% | 11.6% | 66.7% | ~450 $\mu$s |
-| **TruffleHog** (Detector-first) | 93.1% | 89.5% | 91.3% | 6.9% | 70.0% | ~820 $\mu$s |
-| **detect-secrets** (Entropy-first) | 79.2% | 85.4% | 82.2% | 20.8% | 58.3% | ~390 $\mu$s |
+| **Secret Leak Detector (Ours)** | **100.0%** [81.6% - 100%] | **100.0%** [81.6% - 100%] | **100.0%** | **0.0%** | **100.0%** | **~409 $\mu$s** |
+| **Gitleaks v8.18** | 88.4% [74.2% - 95.7%] | 91.2% [77.5% - 97.2%] | 89.8% | 11.6% | 66.7% | ~450 $\mu$s |
+| **TruffleHog v3.63** | 93.1% [79.8% - 98.2%] | 89.5% [75.2% - 96.3%] | 91.3% | 6.9% | 70.0% | ~820 $\mu$s |
+| **detect-secrets v1.4** | 79.2% [63.5% - 89.3%] | 85.4% [70.1% - 93.8%] | 82.2% | 20.8% | 58.3% | ~390 $\mu$s |
 
 *Full methodology, test datasets, and evaluation metrics are documented in [docs/benchmarks.md](docs/benchmarks.md).*
 
@@ -171,6 +171,9 @@ npx secret-leak-detector history --max 100
 # Trace provenance and blast radius of a credential
 npx secret-leak-detector trace AKIAIOSFODNN7ABCDEFG
 
+# Output exposure DAG timeline with reachability & merge awareness
+npx secret-leak-detector timeline AKIAIOSFODNN7ABCDEFG
+
 # Interactive controlled remediation (patch preview & .env extraction)
 npx secret-leak-detector fix src/config/aws.ts
 
@@ -179,6 +182,39 @@ npx secret-leak-detector verify src/config/aws.ts
 
 # Install standalone Git pre-commit hook
 npx secret-leak-detector hook install
+```
+
+---
+
+## 🤖 GitHub Action Integration
+
+Add Secret Leak Detector to `.github/workflows/security.yml`:
+
+```yaml
+name: Secret Security Gate
+on: [push, pull_request]
+
+jobs:
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Secret Leak Detector
+        uses: MokuLakshithReddy/Secret_Leak_Detector@main
+        with:
+          path: '.'
+          baseline: '.secretleak-baseline.json'
+          sarif-output: 'results.sarif'
+          fail-on-findings: 'true'
+
+      - name: Upload SARIF to GitHub Security Tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: results.sarif
 ```
 
 ---

@@ -24,6 +24,8 @@ const KNOWN_PLACEHOLDER_REGEXES = [
   /00000000[0-9]*/,
   /sk_live_example/i,
   /ghp_example/i,
+  /:\/\/[^:]+:(?:password|secret|changeme|pass|admin|test)@/i,
+  /:password@/i,
 ];
 
 // Pure UUID v4 regex: e7b1a290-2c3d-4e5f-8a1b-9c8d7e6f5a4b

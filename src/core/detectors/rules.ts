@@ -256,7 +256,7 @@ export const CORE_RULES: RuleDefinition[] = [
     pattern: /(?:(?:api_?key|secret_?key|auth_?token|client_?secret|access_?token|private_?key)\s*[:=]\s*["']([A-Za-z0-9_.~-]{20,90})["'])/gi,
     baseConfidence: 80,
     baseRiskWeight: 70,
-    minEntropy: 4.1,
+    minEntropy: 3.5,
     signals: [
       'Sensitive identifier keyword assignment',
       'High Shannon entropy string literal',

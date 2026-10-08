@@ -5,7 +5,15 @@ import {
   detectCharacterSet,
 } from '../entropy/entropy';
 import { FileContext, LexicalContext } from '../context/contextAnalyzer';
+import { AstAssignmentContext } from '../context/astAnalyzer';
 import { evaluateFalsePositive } from '../classifier/falsePositiveClassifier';
+import {
+  validateAwsAccessKey,
+  validateStripeKey,
+  validateGitHubToken,
+  validateJwtToken,
+  validateDatabaseUrl,
+} from '../detectors/validators';
 
 export interface EvidenceCalculationResult {
   confidence: number;
@@ -19,7 +27,8 @@ export function buildEvidenceModel(
   rawSecret: string,
   fileContext: FileContext,
   lexicalContext: LexicalContext,
-  filePath: string
+  filePath: string,
+  astContext?: AstAssignmentContext
 ): EvidenceCalculationResult {
   const items: EvidenceItem[] = [];
   let confidence = rule.baseConfidence;
@@ -65,14 +74,15 @@ export function buildEvidenceModel(
     }
   }
 
-  // 3. Variable Identifier Signal
-  if (lexicalContext.isSensitiveIdentifier) {
+  // 3. Variable Identifier & AST Context Signal
+  if (lexicalContext.isSensitiveIdentifier || astContext?.isSensitiveProperty) {
+    const varName = astContext?.variablePath || lexicalContext.inferredVariable || 'credential';
     confidence = Math.min(100, confidence + 10);
     items.push({
       signal: 'SENSITIVE_IDENTIFIER',
-      description: `Assigned to sensitive identifier: '${lexicalContext.inferredVariable || 'credential'}'`,
+      description: `Assigned to sensitive identifier / property: '${varName}'`,
       confidenceImpact: +10,
-      details: { identifier: lexicalContext.inferredVariable },
+      details: { identifier: varName },
     });
   } else if (lexicalContext.isBenignIdentifier) {
     confidence = Math.max(10, confidence - 25);
@@ -81,6 +91,24 @@ export function buildEvidenceModel(
       description: `Identifier name indicates mock or sample value: '${lexicalContext.inferredVariable}'`,
       confidenceImpact: -25,
       details: { identifier: lexicalContext.inferredVariable },
+    });
+  }
+
+  // AST: Env fallback or header context
+  if (astContext?.isEnvFallback) {
+    confidence = Math.min(100, confidence + 12);
+    items.push({
+      signal: 'ENV_FALLBACK_ASSIGNMENT',
+      description: 'Hardcoded literal provided as environment variable fallback (e.g. process.env.KEY || "...")',
+      confidenceImpact: +12,
+    });
+  }
+  if (astContext?.isAuthorizationHeader) {
+    confidence = Math.min(100, confidence + 10);
+    items.push({
+      signal: 'AUTHORIZATION_HEADER',
+      description: 'Passed in HTTP Authorization or Bearer token header context',
+      confidenceImpact: +10,
     });
   }
 
@@ -113,7 +141,24 @@ export function buildEvidenceModel(
     });
   }
 
-  // 5. False Positive & Placeholder Check
+  // 5. Provider-Specific Structural Validation
+  let valRes;
+  if (rule.id === 'aws-access-key') valRes = validateAwsAccessKey(rawSecret);
+  else if (rule.id === 'stripe-secret-key') valRes = validateStripeKey(rawSecret);
+  else if (rule.id === 'github-pat') valRes = validateGitHubToken(rawSecret);
+  else if (rule.id === 'jwt-token') valRes = validateJwtToken(rawSecret);
+  else if (rule.id === 'database-url') valRes = validateDatabaseUrl(rawSecret);
+
+  if (valRes && valRes.isValid) {
+    confidence = Math.min(100, confidence + valRes.confidenceBonus);
+    items.push({
+      signal: 'STRUCTURAL_VALIDATION_PASSED',
+      description: `Structural validation verified: ${valRes.reason}`,
+      confidenceImpact: valRes.confidenceBonus,
+    });
+  }
+
+  // 6. False Positive & Placeholder Check
   const fpCheck = evaluateFalsePositive(rawSecret, lexicalContext.inferredVariable, filePath);
   if (fpCheck.isFalsePositive) {
     return {

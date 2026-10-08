@@ -159,6 +159,7 @@
     "cli": "node esbuild.js --cli && node dist/cli.js",
     "test": "node esbuild.js --test && node dist/test-suite.js",
     "benchmark": "node esbuild.js --benchmark && node dist/benchmark.js",
+    "profile": "node esbuild.js --profile && node dist/profile.js",
     "demo": "node esbuild.js --demo && node dist/demo-cli.js"
   },
   "devDependencies": {

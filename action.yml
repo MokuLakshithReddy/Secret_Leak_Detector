@@ -1,0 +1,58 @@
+name: 'Secret Leak Detector Action'
+description: 'Developer-first credential protection: detect, prove, trace, and block secret leaks in CI/CD'
+author: 'MokuLakshithReddy'
+
+inputs:
+  path:
+    description: 'Path or directory to scan'
+    required: false
+    default: '.'
+  fail-on:
+    description: 'Risk tier threshold to fail CI build (CRITICAL, HIGH, MEDIUM, LOW)'
+    required: false
+    default: 'CRITICAL'
+  baseline:
+    description: 'Path to baseline file to ignore known findings'
+    required: false
+    default: '.secretleak-baseline.json'
+  sarif-file:
+    description: 'Output filename for OASIS SARIF v2.1.0 report'
+    required: false
+    default: 'secret-findings.sarif'
+  scan-history:
+    description: 'Whether to scan full Git commit history for historical leaks'
+    required: false
+    default: 'false'
+
+outputs:
+  findings-count:
+    description: 'Total active credential findings detected'
+  blocked:
+    description: 'Whether the scan resulted in a blocked build'
+  sarif-path:
+    description: 'Absolute path to generated SARIF report'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Run Secret Leak Detector
+      shell: bash
+      run: |
+        npx --yes secret-leak-detector scan "${{ inputs.path }}" \
+          --fail-on "${{ inputs.fail-on }}" \
+          --baseline "${{ inputs.baseline }}" \
+          --sarif > "${{ inputs.sarif-file }}" || EXIT_CODE=$?
+        
+        if [ "$EXIT_CODE" -ne 0 ]; then
+          echo "❌ Critical secrets detected!"
+          exit $EXIT_CODE
+        fi
+
+branding:
+  icon: 'shield'
+  color: 'green'
