@@ -1,13 +1,13 @@
 {
-  "timestamp": "2026-10-08T19:57:41.707Z",
-  "totalFiles": 520,
+  "timestamp": "2026-10-08T20:31:17.782Z",
+  "totalFiles": 1000,
   "results": [
     {
       "name": "Secret Leak Detector (Ours)",
       "version": "1.0.0",
-      "tp": 320,
+      "tp": 600,
       "fp": 0,
-      "tn": 200,
+      "tn": 400,
       "fn": 0,
       "precision": 100,
       "recall": 100,
@@ -16,87 +16,95 @@
       "fpr": 0,
       "adversarialRate": 100,
       "precisionCi": [
-        98.8,
+        99.4,
         100
       ],
       "recallCi": [
-        98.8,
+        99.4,
         100
       ],
-      "wallClockMs": 240,
-      "latencyPerFileUs": 461
+      "wallClockMs": 271,
+      "latencyPerFileUs": 271,
+      "rssMb": 84.1,
+      "heapUsedMb": 26.7
     },
     {
       "name": "Gitleaks",
       "version": "v8.30.1",
-      "tp": 227,
+      "tp": 437,
       "fp": 0,
-      "tn": 200,
-      "fn": 93,
+      "tn": 400,
+      "fn": 163,
       "precision": 100,
-      "recall": 70.9,
+      "recall": 72.8,
       "specificity": 100,
-      "f1": 83,
+      "f1": 84.3,
       "fpr": 0,
-      "adversarialRate": 31.7,
+      "adversarialRate": 37,
       "precisionCi": [
-        98.3,
+        99.1,
         100
       ],
       "recallCi": [
-        65.7,
-        75.6
+        69.1,
+        76.2
       ],
-      "wallClockMs": 969,
-      "latencyPerFileUs": 1864
+      "wallClockMs": 1028,
+      "latencyPerFileUs": 1028,
+      "rssMb": 84.7,
+      "heapUsedMb": 29.7
     },
     {
       "name": "TruffleHog",
       "version": "v3.99.2",
-      "tp": 171,
+      "tp": 325,
       "fp": 0,
-      "tn": 200,
-      "fn": 149,
+      "tn": 400,
+      "fn": 275,
       "precision": 100,
-      "recall": 53.4,
+      "recall": 54.2,
       "specificity": 100,
-      "f1": 69.7,
+      "f1": 70.3,
       "fpr": 0,
       "adversarialRate": 25,
       "precisionCi": [
-        97.8,
+        98.8,
         100
       ],
       "recallCi": [
-        48,
-        58.8
+        50.2,
+        58.1
       ],
-      "wallClockMs": 4545,
-      "latencyPerFileUs": 8741
+      "wallClockMs": 4947,
+      "latencyPerFileUs": 4947,
+      "rssMb": 85.2,
+      "heapUsedMb": 27
     },
     {
       "name": "detect-secrets",
       "version": "v1.5.0",
-      "tp": 236,
-      "fp": 100,
-      "tn": 100,
-      "fn": 84,
-      "precision": 70.2,
-      "recall": 73.8,
+      "tp": 439,
+      "fp": 200,
+      "tn": 200,
+      "fn": 161,
+      "precision": 68.7,
+      "recall": 73.2,
       "specificity": 50,
-      "f1": 72,
+      "f1": 70.9,
       "fpr": 50,
-      "adversarialRate": 90,
+      "adversarialRate": 92,
       "precisionCi": [
-        65.1,
-        74.9
+        65,
+        72.2
       ],
       "recallCi": [
-        68.7,
-        78.3
+        69.5,
+        76.6
       ],
-      "wallClockMs": 52771,
-      "latencyPerFileUs": 101483
+      "wallClockMs": 88987,
+      "latencyPerFileUs": 88987,
+      "rssMb": 85.2,
+      "heapUsedMb": 27.3
     }
   ]
 }

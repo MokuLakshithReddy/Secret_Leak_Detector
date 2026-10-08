@@ -64,6 +64,20 @@ async function buildAll() {
     return;
   }
 
+  if (process.argv.includes('--scale-benchmark')) {
+    await esbuild.build({
+      entryPoints: ['evaluation/benchmarks/payloadScaleBenchmark.ts'],
+      bundle: true,
+      outfile: 'dist/scale-benchmark.js',
+      format: 'cjs',
+      platform: 'node',
+      target: 'node18',
+      sourcemap: true,
+    });
+    console.log('Build completed: dist/scale-benchmark.js');
+    return;
+  }
+
   if (process.argv.includes('--profile')) {
     await esbuild.build({
       entryPoints: ['evaluation/benchmarks/largeRepoBenchmark.ts'],

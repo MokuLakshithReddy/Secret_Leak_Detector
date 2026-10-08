@@ -16,6 +16,37 @@ export interface GitTimelineEvent {
   exposureDaysSoFar: number;
 }
 
+export interface GitGraphNode {
+  id: string;
+  shortHash: string;
+  label: string;
+  author: string;
+  date: string;
+  eventType: 'INTRODUCED' | 'MODIFIED' | 'REMOVED' | 'MERGED_IN';
+  isMerge: boolean;
+  branches: string[];
+  isHead: boolean;
+  hasSecret: boolean;
+}
+
+export interface GitGraphEdge {
+  from: string;
+  to: string;
+}
+
+export interface GitExposureGraph {
+  nodes: GitGraphNode[];
+  edges: GitGraphEdge[];
+  summary: {
+    totalExposedCommits: number;
+    introducedCommit: string;
+    removedCommit?: string;
+    durationDays: number;
+    branchesContaminated: string[];
+    isPushedToRemote: boolean;
+  };
+}
+
 export interface ExposureTimelineReport {
   secretRedacted: string;
   events: GitTimelineEvent[];
@@ -26,6 +57,7 @@ export interface ExposureTimelineReport {
   reachableBranches: string[];
   isPushedToRemote: boolean;
   timelineAscii: string;
+  graph: GitExposureGraph;
 }
 
 export class GitTimelineEngine {
@@ -54,6 +86,17 @@ export class GitTimelineEngine {
         reachableBranches: ['local'],
         isPushedToRemote: false,
         timelineAscii: 'No Git history found for this credential.',
+        graph: {
+          nodes: [],
+          edges: [],
+          summary: {
+            totalExposedCommits: 0,
+            introducedCommit: '',
+            durationDays: 0,
+            branchesContaminated: ['local'],
+            isPushedToRemote: false,
+          },
+        },
       };
     }
 
@@ -66,6 +109,17 @@ export class GitTimelineEngine {
         reachableBranches: ['working-tree'],
         isPushedToRemote: false,
         timelineAscii: 'Credential exists only in uncommitted local working tree.',
+        graph: {
+          nodes: [],
+          edges: [],
+          summary: {
+            totalExposedCommits: 0,
+            introducedCommit: '',
+            durationDays: 0,
+            branchesContaminated: ['working-tree'],
+            isPushedToRemote: false,
+          },
+        },
       };
     }
 
@@ -191,7 +245,44 @@ export class GitTimelineEngine {
     timelineAscii += '═'.repeat(68) + '\n';
     timelineAscii += `Current Status:     ${currentStatus}\n`;
     timelineAscii += `Total Exposure:     ${totalExposureDays} days\n`;
-    timelineAscii += `Remote Sync:        ${isPushedToRemote ? 'PUSHED TO REMOTE REPOSITORY' : 'Local DAG only'}\n`;
+    const nodes: GitGraphNode[] = events.map((ev, idx) => ({
+      id: ev.commitSha,
+      shortHash: ev.commitSha.substring(0, 8),
+      label: `${ev.eventType}: ${ev.commitMessage.substring(0, 30)}`,
+      author: `${ev.authorName} <${ev.authorEmail}>`,
+      date: ev.date,
+      eventType: ev.eventType,
+      isMerge: ev.isMergeCommit,
+      branches: ev.branches,
+      isHead: idx === events.length - 1 && currentStatus === 'ACTIVE_IN_HEAD',
+      hasSecret: ev.eventType !== 'REMOVED',
+    }));
+
+    const edges: GitGraphEdge[] = [];
+    for (let i = 0; i < events.length; i++) {
+      const ev = events[i];
+      for (const parent of ev.parentShas) {
+        if (events.some((e) => e.commitSha === parent)) {
+          edges.push({ from: parent, to: ev.commitSha });
+        }
+      }
+      if (edges.length === 0 && i > 0) {
+        edges.push({ from: events[i - 1].commitSha, to: ev.commitSha });
+      }
+    }
+
+    const graph: GitExposureGraph = {
+      nodes,
+      edges,
+      summary: {
+        totalExposedCommits: events.length,
+        introducedCommit: events[0]?.commitSha || '',
+        removedCommit: currentStatus !== 'ACTIVE_IN_HEAD' ? lastEvent?.commitSha : undefined,
+        durationDays: totalExposureDays,
+        branchesContaminated: Array.from(allReachableBranches),
+        isPushedToRemote,
+      },
+    };
 
     return {
       secretRedacted: redactedSecret,
@@ -203,6 +294,7 @@ export class GitTimelineEngine {
       reachableBranches: Array.from(allReachableBranches),
       isPushedToRemote,
       timelineAscii,
+      graph,
     };
   }
 }

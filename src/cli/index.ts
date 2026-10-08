@@ -34,6 +34,10 @@ async function main() {
       await runTimeline(args.slice(1), cwd);
       break;
 
+    case 'graph':
+      await runGraph(args.slice(1), cwd);
+      break;
+
     case 'baseline':
       await runBaseline(args.slice(1), cwd);
       break;
@@ -78,6 +82,8 @@ Commands:
                            --max <n>          Number of commits to inspect (default: 100)
 
   trace <secret>         Trace a credential's commit provenance, duration, and blast radius
+  timeline <secret>      Display ASCII exposure timeline across commit history
+  graph <secret>         Export formal Git DAG Exposure Graph (nodes, edges, reachability)
 
   baseline init          Generate or update .secretleak-baseline.json with existing findings
 
@@ -321,6 +327,45 @@ async function runTimeline(cmdArgs: string[], cwd: string) {
   const timelineEngine = new GitTimelineEngine(cwd);
   const report = await timelineEngine.buildTimeline(secret, redacted);
   console.log(report.timelineAscii);
+}
+
+async function runGraph(cmdArgs: string[], cwd: string) {
+  const secret = cmdArgs[0];
+  if (!secret) {
+    console.error('Usage: secret-leak-detector graph <secret-string> [--json]');
+    process.exit(1);
+  }
+
+  const isJson = cmdArgs.includes('--json');
+  const redacted = redactSecret(secret);
+  const timelineEngine = new GitTimelineEngine(cwd);
+  const report = await timelineEngine.buildTimeline(secret, redacted);
+
+  if (isJson) {
+    console.log(JSON.stringify(report.graph, null, 2));
+  } else {
+    console.log('\n============================================================');
+    console.log('🌐 GIT EXPOSURE GRAPH (DAG Nodes & Reachability)');
+    console.log('============================================================');
+    console.log(`Summary:`);
+    console.log(`  • Exposed Commits:       ${report.graph.summary.totalExposedCommits}`);
+    console.log(`  • Introduced In Commit:  ${report.graph.summary.introducedCommit.substring(0, 8)}`);
+    if (report.graph.summary.removedCommit) {
+      console.log(`  • Removed In Commit:     ${report.graph.summary.removedCommit.substring(0, 8)}`);
+    }
+    console.log(`  • Contaminated Branches: ${report.graph.summary.branchesContaminated.join(', ')}`);
+    console.log(`  • Exposure Duration:     ${report.graph.summary.durationDays} days`);
+    console.log(`  • Remote Synchronized:   ${report.graph.summary.isPushedToRemote ? 'YES (External!)' : 'NO'}`);
+    console.log('\nNodes:');
+    report.graph.nodes.forEach((n) => {
+      console.log(`  [${n.shortHash}] ${n.eventType.padEnd(12)} - ${n.author} (${n.date.substring(0, 10)}) ${n.isHead ? '[HEAD]' : ''}`);
+    });
+    console.log('\nEdges (Parent -> Child):');
+    report.graph.edges.forEach((e) => {
+      console.log(`  ${e.from.substring(0, 8)} ──► ${e.to.substring(0, 8)}`);
+    });
+    console.log('============================================================\n');
+  }
 }
 
 async function runBaseline(cmdArgs: string[], cwd: string) {

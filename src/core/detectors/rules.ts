@@ -268,3 +268,5 @@ export const CORE_RULES: RuleDefinition[] = [
     ],
   },
 ];
+
+export const DETECTOR_RULES = CORE_RULES;

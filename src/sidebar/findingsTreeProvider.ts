@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { SecretFinding, Risk } from '../types';
+import { SecretFinding, Risk } from '../core/types';
 
 export class FindingsTreeProvider implements vscode.TreeDataProvider<TreeItem> {
   private _onDidChangeTreeData: vscode.EventEmitter<TreeItem | undefined | null | void> =

@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
-import { scanContent } from '../engine/scanner';
-import { SecretFinding } from '../types';
+import { scanContent } from '../core/scanner/scanner';
+import { SecretFinding } from '../core/types';
 
 export class DiagnosticProvider {
   private diagnosticCollection: vscode.DiagnosticCollection;

@@ -52,7 +52,7 @@ export function scanContent(
 
       // Extract lexical context and AST assignment semantics
       const lexicalContext = analyzeLexicalContext(lines, lineNumber - 1);
-      const astContext = analyzeAstContext(lines, lineNumber - 1);
+      const astContext = analyzeAstContext(lines, lineNumber - 1, filePath);
 
       // Build Evidence Model & calculate confidence
       const evidenceResult = buildEvidenceModel(

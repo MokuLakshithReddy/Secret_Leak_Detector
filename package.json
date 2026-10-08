@@ -161,6 +161,7 @@
     "benchmark": "node esbuild.js --benchmark && node dist/benchmark.js",
     "benchmark:multi": "node esbuild.js --multi-benchmark && node dist/multi-benchmark.js",
     "benchmark:gate": "node esbuild.js --regression-gate && node dist/regression-gate.js --fast",
+    "benchmark:scale": "node esbuild.js --scale-benchmark && node dist/scale-benchmark.js",
     "profile": "node esbuild.js --profile && node dist/profile.js",
     "demo": "node esbuild.js --demo && node dist/demo-cli.js"
   },

@@ -4,8 +4,8 @@ import { SecretCodeActionProvider } from './diagnostics/codeActionProvider';
 import { FindingsTreeProvider, OverviewTreeProvider } from './sidebar/findingsTreeProvider';
 import { DashboardPanel } from './webview/dashboardPanel';
 import { GitService } from './git/gitService';
-import { scanContent } from './engine/scanner';
-import { SecretFinding } from './types';
+import { scanContent } from './core/scanner/scanner';
+import { SecretFinding } from './core/types';
 
 let outputChannel: vscode.OutputChannel;
 

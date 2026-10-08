@@ -194,7 +194,7 @@ export function generateCorpus(targetDir: string): CorpusItem[] {
   ];
 
   let tpCounter = 0;
-  while (tpCounter < 260) {
+  while (tpCounter < 500) {
     const prov = providers[tpCounter % providers.length];
     const ext = prov.exts[tpCounter % prov.exts.length];
     const { key, sec } = prov.gen();
@@ -217,7 +217,7 @@ export function generateCorpus(targetDir: string): CorpusItem[] {
   }
 
   // =========================================================================
-  // 2. FALSE POSITIVES (200 Files: docs, placeholders, UUIDs, hashes, configs)
+  // 2. FALSE POSITIVES (400 Files: docs, placeholders, UUIDs, hashes, configs)
   // =========================================================================
   const fpTemplates = [
     // 1. AWS official documentation placeholder
@@ -292,7 +292,7 @@ export function generateCorpus(targetDir: string): CorpusItem[] {
     },
   ];
 
-  for (let i = 0; i < 200; i++) {
+  for (let i = 0; i < 400; i++) {
     const t = fpTemplates[i % fpTemplates.length];
     const relPath = `${t.dir}/fp_${t.name}_${i}.${t.ext}`;
     const fullPath = path.join(targetDir, relPath);
@@ -309,9 +309,9 @@ export function generateCorpus(targetDir: string): CorpusItem[] {
   }
 
   // =========================================================================
-  // 3. ADVERSARIAL EVASIONS (60 Files: split strings, whitespace, comments, AST)
+  // 3. ADVERSARIAL EVASIONS (100 Files: split strings, whitespace, comments, AST)
   // =========================================================================
-  for (let i = 0; i < 60; i++) {
+  for (let i = 0; i < 100; i++) {
     let content = '';
     const style = i % 4;
     let relPath = '';

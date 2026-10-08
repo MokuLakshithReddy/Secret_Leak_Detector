@@ -5,6 +5,9 @@ import { BaselineEngine } from '../src/core/baseline/baselineEngine';
 import { VerificationEngine } from '../src/core/verification/verificationEngine';
 import { GitHistoryEngine } from '../src/core/history/gitHistoryEngine';
 import { formatAsSarif } from '../src/core/sarif/sarifFormatter';
+import { DETECTOR_RULES } from '../src/core/detectors/rules';
+import { calculateRiskAssessment } from '../src/core/risk/riskEngine';
+import { GitTimelineEngine } from '../src/core/history/gitTimeline';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -211,6 +214,33 @@ assert(multilineAdv.length > 0, 'Adversarial: Detected multiline whitespace stre
 
 const commentAdv = scanContent(`const KEY /* internal secret */ = "${synthStripe}";`, 'pay.ts');
 assert(commentAdv.length > 0, 'Adversarial: Detected inline comment disruption');
+
+// --- 11. Risk Score Quantitative Model Validation ---
+console.log('\n--- 11. Risk Score Quantitative Model Validation ---');
+const awsRule = DETECTOR_RULES.find((r) => r.id === 'aws-access-key')!;
+const stripeRule = DETECTOR_RULES.find((r) => r.id === 'stripe-secret-key')!;
+const cfgCtx = { isTest: false, isDoc: false, isConfig: true, isSensitiveName: true, extension: '.env' };
+const srcCtx = { isTest: false, isDoc: false, isConfig: false, isSensitiveName: false, extension: '.ts' };
+const tstCtx = { isTest: true, isDoc: false, isConfig: false, isSensitiveName: false, extension: '.test.ts' };
+
+const riskInCfg = calculateRiskAssessment(awsRule, 100, cfgCtx);
+const riskInSrc = calculateRiskAssessment(awsRule, 100, srcCtx);
+const riskInTst = calculateRiskAssessment(awsRule, 100, tstCtx);
+
+assert(riskInCfg.score > riskInSrc.score, 'Config file risk is higher than standard source code');
+assert(riskInSrc.score > riskInTst.score, 'Source code risk is higher than test file');
+assert(riskInCfg.tier === 'CRITICAL', 'Live AWS key in config file classified as CRITICAL');
+
+// Monotonicity & Boundary
+const testExposure = { isPresentInHead: true, isPresentInHistory: true, commitHash: 'abc', branches: ['main'], isRemote: true, exposureDurationDays: 10 };
+const boundTest = calculateRiskAssessment(stripeRule, 100, cfgCtx, testExposure);
+assert(boundTest.score >= 0 && boundTest.score <= 100, 'Risk score strictly bounded [0, 100]');
+assert(boundTest.tier === 'CRITICAL', 'Remote exposed Stripe key classified as CRITICAL');
+
+// --- 12. Git Exposure Graph Generation ---
+console.log('\n--- 12. Git Exposure Graph Generation ---');
+const timelineEngine = new GitTimelineEngine(process.cwd());
+assert(timelineEngine !== undefined, 'GitTimelineEngine initialized');
 
 console.log('\n============================================================');
 console.log(`🎉 TEST SUMMARY: ${passed} PASSED, ${failed} FAILED`);

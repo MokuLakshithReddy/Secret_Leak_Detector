@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import { DiagnosticProvider } from './diagnosticProvider';
-import { SecretFinding } from '../types';
+import { SecretFinding } from '../core/types';
 
 export class SecretCodeActionProvider implements vscode.CodeActionProvider {
   public static readonly providedCodeActionKinds = [vscode.CodeActionKind.QuickFix];

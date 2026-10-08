@@ -2,8 +2,8 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs';
 import * as path from 'path';
-import { SecretFinding } from '../types';
-import { scanContent } from '../engine/scanner';
+import { SecretFinding } from '../core/types';
+import { scanContent } from '../core/scanner/scanner';
 
 const execAsync = promisify(exec);
 

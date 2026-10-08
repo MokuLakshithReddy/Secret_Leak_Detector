@@ -2,8 +2,9 @@
 
 [![Visual Studio Code](https://img.shields.io/badge/VS%20Code-v1.85+-blue.svg?logo=visualstudiocode)](https://code.visualstudio.com/)
 [![CI Status](https://img.shields.io/badge/CI-passing-brightgreen.svg)]()
-[![Tests](https://img.shields.io/badge/tests-71%20passed%20%7C%20100%25-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-77%20passed%20%7C%20100%25-brightgreen.svg)]()
 [![Benchmark F1](https://img.shields.io/badge/benchmark%20F1-100%25-brightgreen.svg)]()
+[![Corpus](https://img.shields.io/badge/corpus-1%2C000%20cases-blueviolet.svg)]()
 [![Precision](https://img.shields.io/badge/precision-100%25-00e5b0.svg)]()
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
@@ -11,16 +12,16 @@
 
 ---
 
-## 📊 Empirical Multi-Scanner Benchmark (520 Identical Files, 95% Wilson CIs)
+## 📊 Empirical Multi-Scanner Benchmark (1,000 Identical Files, 95% Wilson CIs)
 
-Unlike marketing assertions, Secret Leak Detector was benchmarked alongside **Gitleaks**, **TruffleHog**, and **detect-secrets** by executing each tool's standalone binary against the exact same 520-file standardized corpus (260 True Positives, 200 False Positives, and 60 Adversarial Obfuscations across TypeScript, Python, Go, JSON, Shell, and YAML):
+Unlike marketing assertions, Secret Leak Detector was benchmarked alongside **Gitleaks**, **TruffleHog**, and **detect-secrets** by executing each tool's standalone binary against the exact same 1,000-file standardized corpus (500 True Positives, 400 False Positives, and 100 Adversarial Obfuscations across TypeScript, Python, Go, JSON, Shell, and YAML):
 
-| Scanner Tool | Precision (95% CI) | Recall (95% CI) | F1 Score | FP Rate | Adversarial Rate | Latency / Target |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Secret Leak Detector (Ours)** | **100.0%** [98.8% - 100%] | **100.0%** [98.8% - 100%] | **100.0%** | **0.0%** | **100.0%** | **183 $\mu$s** |
-| **Gitleaks v8.30.1** | **100.0%** [98.3% - 100%] | 70.9% [65.7% - 75.6%] | 83.0% | **0.0%** | 31.7% | 1,575 $\mu$s |
-| **detect-secrets v1.5.0** | 70.1% [64.9% - 74.7%] | 73.1% [68.0% - 77.7%] | 71.6% | 50.0% | 88.3% | 105,102 $\mu$s |
-| **TruffleHog v3.99.2** | **100.0%** [97.8% - 100%] | 53.4% [48.0% - 58.8%] | 69.7% | **0.0%** | 25.0% | 9,361 $\mu$s |
+| Scanner Tool | Precision (95% CI) | Recall (95% CI) | F1 Score | FP Rate | Adversarial | Latency / Target | Memory (RSS) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Secret Leak Detector (Ours) 1.0.0** | **100.0%** [99.4% - 100%] | **100.0%** [99.4% - 100%] | **100.0%** | **0.0%** | **100.0%** | **271 $\mu$s** | **84.1 MB** |
+| **Gitleaks v8.30.1** | **100.0%** [99.1% - 100%] | 72.8% [69.1% - 76.2%] | 84.3% | **0.0%** | 37.0% | 1,028 $\mu$s | 84.7 MB |
+| **TruffleHog v3.99.2** | **100.0%** [98.8% - 100%] | 54.2% [50.2% - 58.1%] | 70.3% | **0.0%** | 25.0% | 4,947 $\mu$s | 85.2 MB |
+| **detect-secrets v1.5.0** | 68.7% [65.0% - 72.2%] | 73.2% [69.5% - 76.6%] | 70.9% | 50.0% | 92.0% | 88,987 $\mu$s | 85.2 MB |
 
 *Full methodology, automated runner script, and empirical breakdown in [docs/benchmarks.md](docs/benchmarks.md).*
 
@@ -174,6 +175,9 @@ npx secret-leak-detector trace AKIAIOSFODNN7ABCDEFG
 # Output exposure DAG timeline with reachability & merge awareness
 npx secret-leak-detector timeline AKIAIOSFODNN7ABCDEFG
 
+# Export formal Git DAG Exposure Graph (nodes, edges, branch reachability)
+npx secret-leak-detector graph AKIAIOSFODNN7ABCDEFG --json
+
 # Interactive controlled remediation (patch preview & .env extraction)
 npx secret-leak-detector fix src/config/aws.ts
 
@@ -238,9 +242,9 @@ jobs:
 
 Secret Leak Detector is engineered against 6 primary security threats:
 - **T1: Accidental Working-Tree Commit:** Blocked via real-time editor underlines and pre-commit hook diff interception.
-- **T2: Zombie Git History Exposure:** Captured via `history` commit log scanner and `trace` provenance analysis.
+- **T2: Zombie Git History Exposure:** Captured via `history` commit log scanner, `timeline`, and `graph` DAG analysis.
 - **T3: False Positive Alert Fatigue:** Mitigated via Shannon entropy thresholds and placeholder suppression.
-- **T4: Adversarial Obfuscation Evasion:** Neutralized via string de-concatenation and lexical AST normalizers.
+- **T4: Adversarial Obfuscation Evasion:** Neutralized via string de-concatenation, comment stripping, and real compiler AST analysis.
 - **T5: Secondary Secret Leakage by Scanner:** Eliminated through masked displays and SHA-256 fingerprinting.
 - **T6: Destructive Remediation Regressions:** Prevented by diff previews, approval gates, and rescan verification.
 
@@ -250,16 +254,28 @@ Secret Leak Detector is engineered against 6 primary security threats:
 
 ## 🧪 Testing & Verification
 
-Run the comprehensive test suite (63 unit, integration, and regression tests):
+Run the comprehensive security engineering test suite (77 unit, integration, AST, risk, and regression tests):
 
 ```bash
 npm test
 ```
 
-Execute the benchmark evaluation harness:
+Execute the 1,000-case comparative multi-scanner benchmark (SLD vs Gitleaks vs TruffleHog vs detect-secrets):
 
 ```bash
-npm run benchmark
+npm run benchmark:multi
+```
+
+Execute large-scale performance benchmarking across payloads up to 1GB:
+
+```bash
+npm run benchmark:scale
+```
+
+Run the automated CI regression gate (enforcing $F1 \ge 99\%$, $FPR \le 1\%$, $Latency \le 1,000\ \mu\text{s}$):
+
+```bash
+npm run benchmark:gate
 ```
 
 Build the extension and standalone CLI:

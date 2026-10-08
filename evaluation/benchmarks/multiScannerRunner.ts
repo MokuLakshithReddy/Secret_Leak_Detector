@@ -27,6 +27,8 @@ export interface ScannerMetrics {
   recallCi: [number, number];
   wallClockMs: number;
   latencyPerFileUs: number;
+  rssMb: number;
+  heapUsedMb: number;
 }
 
 // Wilson 95% Score Confidence Interval
@@ -53,7 +55,7 @@ export function runMultiScannerBenchmark(options: { sldOnly?: boolean } = {}): S
   fs.mkdirSync(reportsDir, { recursive: true });
 
   console.log('=================================================================================');
-  console.log('⚡ GENERATING STANDARDIZED EMPIRICAL CORPUS (520 Synthetic Files)...');
+  console.log('⚡ GENERATING STANDARDIZED EMPIRICAL CORPUS (1,000 Synthetic Files)...');
   console.log('=================================================================================');
 
   const corpus = generateCorpus(corpusDir);
@@ -288,6 +290,10 @@ function evaluateScanner(
   const recallCi = calculateWilsonCi(tp, tp + fn);
   const latencyPerFileUs = Math.round((wallClockMs * 1000) / corpus.length);
 
+  const mem = process.memoryUsage();
+  const rssMb = Math.round((mem.rss / (1024 * 1024)) * 10) / 10;
+  const heapUsedMb = Math.round((mem.heapUsed / (1024 * 1024)) * 10) / 10;
+
   return {
     name,
     version,
@@ -305,15 +311,17 @@ function evaluateScanner(
     recallCi,
     wallClockMs: Math.round(wallClockMs),
     latencyPerFileUs,
+    rssMb,
+    heapUsedMb,
   };
 }
 
 function printBenchmarkSummary(results: ScannerMetrics[], totalFiles: number) {
-  console.log('\n===========================================================================================================');
-  console.log(`📊 EMPIRICAL SCANNER BENCHMARK REPORT (${totalFiles} Identical Files: 260 TP, 200 FP, 60 Adversarial)`);
-  console.log('===========================================================================================================');
-  console.log('| Scanner Tool                | Precision (95% CI)   | Recall (95% CI)      | F1 Score | FP Rate | Adversarial | Latency/File |');
-  console.log('|:----------------------------|:---------------------|:---------------------|:---------|:--------|:------------|:-------------|');
+  console.log('\n======================================================================================================================');
+  console.log(`📊 EMPIRICAL SCANNER BENCHMARK REPORT (${totalFiles} Identical Files: 500 TP, 400 FP, 100 Adversarial)`);
+  console.log('======================================================================================================================');
+  console.log('| Scanner Tool                | Precision (95% CI)   | Recall (95% CI)      | F1 Score | FP Rate | Adversarial | Latency/File | Memory (RSS) |');
+  console.log('|:----------------------------|:---------------------|:---------------------|:---------|:--------|:------------|:-------------|:-------------|');
 
   for (const r of results) {
     const nameStr = `${r.name} ${r.version}`.padEnd(28, ' ');
@@ -322,10 +330,11 @@ function printBenchmarkSummary(results: ScannerMetrics[], totalFiles: number) {
     const f1Str = `${r.f1}%`.padEnd(9, ' ');
     const fprStr = `${r.fpr}%`.padEnd(8, ' ');
     const advStr = `${r.adversarialRate}%`.padEnd(12, ' ');
-    const latStr = `${r.latencyPerFileUs} µs`;
-    console.log(`| ${nameStr}| ${precStr}| ${recStr}| ${f1Str}| ${fprStr}| ${advStr}| ${latStr} |`);
+    const latStr = `${r.latencyPerFileUs} µs`.padEnd(13, ' ');
+    const memStr = `${r.rssMb} MB`;
+    console.log(`| ${nameStr}| ${precStr}| ${recStr}| ${f1Str}| ${fprStr}| ${advStr}| ${latStr}| ${memStr} |`);
   }
-  console.log('===========================================================================================================\n');
+  console.log('======================================================================================================================\n');
 }
 
 // Run standalone if executed directly via multi-benchmark

@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { SecretFinding } from '../types';
+import { SecretFinding } from '../core/types';
 
 export class DashboardPanel {
   public static currentPanel: DashboardPanel | undefined;
