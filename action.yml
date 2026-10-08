@@ -35,24 +35,26 @@ outputs:
 runs:
   using: 'composite'
   steps:
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '20'
-
     - name: Run Secret Leak Detector
       shell: bash
       run: |
-        npx --yes secret-leak-detector scan "${{ inputs.path }}" \
-          --fail-on "${{ inputs.fail-on }}" \
-          --baseline "${{ inputs.baseline }}" \
-          --sarif > "${{ inputs.sarif-file }}" || EXIT_CODE=$?
+        ARGS=("scan" "${{ inputs.path }}" "--sarif")
+        
+        if [ -n "${{ inputs.fail-on }}" ]; then
+          ARGS+=("--fail-on" "${{ inputs.fail-on }}")
+        fi
+
+        if [ -n "${{ inputs.baseline }}" ] && [ -f "${{ inputs.baseline }}" ]; then
+          ARGS+=("--baseline" "${{ inputs.baseline }}")
+        fi
+
+        node "${{ github.action_path }}/dist/cli.js" "${ARGS[@]}" > "${{ inputs.sarif-file }}" || EXIT_CODE=$?
         
         if [ "$EXIT_CODE" -ne 0 ]; then
-          echo "❌ Critical secrets detected!"
+          echo "::error::Critical credentials detected by Secret Leak Detector!"
           exit $EXIT_CODE
         fi
 
 branding:
   icon: 'shield'
-  color: 'green'
+  color: 'blue'
