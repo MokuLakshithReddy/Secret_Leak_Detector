@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-10-09T11:01:02.519Z",
+  "timestamp": "2026-10-09T11:17:16.581Z",
   "totalFiles": 100,
   "results": [
     {
@@ -21,9 +21,9 @@
         64.8,
         87.2
       ],
-      "wallClockMs": 34,
-      "latencyPerFileUs": 343,
-      "rssMb": 79.6
+      "wallClockMs": 31,
+      "latencyPerFileUs": 310,
+      "rssMb": 79.8
     },
     {
       "name": "Gitleaks",
@@ -44,9 +44,9 @@
         73.8,
         93
       ],
-      "wallClockMs": 606,
-      "latencyPerFileUs": 6064,
-      "rssMb": 80.2
+      "wallClockMs": 516,
+      "latencyPerFileUs": 5162,
+      "rssMb": 80
     },
     {
       "name": "TruffleHog",
@@ -67,9 +67,9 @@
         71.5,
         91.7
       ],
-      "wallClockMs": 3231,
-      "latencyPerFileUs": 32311,
-      "rssMb": 80.5
+      "wallClockMs": 2939,
+      "latencyPerFileUs": 29387,
+      "rssMb": 80.4
     },
     {
       "name": "detect-secrets",
@@ -90,9 +90,9 @@
         44.2,
         70.6
       ],
-      "wallClockMs": 8298,
-      "latencyPerFileUs": 82978,
-      "rssMb": 81
+      "wallClockMs": 7654,
+      "latencyPerFileUs": 76538,
+      "rssMb": 80.7
     }
   ]
 }

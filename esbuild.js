@@ -92,6 +92,20 @@ async function buildAll() {
     return;
   }
 
+  if (process.argv.includes('--realworld-diagnose')) {
+    await esbuild.build({
+      entryPoints: ['scripts/inspectRealWorldErrors.ts'],
+      bundle: true,
+      outfile: 'dist/realworld-diagnose.js',
+      format: 'cjs',
+      platform: 'node',
+      target: 'node18',
+      sourcemap: true,
+    });
+    console.log('Build completed: dist/realworld-diagnose.js');
+    return;
+  }
+
   if (process.argv.includes('--profile')) {
     await esbuild.build({
       entryPoints: ['evaluation/benchmarks/largeRepoBenchmark.ts'],

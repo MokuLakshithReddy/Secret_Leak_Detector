@@ -1,0 +1,5 @@
+{
+  "buildCommand": "node esbuild.js --production",
+  "outputDirectory": "public",
+  "cleanUrls": true
+}

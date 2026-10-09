@@ -27,18 +27,23 @@ Secret Leak Detector was evaluated against **Gitleaks**, **TruffleHog**, and **d
 | **detect-secrets v1.5.0** | 68.7% [65.0% - 72.2%] | 73.2% [69.5% - 76.6%] | 70.9% | 50.0% | 92.0% | 88,987 $\mu$s | 85.2 MB |
 
 ### Suite B: 100-File Independently Labelled Real-World Corpus
-*50 Real-World Leaks (GitHub Actions, Dockerfiles, Terraform tfvars, Django settings, Kubernetes manifests) vs 50 Real-World High-Entropy Noise cases (Subresource Integrity SHA digests, 40-char Git commit SHAs, UUIDs, PNG pixels, RFC 7519 JWT examples):*
+*50 Real-World Leaks (GitHub Actions, Dockerfiles, Terraform tfvars, Django settings, Kubernetes manifests, Go APIs, and C# configs) vs 50 Real-World High-Entropy Noise cases (Subresource Integrity SHA digests, 40-char Git commit SHAs, UUIDs, PNG pixels, RFC 7519 JWT examples):*
 
 | Scanner Tool | Precision (95% CI) | Recall (95% CI) | F1 Score | FP Rate | Latency / Target | Memory (RSS) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Secret Leak Detector (Ours) 1.0.0** | **97.5%** [87.1% - 99.6%] | **78.0%** [64.8% - 87.2%] | **86.7%** | **2.0%** | **343 $\mu$s** | **79.6 MB** |
-| **Gitleaks v8.30.1** | 95.6% [85.2% - 98.8%] | 86.0% [73.8% - 93.0%] | 90.5% | 4.0% | 6,064 $\mu$s | 80.2 MB |
-| **TruffleHog v3.99.2** | 100.0% [91.6% - 100%] | 84.0% [71.5% - 91.7%] | 91.3% | 0.0% | 32,311 $\mu$s | 80.5 MB |
-| **detect-secrets v1.5.0** | 72.5% [57.2% - 83.9%] | 58.0% [44.2% - 70.6%] | 64.4% | 22.0% | 82,978 $\mu$s | 81.0 MB |
+| **Secret Leak Detector (Ours) 1.0.0** | **97.5%** [87.1% - 99.6%] | **78.0%** [64.8% - 87.2%] | **86.7%** | **2.0%** | **310 $\mu$s** | **79.8 MB** |
+| **Gitleaks v8.30.1** | 95.6% [85.2% - 98.8%] | 86.0% [73.8% - 93.0%] | 90.5% | 4.0% | 5,162 $\mu$s | 80.0 MB |
+| **TruffleHog v3.99.2** | 100.0% [91.6% - 100%] | 84.0% [71.5% - 91.7%] | 91.3% | 0.0% | 29,387 $\mu$s | 80.4 MB |
+| **detect-secrets v1.5.0** | 72.5% [57.2% - 83.9%] | 58.0% [44.2% - 70.6%] | 64.4% | 22.0% | 76,538 $\mu$s | 80.7 MB |
 
-> **Scientific Transparency:** Moving from a controlled synthetic suite (100% F1) to an independently labelled real-world dataset (86.7% F1, 97.5% Precision, 343 $\mu$s latency) confirms our architectural design goals: near-instant real-time scanning with strong suppression of noise and false positives.
-
-*Full methodology, automated runner scripts, and raw reports in [docs/benchmarks.md](docs/benchmarks.md).*
+> **⚠️ Methodological Caution & Scope Limitations:**
+> A 100-file curated corpus is valuable empirical initial evidence, but **is not enough to establish broad real-world superiority** across heterogeneous enterprise ecosystems.
+> 
+> We keep **controlled and real-world results strictly separate**:
+> - **Controlled Suite (1,000 files):** Evaluates canonical provider signatures, synthetic variance, and adversarial evasion where SLD achieved 100% precision and recall.
+> - **Real-World Suite (100 files):** Evaluates real incident patterns where SLD achieved **97.5% Precision and 78.0% Recall**. The 11 missed secrets stem from unescaped `@` symbols in PostgreSQL/MongoDB passwords disrupting URI bounds, and unquoted `AccountKey=...` parameters inside compound C# Azure connection strings.
+> 
+> Detailed root-cause post-mortem of all 11 false negatives and full reproduction scripts in [docs/benchmarks.md](docs/benchmarks.md).
 
 ---
 

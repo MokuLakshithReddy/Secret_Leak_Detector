@@ -163,6 +163,7 @@
     "benchmark:gate": "node esbuild.js --regression-gate && node dist/regression-gate.js --fast",
     "benchmark:scale": "node esbuild.js --scale-benchmark && node dist/scale-benchmark.js",
     "benchmark:realworld": "node esbuild.js --realworld-benchmark && node dist/realworld-benchmark.js",
+    "benchmark:realworld:diagnose": "node esbuild.js --realworld-diagnose && node dist/realworld-diagnose.js",
     "profile": "node esbuild.js --profile && node dist/profile.js",
     "demo": "node esbuild.js --demo && node dist/demo-cli.js"
   },
