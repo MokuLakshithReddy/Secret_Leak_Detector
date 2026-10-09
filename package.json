@@ -151,7 +151,7 @@
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm.cmd run build",
+    "vscode:prepublish": "npm run build",
     "build": "node esbuild.js --production",
     "watch": "node esbuild.js --watch",
     "compile": "tsc -p ./",

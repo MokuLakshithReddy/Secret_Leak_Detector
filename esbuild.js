@@ -1,4 +1,5 @@
 const esbuild = require('esbuild');
+const fs = require('fs');
 
 const isProduction = process.argv.includes('--production');
 const isWatch = process.argv.includes('--watch');
@@ -171,6 +172,13 @@ async function buildAll() {
   } else {
     await esbuild.build(extConfig);
     console.log('Build completed: dist/extension.js');
+  }
+
+  // Ensure web showcase index.html is available in dist for hosting targets
+  if (fs.existsSync('public/index.html')) {
+    fs.mkdirSync('dist', { recursive: true });
+    fs.copyFileSync('public/index.html', 'dist/index.html');
+    console.log('Build completed: dist/index.html');
   }
 }
 

@@ -1,4 +1,6 @@
 {
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
   "buildCommand": "node esbuild.js --production",
   "outputDirectory": "public",
   "cleanUrls": true
