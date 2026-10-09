@@ -120,7 +120,7 @@ export function runPayloadScaleBenchmark(): ScaleTierResult[] {
     };
 
     results.push(result);
-    console.log(`   -> Completed in ${result.wallClockMs} ms | ${result.throughputMbPerSec} MB/s | Heap: ${result.heapUsedMb} MB`);
+    console.log(`   -> Completed in ${result.wallClockMs} ms | ${result.throughputMbPerSec} MB/s | Heap: ${result.heapUsedMb} MB | RSS: ${result.rssMb} MB`);
   }
 
   printScaleSummary(results);
@@ -128,22 +128,23 @@ export function runPayloadScaleBenchmark(): ScaleTierResult[] {
 }
 
 function printScaleSummary(results: ScaleTierResult[]) {
-  console.log('\n===========================================================================================================');
+  console.log('\n==========================================================================================================================');
   console.log('📈 LARGE-SCALE THROUGHPUT & SCALING SUMMARY');
-  console.log('===========================================================================================================');
-  console.log('| Payload Size    | Wall-Clock Time | Throughput (MB/s) | Line Rate (Lines/s) | Heap Memory | Accuracy    |');
-  console.log('|:----------------|:----------------|:------------------|:--------------------|:------------|:------------|');
+  console.log('==========================================================================================================================');
+  console.log('| Payload Size    | Wall-Clock Time | Throughput (MB/s) | Line Rate (Lines/s) | Heap Memory | Process RSS | Accuracy    |');
+  console.log('|:----------------|:----------------|:------------------|:--------------------|:------------|:------------|:------------|');
 
   for (const r of results) {
     const sizeStr = r.tierLabel.padEnd(16, ' ');
     const timeStr = `${r.wallClockMs} ms`.padEnd(16, ' ');
     const tpStr = `${r.throughputMbPerSec} MB/s`.padEnd(18, ' ');
     const lrStr = `${r.linesPerSec.toLocaleString()} l/s`.padEnd(20, ' ');
-    const memStr = `${r.heapUsedMb} MB`.padEnd(12, ' ');
+    const heapStr = `${r.heapUsedMb} MB`.padEnd(12, ' ');
+    const rssStr = `${r.rssMb} MB`.padEnd(12, ' ');
     const accStr = `${r.secretsDetected}/${r.secretsExpected} (100%)`;
-    console.log(`| ${sizeStr}| ${timeStr}| ${tpStr}| ${lrStr}| ${memStr}| ${accStr} |`);
+    console.log(`| ${sizeStr}| ${timeStr}| ${tpStr}| ${lrStr}| ${heapStr}| ${rssStr}| ${accStr} |`);
   }
-  console.log('===========================================================================================================\n');
+  console.log('==========================================================================================================================\n');
 }
 
 if (require.main === module) {

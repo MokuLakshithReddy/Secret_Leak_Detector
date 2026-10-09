@@ -242,6 +242,19 @@ console.log('\n--- 12. Git Exposure Graph Generation ---');
 const timelineEngine = new GitTimelineEngine(process.cwd());
 assert(timelineEngine !== undefined, 'GitTimelineEngine initialized');
 
+// --- 13. Deterministic Benchmark PRNG Verification ---
+console.log('\n--- 13. Deterministic Benchmark PRNG Verification ---');
+import { createDeterministicPrng } from '../evaluation/datasets/corpusGenerator';
+const prng1 = createDeterministicPrng(0x123456);
+const seq1 = Array.from({ length: 50 }, () => prng1());
+const prng2 = createDeterministicPrng(0x123456);
+const seq2 = Array.from({ length: 50 }, () => prng2());
+const prng3 = createDeterministicPrng(0x654321);
+const seq3 = Array.from({ length: 50 }, () => prng3());
+
+assert(seq1.every((v, i) => v === seq2[i]), 'PRNG sequence is 100% deterministic across identical seeds');
+assert(seq1.some((v, i) => v !== seq3[i]), 'PRNG sequence varies across distinct seeds');
+
 console.log('\n============================================================');
 console.log(`🎉 TEST SUMMARY: ${passed} PASSED, ${failed} FAILED`);
 console.log('============================================================\n');

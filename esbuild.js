@@ -78,6 +78,20 @@ async function buildAll() {
     return;
   }
 
+  if (process.argv.includes('--realworld-benchmark')) {
+    await esbuild.build({
+      entryPoints: ['evaluation/benchmarks/realWorldBenchmarkRunner.ts'],
+      bundle: true,
+      outfile: 'dist/realworld-benchmark.js',
+      format: 'cjs',
+      platform: 'node',
+      target: 'node18',
+      sourcemap: true,
+    });
+    console.log('Build completed: dist/realworld-benchmark.js');
+    return;
+  }
+
   if (process.argv.includes('--profile')) {
     await esbuild.build({
       entryPoints: ['evaluation/benchmarks/largeRepoBenchmark.ts'],

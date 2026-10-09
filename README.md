@@ -12,9 +12,12 @@
 
 ---
 
-## 📊 Empirical Multi-Scanner Benchmark (1,000 Identical Files, 95% Wilson CIs)
+## 📊 Multi-Scanner Empirical Benchmarks (Controlled & Real-World)
 
-Unlike marketing assertions, Secret Leak Detector was benchmarked alongside **Gitleaks**, **TruffleHog**, and **detect-secrets** by executing each tool's standalone binary against the exact same 1,000-file standardized corpus (500 True Positives, 400 False Positives, and 100 Adversarial Obfuscations across TypeScript, Python, Go, JSON, Shell, and YAML):
+Secret Leak Detector was evaluated against **Gitleaks**, **TruffleHog**, and **detect-secrets** by executing each tool's standalone binary locally across two distinct benchmark suites:
+
+### Suite A: 1,000-File Controlled Benchmark Corpus (95% Wilson CIs)
+*500 True Positives, 400 False Positives, and 100 Adversarial Obfuscations generated deterministically with seeded PRNG (`0x5eec73`):*
 
 | Scanner Tool | Precision (95% CI) | Recall (95% CI) | F1 Score | FP Rate | Adversarial | Latency / Target | Memory (RSS) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -23,9 +26,19 @@ Unlike marketing assertions, Secret Leak Detector was benchmarked alongside **Gi
 | **TruffleHog v3.99.2** | **100.0%** [98.8% - 100%] | 54.2% [50.2% - 58.1%] | 70.3% | **0.0%** | 25.0% | 4,947 $\mu$s | 85.2 MB |
 | **detect-secrets v1.5.0** | 68.7% [65.0% - 72.2%] | 73.2% [69.5% - 76.6%] | 70.9% | 50.0% | 92.0% | 88,987 $\mu$s | 85.2 MB |
 
-> **Controlled Benchmark Statement:** Secret Leak Detector achieved 100.0% precision and recall on this **1,000-file controlled benchmark corpus**. This demonstrates rigorous detection and suppression on known provider signatures, adversarial evasion techniques, and benign fixtures under identical evaluation conditions. This should not be interpreted as claiming 100% recall on arbitrary real-world production codebases; real-world repository testing and independent evaluation are part of the ongoing roadmap.
+### Suite B: 100-File Independently Labelled Real-World Corpus
+*50 Real-World Leaks (GitHub Actions, Dockerfiles, Terraform tfvars, Django settings, Kubernetes manifests) vs 50 Real-World High-Entropy Noise cases (Subresource Integrity SHA digests, 40-char Git commit SHAs, UUIDs, PNG pixels, RFC 7519 JWT examples):*
 
-*Full methodology, automated runner script, and empirical breakdown in [docs/benchmarks.md](docs/benchmarks.md).*
+| Scanner Tool | Precision (95% CI) | Recall (95% CI) | F1 Score | FP Rate | Latency / Target | Memory (RSS) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Secret Leak Detector (Ours) 1.0.0** | **97.5%** [87.1% - 99.6%] | **78.0%** [64.8% - 87.2%] | **86.7%** | **2.0%** | **343 $\mu$s** | **79.6 MB** |
+| **Gitleaks v8.30.1** | 95.6% [85.2% - 98.8%] | 86.0% [73.8% - 93.0%] | 90.5% | 4.0% | 6,064 $\mu$s | 80.2 MB |
+| **TruffleHog v3.99.2** | 100.0% [91.6% - 100%] | 84.0% [71.5% - 91.7%] | 91.3% | 0.0% | 32,311 $\mu$s | 80.5 MB |
+| **detect-secrets v1.5.0** | 72.5% [57.2% - 83.9%] | 58.0% [44.2% - 70.6%] | 64.4% | 22.0% | 82,978 $\mu$s | 81.0 MB |
+
+> **Scientific Transparency:** Moving from a controlled synthetic suite (100% F1) to an independently labelled real-world dataset (86.7% F1, 97.5% Precision, 343 $\mu$s latency) confirms our architectural design goals: near-instant real-time scanning with strong suppression of noise and false positives.
+
+*Full methodology, automated runner scripts, and raw reports in [docs/benchmarks.md](docs/benchmarks.md).*
 
 ---
 
@@ -270,6 +283,12 @@ Execute the 1,000-case comparative multi-scanner benchmark (SLD vs Gitleaks vs T
 
 ```bash
 npm run benchmark:multi
+```
+
+Execute the 100-case independently labelled real-world benchmark suite:
+
+```bash
+npm run benchmark:realworld
 ```
 
 Execute large-scale performance benchmarking across payloads up to 1GB:

@@ -6,6 +6,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import * as crypto from 'crypto';
 
 export interface CorpusItem {
   id: string;
@@ -19,21 +20,55 @@ export interface CorpusItem {
 // Runtime synthesizers so tokens never trigger static push protection scans
 const synth = (...parts: string[]) => parts.join('');
 
+/**
+ * Deterministic Seeded Pseudo-Random Number Generator (Mulberry32)
+ * Guarantees byte-for-byte identical benchmark fixtures across all machines and environments.
+ */
+export function createDeterministicPrng(initialSeed = 0x5eec73) {
+  let state = initialSeed >>> 0;
+  return function next(): number {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(state ^ (state >>> 15), 1 | state);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+let activePrng = createDeterministicPrng(0x5eec73);
+
+export function resetPrngSeed(seed: number = 0x5eec73) {
+  activePrng = createDeterministicPrng(seed);
+}
+
 function randomHex(length: number): string {
   const chars = '0123456789abcdef';
   let res = '';
-  for (let i = 0; i < length; i++) res += chars[Math.floor(Math.random() * chars.length)];
+  for (let i = 0; i < length; i++) res += chars[Math.floor(activePrng() * chars.length)];
   return res;
 }
 
 function randomAlpha(length: number): string {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
   let res = '';
-  for (let i = 0; i < length; i++) res += chars[Math.floor(Math.random() * chars.length)];
+  for (let i = 0; i < length; i++) res += chars[Math.floor(activePrng() * chars.length)];
   return res;
 }
 
-export function generateCorpus(targetDir: string): CorpusItem[] {
+export function calculateCorpusChecksum(targetDir: string, items: CorpusItem[]): string {
+  const hash = crypto.createHash('sha256');
+  const sorted = [...items].sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+  for (const item of sorted) {
+    const fullPath = path.join(targetDir, item.relativePath);
+    if (fs.existsSync(fullPath)) {
+      hash.update(item.relativePath);
+      hash.update(fs.readFileSync(fullPath));
+    }
+  }
+  return hash.digest('hex');
+}
+
+export function generateCorpus(targetDir: string, seed: number = 0x5eec73): CorpusItem[] {
+  resetPrngSeed(seed);
   if (fs.existsSync(targetDir)) {
     fs.rmSync(targetDir, { recursive: true, force: true });
   }

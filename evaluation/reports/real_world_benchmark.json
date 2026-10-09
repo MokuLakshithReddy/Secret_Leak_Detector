@@ -1,0 +1,98 @@
+{
+  "timestamp": "2026-10-09T11:01:02.519Z",
+  "totalFiles": 100,
+  "results": [
+    {
+      "name": "Secret Leak Detector (Ours)",
+      "version": "1.0.0",
+      "tp": 39,
+      "fp": 1,
+      "tn": 49,
+      "fn": 11,
+      "precision": 97.5,
+      "recall": 78,
+      "f1": 86.7,
+      "fpr": 2,
+      "precisionCi": [
+        87.1,
+        99.6
+      ],
+      "recallCi": [
+        64.8,
+        87.2
+      ],
+      "wallClockMs": 34,
+      "latencyPerFileUs": 343,
+      "rssMb": 79.6
+    },
+    {
+      "name": "Gitleaks",
+      "version": "v8.30.1",
+      "tp": 43,
+      "fp": 2,
+      "tn": 48,
+      "fn": 7,
+      "precision": 95.6,
+      "recall": 86,
+      "f1": 90.5,
+      "fpr": 4,
+      "precisionCi": [
+        85.2,
+        98.8
+      ],
+      "recallCi": [
+        73.8,
+        93
+      ],
+      "wallClockMs": 606,
+      "latencyPerFileUs": 6064,
+      "rssMb": 80.2
+    },
+    {
+      "name": "TruffleHog",
+      "version": "v3.99.2",
+      "tp": 42,
+      "fp": 0,
+      "tn": 50,
+      "fn": 8,
+      "precision": 100,
+      "recall": 84,
+      "f1": 91.3,
+      "fpr": 0,
+      "precisionCi": [
+        91.6,
+        100
+      ],
+      "recallCi": [
+        71.5,
+        91.7
+      ],
+      "wallClockMs": 3231,
+      "latencyPerFileUs": 32311,
+      "rssMb": 80.5
+    },
+    {
+      "name": "detect-secrets",
+      "version": "v1.5.0",
+      "tp": 29,
+      "fp": 11,
+      "tn": 39,
+      "fn": 21,
+      "precision": 72.5,
+      "recall": 58,
+      "f1": 64.4,
+      "fpr": 22,
+      "precisionCi": [
+        57.2,
+        83.9
+      ],
+      "recallCi": [
+        44.2,
+        70.6
+      ],
+      "wallClockMs": 8298,
+      "latencyPerFileUs": 82978,
+      "rssMb": 81
+    }
+  ]
+}
