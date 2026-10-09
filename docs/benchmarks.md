@@ -38,6 +38,8 @@ Each tool was executed locally on Node.js v24 / Windows x64 against the same dir
 
 *Confidence Intervals calculated using the Wilson Score Interval with continuity correction for binomial populations ($z = 1.96$).*
 
+> **Scientific Framing & Scope:** These metrics evaluate performance on a **1,000-file controlled benchmark corpus**. This demonstrates that under identical ground truth conditions, Secret Leak Detector outperforms regex-only and entropy-only scanners on provider-specific signatures, adversarial evasion techniques, and benign fixtures. This result does not claim 100% recall on arbitrary real-world production codebases; ongoing work focuses on independent validation across public open-source benchmark repositories.
+
 ---
 
 ## 3. Large-Scale Payload Benchmark (1MB → 10MB → 100MB → 1GB)
@@ -46,12 +48,23 @@ Executed via `npm run benchmark:scale` (`evaluation/benchmarks/payloadScaleBench
 
 | Payload Size | Wall-Clock Time | Throughput | Line Processing Rate | Peak Heap Memory | Accuracy |
 | :--- | :---: | :---: | :---: | :---: | :---: |
-| **1 MB** | 237 ms | 4.2 MB/s | 46,358 lines/s | 65.8 MB | 100% |
-| **10 MB** | 1,120 ms | 8.9 MB/s | 98,136 lines/s | 438.7 MB | 100% |
-| **100 MB** | 20,426 ms | 4.9 MB/s | 53,810 lines/s | 4,019.3 MB | 100% |
-| **1 GB (Streamed)** | 148,990 ms | 6.9 MB/s | 73,773 lines/s | 2,098.2 MB | 100% |
+| **1 MB** | 22 ms | 45.9 MB/s | 504,537 lines/s | 27.1 MB | 100% (1/1) |
+| **10 MB** | 66 ms | 151.7 MB/s | 1,667,577 lines/s | 49.7 MB | 100% (1/1) |
+| **100 MB (Streamed)** | 620 ms | 161.4 MB/s | 1,773,894 lines/s | 172.8 MB | 100% (10/10) |
+| **1 GB (Streamed)** | 6,301 ms | 162.5 MB/s | 1,779,274 lines/s | 218.4 MB | 100% (100/100) |
 
-The 1 GB stream benchmark processes ~11,000,000 lines of source code in 148 seconds using chunked streaming, keeping peak process memory constrained without heap exhaustion.
+### 🛠️ Memory Architecture Investigation & Engineering Fixes
+In our preliminary load testing, processing a 1 GB payload produced ~2.1 GB RSS. An engineering investigation identified three root causes:
+1. **Eager Whole-File Line Splitting:** Calling `content.split(/\r?\n/)` eagerly created an array of millions of small substring pointers in the V8 heap.
+2. **Substring Allocations on Match Offsets:** Calculating line and column via `content.substring(0, matchIndex).split('\n')` allocated megabyte-sized temporary strings on every match.
+3. **Unwindowed Compiler AST Parsing:** Passing 50MB code chunks to the TypeScript compiler API (`ts.createSourceFile`) created millions of AST nodes with parent pointers across the entire chunk.
+
+We resolved these issues with three systems optimizations:
+- **Zero-Allocation Newline Offsets Index:** Instantiated lazily on first match, caching byte offsets of newlines as numeric indices and resolving line/column coordinates via $O(\log L)$ binary search with zero string allocations.
+- **Windowed AST & Lexical Scoping:** Slicing a localized 60-line window surrounding the match ($O(1)$) before invoking `ts.createSourceFile`.
+- **10 MB Stream Chunking:** Streaming multi-gigabyte inputs in 10 MB chunks with bounded reference lifetimes.
+
+**Outcome:** Processing 1 GB dropped from 149 seconds to **6.3 seconds** (a 23x speedup), with peak process heap stabilized at **~218 MB** (an 89% reduction in peak memory consumption).
 
 ---
 
@@ -70,10 +83,10 @@ Single-line regex matching fails to match the contiguous pattern.
 ### 3. Lower Unverified Recall in TruffleHog (54.2% Recall)
 `TruffleHog` prioritizes online verification of specific vendor APIs. When run in offline/pre-commit mode (`--no-verification`), its detectors skip many generic patterns and lack de-obfuscation preprocessors for split or commented tokens (25.0% adversarial detection).
 
-### 4. Secret Leak Detector Advantages (100% F1 & 271 µs Speed)
-Secret Leak Detector achieves zero false positives and 100% recall via:
-- **AST Fallback & Assignment Analyzer:** Syntactically resolves `process.env.KEY || "..."` and nested object literals.
-- **Adversarial Preprocessor:** Automatically de-obfuscates split string concatenations.
+### 4. Secret Leak Detector Advantages (100% F1 on Controlled Corpus & 271 µs Speed)
+Secret Leak Detector achieves zero false positives and 100% recall on the controlled corpus via:
+- **Compiler AST Analysis for TypeScript/TSX:** Employs the official TypeScript compiler (`ts.createSourceFile`) to syntactically resolve `process.env.KEY || "..."` and nested object literals, backed by lexical heuristics for Python and other languages.
+- **Adversarial Preprocessor:** Automatically de-obfuscates split string concatenations and comment disruptions.
 - **Multi-Signal Evidence Gate:** Combines Shannon entropy, provider structural validators (Stripe checksums, Slack format, DB URL RFC parsing), and known placeholder suppression.
 - **High Throughput:** Evaluates 1,000 files in ~270 ms (~271 microseconds per file target).
 

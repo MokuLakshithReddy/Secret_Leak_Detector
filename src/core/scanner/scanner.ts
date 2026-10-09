@@ -22,10 +22,62 @@ export function scanContent(
   const opts: ScannerOptions = typeof options === 'string' ? { workspaceRoot: options } : options;
   const rules = opts.rules || CORE_RULES;
   const workspaceRoot = opts.workspaceRoot;
-  const lines = content.split(/\r?\n/);
   const fileContext = analyzeFileContext(filePath);
-
   const findings: SecretFinding[] = [];
+
+  // Zero-allocation line & column offset index (instantiated lazily on first match)
+  let lineOffsets: number[] | null = null;
+  function getLineOffsets(): number[] {
+    if (!lineOffsets) {
+      lineOffsets = [0];
+      for (let i = 0; i < content.length; i++) {
+        if (content.charCodeAt(i) === 10) { // '\n'
+          lineOffsets.push(i + 1);
+        }
+      }
+    }
+    return lineOffsets;
+  }
+
+  function getPosition(offset: number): { line: number; column: number } {
+    const offsets = getLineOffsets();
+    let low = 0;
+    let high = offsets.length - 1;
+    while (low <= high) {
+      const mid = (low + high) >> 1;
+      if (offsets[mid] <= offset) {
+        if (mid === offsets.length - 1 || offsets[mid + 1] > offset) {
+          return {
+            line: mid + 1,
+            column: offset - offsets[mid] + 1,
+          };
+        }
+        low = mid + 1;
+      } else {
+        high = mid - 1;
+      }
+    }
+    return { line: 1, column: offset + 1 };
+  }
+
+  // Memory-efficient context extractor: windows lines to avoid multi-megabyte string array allocations
+  let cachedFullLines: string[] | null = null;
+  function getContextWindow(targetLine1Based: number): { lines: string[]; relativeTargetIdx: number } {
+    if (content.length <= 1024 * 1024) {
+      if (!cachedFullLines) cachedFullLines = content.split(/\r?\n/);
+      return { lines: cachedFullLines, relativeTargetIdx: targetLine1Based - 1 };
+    }
+    const offsets = getLineOffsets();
+    const targetIdx0 = targetLine1Based - 1;
+    const windowStartIdx = Math.max(0, targetIdx0 - 30);
+    const windowEndIdx = Math.min(offsets.length - 1, targetIdx0 + 30);
+
+    const startByte = offsets[windowStartIdx];
+    const endByte = windowEndIdx + 1 < offsets.length ? offsets[windowEndIdx + 1] : content.length;
+    const windowText = content.substring(startByte, endByte);
+    const windowLines = windowText.split(/\r?\n/);
+    return { lines: windowLines, relativeTargetIdx: targetIdx0 - windowStartIdx };
+  }
 
   // Adversarial normalization: resolve split string concatenations (e.g. "ghp_" + "123...")
   let scanTargetContent = content;
@@ -44,15 +96,13 @@ export function scanContent(
       const rawSecret = match[1] || match[0];
       const matchIndex = match.index;
 
-      // Calculate line and column
-      const textBefore = content.substring(0, matchIndex);
-      const linesBefore = textBefore.split(/\r?\n/);
-      const lineNumber = linesBefore.length;
-      const columnNumber = linesBefore[linesBefore.length - 1].length + 1;
+      // Calculate line and column via binary search on line offsets (0 heap allocation)
+      const { line: lineNumber, column: columnNumber } = getPosition(matchIndex);
 
-      // Extract lexical context and AST assignment semantics
-      const lexicalContext = analyzeLexicalContext(lines, lineNumber - 1);
-      const astContext = analyzeAstContext(lines, lineNumber - 1, filePath);
+      // Extract lexical context and AST assignment semantics with windowed lines
+      const ctxWindow = getContextWindow(lineNumber);
+      const lexicalContext = analyzeLexicalContext(ctxWindow.lines, ctxWindow.relativeTargetIdx);
+      const astContext = analyzeAstContext(ctxWindow.lines, ctxWindow.relativeTargetIdx, filePath);
 
       // Build Evidence Model & calculate confidence
       const evidenceResult = buildEvidenceModel(

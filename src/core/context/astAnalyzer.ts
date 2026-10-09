@@ -36,7 +36,19 @@ export function analyzeAstContext(
   if (tsCompiler) {
     const isJsTs = !filePath || /\.[jt]sx?$|\.m[jt]s$|\.c[jt]s$/i.test(filePath);
     if (isJsTs) {
-      const astResult = analyzeWithTypeScriptCompiler(contentLines.join('\n'), targetLineZeroBased);
+      let targetContent: string;
+      let relativeLine: number;
+      if (contentLines.length > 60) {
+        const startIdx = Math.max(0, targetLineZeroBased - 30);
+        const endIdx = Math.min(contentLines.length, targetLineZeroBased + 30);
+        targetContent = contentLines.slice(startIdx, endIdx).join('\n');
+        relativeLine = targetLineZeroBased - startIdx;
+      } else {
+        targetContent = contentLines.join('\n');
+        relativeLine = targetLineZeroBased;
+      }
+
+      const astResult = analyzeWithTypeScriptCompiler(targetContent, relativeLine);
       if (astResult) {
         return astResult;
       }

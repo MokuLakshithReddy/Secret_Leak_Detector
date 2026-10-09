@@ -32,6 +32,7 @@ export interface GitGraphNode {
 export interface GitGraphEdge {
   from: string;
   to: string;
+  relation?: 'DIRECT_PARENT' | 'EVENT_SEQUENCE';
 }
 
 export interface GitExposureGraph {
@@ -261,13 +262,17 @@ export class GitTimelineEngine {
     const edges: GitGraphEdge[] = [];
     for (let i = 0; i < events.length; i++) {
       const ev = events[i];
+      let hasDirectParent = false;
       for (const parent of ev.parentShas) {
         if (events.some((e) => e.commitSha === parent)) {
-          edges.push({ from: parent, to: ev.commitSha });
+          edges.push({ from: parent, to: ev.commitSha, relation: 'DIRECT_PARENT' });
+          hasDirectParent = true;
         }
       }
-      if (edges.length === 0 && i > 0) {
-        edges.push({ from: events[i - 1].commitSha, to: ev.commitSha });
+      // If immediate Git parents are not in the filtered credential event set (due to intervening commits),
+      // link with the preceding chronological event and label relation as EVENT_SEQUENCE
+      if (!hasDirectParent && i > 0) {
+        edges.push({ from: events[i - 1].commitSha, to: ev.commitSha, relation: 'EVENT_SEQUENCE' });
       }
     }
 

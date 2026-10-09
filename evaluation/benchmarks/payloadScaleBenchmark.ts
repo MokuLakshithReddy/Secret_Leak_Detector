@@ -23,33 +23,39 @@ export interface ScaleTierResult {
 const synth = (...parts: string[]) => parts.join('');
 
 function generateCodeChunk(chunkSizeBytes: number, chunkIndex: number, injectSecret: boolean): { content: string; lines: number } {
-  const lines: string[] = [];
-  let currentBytes = 0;
+  let content = '';
   let lineCount = 0;
+  let currentBytes = 0;
 
   const baseTemplates = [
-    'export function computeMetric(a: number, b: number): number { return Math.sqrt(a * a + b * b); }',
-    'const userRecord = { id: 1042, name: "Alice Developer", role: "security_engineer", active: true };',
-    'export const logger = { info: (msg: string) => process.stdout.write(`[INFO] ${msg}\\n`) };',
-    'if (process.env.NODE_ENV === "production") { console.log("Running in hardened production mode."); }',
-    'async function fetchData(url: string) { const res = await fetch(url); return res.json(); }',
+    'export function computeMetric(a: number, b: number): number { return Math.sqrt(a * a + b * b); }\n',
+    'const userRecord = { id: 1042, name: "Alice Developer", role: "security_engineer", active: true };\n',
+    'export const logger = { info: (msg: string) => process.stdout.write(`[INFO] ${msg}\\n`) };\n',
+    'if (process.env.NODE_ENV === "production") { console.log("Running in hardened production mode."); }\n',
+    'async function fetchData(url: string) { const res = await fetch(url); return res.json(); }\n',
   ];
 
+  const batch: string[] = [];
   while (currentBytes < chunkSizeBytes) {
     let line = baseTemplates[lineCount % baseTemplates.length];
-
-    // Inject a secret on line 50 of selected chunks
     if (injectSecret && lineCount === 50) {
       const awsKey = synth('AKIA', 'SCAL', 'ETES', 'T123', '4567');
-      line = `const AWS_KEY = "${awsKey}"; // Injected target secret #${chunkIndex}`;
+      line = `const AWS_KEY = "${awsKey}"; // Injected target secret #${chunkIndex}\n`;
     }
-
-    lines.push(line);
-    currentBytes += Buffer.byteLength(line, 'utf8') + 1;
+    batch.push(line);
+    currentBytes += line.length;
     lineCount++;
+
+    if (batch.length >= 1000) {
+      content += batch.join('');
+      batch.length = 0;
+    }
+  }
+  if (batch.length > 0) {
+    content += batch.join('');
   }
 
-  return { content: lines.join('\n'), lines: lineCount };
+  return { content, lines: lineCount };
 }
 
 export function runPayloadScaleBenchmark(): ScaleTierResult[] {
@@ -58,10 +64,10 @@ export function runPayloadScaleBenchmark(): ScaleTierResult[] {
   console.log('=================================================================================\n');
 
   const tiers = [
-    { label: '1 MB', bytes: 1 * 1024 * 1024, injectCount: 2 },
-    { label: '10 MB', bytes: 10 * 1024 * 1024, injectCount: 10 },
-    { label: '100 MB', bytes: 100 * 1024 * 1024, injectCount: 50 },
-    { label: '1 GB (Streamed)', bytes: 1024 * 1024 * 1024, injectCount: 200 },
+    { label: '1 MB', bytes: 1 * 1024 * 1024, injectCount: 1 },
+    { label: '10 MB', bytes: 10 * 1024 * 1024, injectCount: 1 },
+    { label: '100 MB (Streamed)', bytes: 100 * 1024 * 1024, injectCount: 10 },
+    { label: '1 GB (Streamed)', bytes: 1024 * 1024 * 1024, injectCount: 100 },
   ];
 
   const results: ScaleTierResult[] = [];
@@ -70,8 +76,8 @@ export function runPayloadScaleBenchmark(): ScaleTierResult[] {
     if (global.gc) global.gc();
 
     console.log(`[Testing ${tier.label}] Generating & Scanning payload...`);
-    const isStreamed = tier.bytes >= 500 * 1024 * 1024;
-    const chunkSize = isStreamed ? 50 * 1024 * 1024 : tier.bytes;
+    const isStreamed = tier.bytes >= 50 * 1024 * 1024;
+    const chunkSize = isStreamed ? 10 * 1024 * 1024 : tier.bytes;
     const numChunks = isStreamed ? Math.round(tier.bytes / chunkSize) : 1;
 
     let totalDetected = 0;

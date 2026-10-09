@@ -8,7 +8,7 @@
 [![Precision](https://img.shields.io/badge/precision-100%25-00e5b0.svg)]()
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-> **Secret Leak Detector** is a context-aware credential exposure detection and remediation system for Git repositories. It combines pattern detection, Shannon entropy analysis, contextual classification, Git-history DAG analysis, risk scoring, and verification to distinguish likely credentials from benign examples and track exposure beyond the current working tree.
+> **Secret Leak Detector** is a context-aware credential exposure detection and remediation system for Git repositories. It combines pattern detection, Shannon entropy analysis, contextual classification, Git exposure graph analysis, risk scoring, and verification to distinguish likely credentials from benign examples and track exposure beyond the current working tree.
 
 ---
 
@@ -22,6 +22,8 @@ Unlike marketing assertions, Secret Leak Detector was benchmarked alongside **Gi
 | **Gitleaks v8.30.1** | **100.0%** [99.1% - 100%] | 72.8% [69.1% - 76.2%] | 84.3% | **0.0%** | 37.0% | 1,028 $\mu$s | 84.7 MB |
 | **TruffleHog v3.99.2** | **100.0%** [98.8% - 100%] | 54.2% [50.2% - 58.1%] | 70.3% | **0.0%** | 25.0% | 4,947 $\mu$s | 85.2 MB |
 | **detect-secrets v1.5.0** | 68.7% [65.0% - 72.2%] | 73.2% [69.5% - 76.6%] | 70.9% | 50.0% | 92.0% | 88,987 $\mu$s | 85.2 MB |
+
+> **Controlled Benchmark Statement:** Secret Leak Detector achieved 100.0% precision and recall on this **1,000-file controlled benchmark corpus**. This demonstrates rigorous detection and suppression on known provider signatures, adversarial evasion techniques, and benign fixtures under identical evaluation conditions. This should not be interpreted as claiming 100% recall on arbitrary real-world production codebases; real-world repository testing and independent evaluation are part of the ongoing roadmap.
 
 *Full methodology, automated runner script, and empirical breakdown in [docs/benchmarks.md](docs/benchmarks.md).*
 
@@ -44,7 +46,7 @@ A basic secret scanner answers:
           │                                           │
    Pattern Engine                              Evidence Model
    Entropy Engine                              Multi-Signal Score
-   Context Classifier                          False-Positive Gate
+   Compiler AST / Lexical                      False-Positive Gate
           │                                           │
           └─────────────────────┬─────────────────────┘
                                 │
@@ -57,7 +59,7 @@ A basic secret scanner answers:
           │                                           │
         TRACE                                        FIX
           │                                           │
-   Git Commit History                          Controlled Patch Preview
+   Git Exposure Graph                          Controlled Patch Preview
    Author & Duration                           Approval Gate
    Branch Reachability                         .env & .gitignore Auto-Sync
           │                                           │
@@ -78,7 +80,7 @@ A basic secret scanner answers:
 Never relies solely on regex patterns. Candidates pass through 5 discrete filters:
 1. **Provider Signature:** 12+ cloud and identity provider patterns (AWS, GitHub, Google Cloud, OpenAI, Anthropic, Stripe, Slack, Microsoft Azure, Database URIs, Cryptographic PEM Keys, JWT).
 2. **Shannon Entropy Engine:** Evaluates information entropy ($H = -\sum p_i \log_2 p_i$) and character set distribution (Base64, Hex, Alphanumeric).
-3. **Lexical Context Analyzer:** Inspects variable identifiers (`API_KEY`, `ACCESS_TOKEN` vs `dummy`, `mock`, `sample`) and assignment semantics.
+3. **Compiler-Backed AST Analysis (TypeScript/TSX):** Employs the official TypeScript compiler parser (`ts.createSourceFile`) to inspect binary expressions (`process.env.KEY || "..."`, `??`), nested object property assignments (`config.auth.stripeKey`), and call expressions (`logger.info()`). For Python, Go, Shell, and other languages, high-performance structural lexical regex analyzers are used as fallbacks.
 4. **File Environment Analysis:** Adjusts confidence based on file criticality (`.env`, `credentials.json` vs `docs/`, `tutorial.md`).
 5. **Adversarial De-Concatenation:** Resolves split strings (`"ghp_" + "12345..."`) and comment-interrupted assignments before evaluation.
 
@@ -101,8 +103,8 @@ Evidence:
   • [Passed] Not a documentation placeholder or test mock
 ```
 
-### 3. RISK — Dynamic 0–100 Risk Engine & Blast Radius
-Replaces static severity labels with a dynamic formula:
+### 3. RISK — Dynamic 0–100 Risk Engine & Model Consistency
+Replaces static severity labels with a calibrated formula:
 
 $$\text{Risk Score} = \text{Credential Severity Base} + \text{Confidence Alignment} + \text{Storage Environment} + \text{Exposure Reach}$$
 
@@ -111,14 +113,18 @@ $$\text{Risk Score} = \text{Credential Severity Base} + \text{Confidence Alignme
 - **51–75:** `HIGH`
 - **76–100:** `CRITICAL`
 
-**Blast Radius Engine:** Evaluates working-tree reach, commit history depth, branch spread (`git branch -a --contains`), and remote tracking status (`origin/*`) to quantify containment.
+**Risk Model Consistency & Boundary Validation:**
+Formally verified via automated test suite for mathematical calibration:
+- Storage environment penalties: $\text{Score}_{\text{config}} > \text{Score}_{\text{src}} > \text{Score}_{\text{test}}$
+- Reachability monotonicity: $\text{Score}_{\text{remote}} > \text{Score}_{\text{history}} > \text{Score}_{\text{uncommitted}}$
+- Strict $[0, 100]$ boundary constraints across all 12 provider rules.
+*(Note: Validates mathematical and behavioral consistency of the scoring model, rather than claiming statistical prediction of real-world security breaches).*
 
-### 4. TRACE — Git Commit History & Provenance Analysis
-Even if a secret is deleted from the current file, Secret Leak Detector traces Git history to determine:
-- Who introduced the credential?
-- In which commit SHA?
-- How many days was it exposed before deletion?
-- Is it still accessible in the Git history DAG?
+### 4. TRACE — Git Exposure Graph & Provenance Analysis
+Even if a secret is deleted from the current file, Secret Leak Detector traces Git history to derive a **Git exposure graph** based on credential-related commits and reachable parent relationships:
+- Distinguishes direct commit DAG parents (`DIRECT_PARENT`) from chronological event transitions (`EVENT_SEQUENCE`).
+- Calculates exposure duration in days from introduction to removal.
+- Checks contaminated branch reachability (`git branch -a --contains`) and remote tracking status (`origin/*`).
 
 ```bash
 $ secret-leak-detector trace AKIA1234567890ABCDEF
