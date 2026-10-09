@@ -165,11 +165,13 @@
     "benchmark:realworld": "node esbuild.js --realworld-benchmark && node dist/realworld-benchmark.js",
     "benchmark:realworld:diagnose": "node esbuild.js --realworld-diagnose && node dist/realworld-diagnose.js",
     "profile": "node esbuild.js --profile && node dist/profile.js",
-    "demo": "node esbuild.js --demo && node dist/demo-cli.js"
+    "demo": "node esbuild.js --demo && node dist/demo-cli.js",
+    "package": "vsce package --no-git-tag-version --no-dependencies"
   },
   "devDependencies": {
     "@types/node": "^20.11.24",
     "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^4.0.0",
     "esbuild": "^0.20.1",
     "typescript": "^5.3.3"
   }

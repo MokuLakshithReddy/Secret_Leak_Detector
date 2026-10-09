@@ -1,4 +1,11 @@
-# 🔬 Empirical Multi-Scanner Comparative Benchmark Study (1,000 Fixtures)
+# 🔬 Empirical Multi-Scanner Comparative Benchmark Study (Author-Reported Internal Results)
+
+> **Scientific Transparency Notice:**
+> All detection metrics, confusion matrix counts, and throughput speeds reported in this document reflect **internal measurements performed by the authors** using local standalone binaries and deterministic PRNG seeds (`0x5eec73`).
+> While all dataset generators (`evaluation/datasets/corpusGenerator.ts`), real-world fixtures (`evaluation/datasets/realWorldCorpus.ts`), and runner scripts (`npm run benchmark:multi`, `npm run benchmark:realworld`, `npm run benchmark:realworld:diagnose`) are open-source and fully reproducible, these figures are **author-reported results** and should be treated as preliminary until replicated independently by external security teams.
+>
+> **Verification Architecture Notice:**
+> The Vercel deployment hosts an isolated static documentation and in-browser interactive showcase (`public/`). A green Vercel deployment status reflects web demo availability, **not** verification of the TypeScript engine. The extension runtime, CLI binary, test suite, and packaging integrity are authoritatively verified exclusively via GitHub Actions CI and local testing (`npm run build`, `npm test`, `npm run benchmark:gate`, `npm run package`).
 
 ## 1. Methodology & Corpus Construction (1,000 Files)
 To eliminate guesswork and marketing claims, we constructed a standardized corpus generator (`evaluation/datasets/corpusGenerator.ts`) that writes **1,000 realistic files** to disk across multiple languages (`TypeScript`, `Python`, `Go`, `Shell`, `JSON`, `YAML`, `.env`) and executes the standalone binaries of all 4 scanners against the identical directory.

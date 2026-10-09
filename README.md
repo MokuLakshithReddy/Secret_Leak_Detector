@@ -12,9 +12,9 @@
 
 ---
 
-## 📊 Multi-Scanner Empirical Benchmarks (Controlled & Real-World)
+## 📊 Multi-Scanner Empirical Benchmarks (Author-Reported Internal Results)
 
-Secret Leak Detector was evaluated against **Gitleaks**, **TruffleHog**, and **detect-secrets** by executing each tool's standalone binary locally across two distinct benchmark suites:
+*Notice on Verification Scope: All detection metrics and performance statistics reported below represent internal benchmark results conducted by the authors on our controlled generator and curated real-world corpus using seeded PRNG (`0x5eec73`) and standalone binaries. While full reproduction scripts are provided (`npm run benchmark:multi`, `npm run benchmark:realworld`), these figures must be treated as author-reported findings pending independent third-party replication.*
 
 ### Suite A: 1,000-File Controlled Benchmark Corpus (95% Wilson CIs)
 *500 True Positives, 400 False Positives, and 100 Adversarial Obfuscations generated deterministically with seeded PRNG (`0x5eec73`):*
@@ -46,6 +46,12 @@ Secret Leak Detector was evaluated against **Gitleaks**, **TruffleHog**, and **d
 > Detailed root-cause post-mortem of all 11 false negatives and full reproduction scripts in [docs/benchmarks.md](docs/benchmarks.md).
 
 ---
+
+### 🌐 Pipeline Separation: Web Showcase vs Extension Pipeline
+
+To ensure absolute engineering hygiene, the project maintains strict separation between web hosting and binary validation:
+- **Static Web Showcase (Vercel):** Hosts the static client-side playground and documentation from `public/`. It is intentionally decoupled from Node compilation steps to ensure edge CDN reliability without runtime build overhead. A green Vercel deployment confirms web showcase delivery, *not* extension functionality.
+- **VS Code Extension & CLI Verification (GitHub Actions CI):** The actual extension and CLI engine are authoritatively built and validated via `npm run build` (`node esbuild.js --production`), the 79-test security suite (`npm test`), regression gate (`npm run benchmark:gate`), and package verification (`npm run package` producing a 1.57 MB `.vsix`). CI is the sole source of truth for code correctness.
 
 ## 🎯 The Philosophy: Beyond Simple Regex Scanning
 

@@ -3,6 +3,7 @@ dist/*
 !dist/extension.js
 !dist/cli.js
 build/
+*.vsix
 tools/
 evaluation/corpus/
 .cache/
