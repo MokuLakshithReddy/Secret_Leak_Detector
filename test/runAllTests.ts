@@ -13,6 +13,7 @@ import { applyControlledRemediation, resolveUniqueEnvVarName, escapeEnvValue } f
 import * as path from 'path';
 import * as fs from 'fs';
 import * as cp from 'child_process';
+import * as os from 'os';
 import { DEFAULT_FAIL_ON, BLOCKING_POLICY, resolveFailOn, meetsThreshold, shouldBlock } from '../src/core/policy';
 import { buildPreCommitHook, SLD_HOOK_MARKER } from '../src/git/preCommitHook';
 import { Risk } from '../src/core/types';
@@ -864,28 +865,36 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
     assert(shouldBlock([], 'LOW') === false, 'No findings never blocks');
 
     // CLI end-to-end: the default threshold IS the project policy, and --fail-on overrides it.
-    const policyDir = path.join(process.cwd(), 'scratch', 'sld-policy-cli');
+    // The fixture deliberately lives OUTSIDE the repository: the file-context
+    // analyser treats any path containing config/secret/credential-like segments
+    // as sensitive, and a CI checkout directory (e.g. "Secret_Leak_Detector")
+    // would otherwise raise this fixture from HIGH to CRITICAL. Using a neutral
+    // temp path keeps the expected tier deterministic on every platform.
+    const policyDir = path.join(os.tmpdir(), 'sld-policy-cli-fixture');
     fs.rmSync(policyDir, { recursive: true, force: true });
     fs.mkdirSync(policyDir, { recursive: true });
     fs.writeFileSync(path.join(policyDir, 'leak.ts'), `const key = "${awsSecret}";\n`);
 
-    const runCli = (extra: string[]): number => {
-      try {
-        cp.execFileSync(
-          process.execPath,
-          [cli, 'scan', '.', '--baseline', path.join(policyDir, 'nonexistent.json'), ...extra],
-          { cwd: policyDir, encoding: 'utf8', stdio: 'pipe' }
-        );
-        return 0;
-      } catch (e: any) {
-        return typeof e.status === 'number' ? e.status : 1;
-      }
+    const runCli = (extra: string[]): { status: number; out: string } => {
+      const res = cp.spawnSync(
+        process.execPath,
+        [cli, 'scan', '.', '--baseline', path.join(policyDir, 'nonexistent.json'), ...extra],
+        { cwd: policyDir, encoding: 'utf8' }
+      );
+      return {
+        status: typeof res.status === 'number' ? res.status : 1,
+        out: `${res.stdout || ''}${res.stderr || ''}`,
+      };
     };
 
-    assert(runCli([]) === 1, 'CLI default blocks a HIGH finding (default threshold is the HIGH policy)');
-    assert(runCli(['--fail-on', 'HIGH']) === 1, 'CLI blocks at HIGH when asked');
-    assert(runCli(['--fail-on', 'CRITICAL']) === 0, 'CLI allows a HIGH finding when the threshold is CRITICAL');
-    assert(runCli(['--fail-on', 'LOW']) === 1, 'CLI blocks at LOW when asked');
+    const withDefault = runCli([]);
+    const atHigh = runCli(['--fail-on', 'HIGH']);
+    const atCritical = runCli(['--fail-on', 'CRITICAL']);
+    const atLow = runCli(['--fail-on', 'LOW']);
+    assert(withDefault.status === 1, `CLI default blocks a HIGH finding (default threshold is the HIGH policy).\n${withDefault.out.slice(-400)}`);
+    assert(atHigh.status === 1, `CLI blocks at HIGH when asked.\n${atHigh.out.slice(-400)}`);
+    assert(atCritical.status === 0, `CLI allows a HIGH finding when the threshold is CRITICAL.\n${atCritical.out.slice(-400)}`);
+    assert(atLow.status === 1, `CLI blocks at LOW when asked.\n${atLow.out.slice(-400)}`);
 
     // Scan-error is fail-closed: a non-repository never yields a silent pass.
     const errRes = await new GitService(path.join(process.cwd(), 'scratch', 'not-a-repo-xyz')).scanStagedChanges();
