@@ -127,29 +127,56 @@ async function runScan(cmdArgs: string[], cwd: string) {
       console.error('Error: Not a Git repository.');
       process.exit(1);
     }
-    // Scan staged diff
+    // Scan staged diff with exact hunk line coordinates and staged blob context
     const { execSync } = require('child_process');
     try {
-      const stdout = execSync('git diff --cached --unified=0', { cwd, encoding: 'utf8' });
+      const stdout = execSync('git diff --cached --unified=0', { cwd, encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 });
       if (stdout.trim()) {
         const fileDiffs = stdout.split(/^diff --git /m);
         for (const diff of fileDiffs) {
           if (!diff.trim()) continue;
           const match = diff.match(/^[ab]\/(.+?) [ab]\/(.+)/m) || diff.match(/^\+\+\+ b\/(.+)/m);
-          const fname = match ? match[1] : 'staged-file';
-          const addedLines = diff
-            .split('\n')
-            .filter((l: string) => l.startsWith('+') && !l.startsWith('+++'))
-            .map((l: string) => l.substring(1))
-            .join('\n');
-          if (addedLines.trim()) {
-            findings.push(...scanContent(addedLines, fname, { workspaceRoot: cwd }));
-            filesScanned++;
+          if (!match) continue;
+          const relPath = match[2] || match[1];
+          if (relPath === '/dev/null') continue;
+
+          const addedLineNumbers = new Set<number>();
+          const hunkRegex = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/gm;
+          let hunkMatch: RegExpExecArray | null;
+
+          while ((hunkMatch = hunkRegex.exec(diff)) !== null) {
+            const newStart = parseInt(hunkMatch[1], 10);
+            const newCount = hunkMatch[2] !== undefined ? parseInt(hunkMatch[2], 10) : 1;
+            for (let i = 0; i < newCount; i++) {
+              addedLineNumbers.add(newStart + i);
+            }
           }
+
+          if (addedLineNumbers.size === 0) continue;
+
+          let stagedBlob = '';
+          try {
+            stagedBlob = execSync(`git show :${relPath.replace(/\\/g, '/')}`, { cwd, encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 });
+          } catch {
+            const diskPath = path.join(cwd, relPath);
+            if (fs.existsSync(diskPath)) {
+              stagedBlob = fs.readFileSync(diskPath, 'utf8');
+            } else {
+              continue;
+            }
+          }
+
+          const fileFindings = scanContent(stagedBlob, relPath, { workspaceRoot: cwd });
+          for (const f of fileFindings) {
+            if (addedLineNumbers.has(f.line)) {
+              findings.push(f);
+            }
+          }
+          filesScanned++;
         }
       }
     } catch (e: any) {
-      console.error(`Git diff failed: ${e.message}`);
+      console.error(`Git staged scan error: ${e.message}`);
       process.exit(1);
     }
   } else {
@@ -458,6 +485,11 @@ async function runVerify(cmdArgs: string[], cwd: string) {
 
 async function runHook(cmdArgs: string[], cwd: string) {
   const subCommand = cmdArgs[0] || 'install';
+  const hooksDir = path.join(cwd, '.git', 'hooks');
+  const hookFile = path.join(hooksDir, 'pre-commit');
+  const backupFile = path.join(hooksDir, 'pre-commit.sld-backup');
+  const marker = '# [SLD_HOOK_MANAGED]';
+
   if (subCommand === 'install') {
     const gitEngine = new GitHistoryEngine(cwd);
     if (!(await gitEngine.isGitRepo())) {
@@ -465,25 +497,71 @@ async function runHook(cmdArgs: string[], cwd: string) {
       process.exit(1);
     }
 
-    const hooksDir = path.join(cwd, '.git', 'hooks');
     if (!fs.existsSync(hooksDir)) fs.mkdirSync(hooksDir, { recursive: true });
 
-    const hookFile = path.join(hooksDir, 'pre-commit');
+    // Preserve existing hook by backing it up
+    if (fs.existsSync(hookFile)) {
+      const existing = fs.readFileSync(hookFile, 'utf8');
+      if (!existing.includes(marker)) {
+        fs.writeFileSync(backupFile, existing, { mode: 0o755 });
+        console.log(`ℹ️ Backed up existing pre-commit hook to ${backupFile}`);
+      }
+    }
+
     const hookScript = `#!/bin/sh
+${marker}
 # Secret Leak Detector Pre-Commit Hook
-echo "🔐 [Secret Leak Detector] Inspecting staged changes..."
-npx --no-install secret-leak-detector scan --staged --fail-on CRITICAL
-EXIT_CODE=$?
-if [ $EXIT_CODE -ne 0 ]; then
-  echo ""
-  echo "❌ COMMIT REJECTED: Unredacted credentials found in staged commit!"
-  echo "Run 'npx secret-leak-detector fix <file>' or migrate credentials to .env."
-  exit 1
+echo "🔐 [Secret Leak Detector] Inspecting staged changes for credentials..."
+
+SCAN_CMD=""
+if [ -f "./dist/cli.js" ]; then
+  SCAN_CMD="node ./dist/cli.js scan --staged --fail-on CRITICAL"
+elif command -v secret-leak-detector >/dev/null 2>&1; then
+  SCAN_CMD="secret-leak-detector scan --staged --fail-on CRITICAL"
+elif command -v npx >/dev/null 2>&1; then
+  SCAN_CMD="npx --no-install secret-leak-detector scan --staged --fail-on CRITICAL"
 fi
+
+if [ -n "$SCAN_CMD" ]; then
+  eval "$SCAN_CMD"
+  EXIT_CODE=$?
+  if [ $EXIT_CODE -ne 0 ]; then
+    echo ""
+    echo "❌ COMMIT REJECTED: Unredacted credentials found in staged commit!"
+    echo "Run 'secret-leak-detector fix <file>' or migrate credentials to .env."
+    exit 1
+  fi
+fi
+
+# Chain existing user hook if it was previously backed up
+HOOKS_DIR="$(cd "$(dirname "$0")" && pwd)"
+BACKUP_HOOK="$HOOKS_DIR/pre-commit.sld-backup"
+if [ -f "$BACKUP_HOOK" ]; then
+  echo "🔗 Running chained pre-commit hook..."
+  sh "$BACKUP_HOOK" "$@"
+  exit $?
+fi
+
 exit 0
 `;
     fs.writeFileSync(hookFile, hookScript, { mode: 0o755 });
     console.log(`✅ Pre-commit hook successfully installed to ${hookFile}`);
+  } else if (subCommand === 'uninstall') {
+    if (!fs.existsSync(hookFile)) {
+      console.log('No pre-commit hook found to uninstall.');
+      return;
+    }
+    if (fs.existsSync(backupFile)) {
+      fs.copyFileSync(backupFile, hookFile);
+      fs.unlinkSync(backupFile);
+      console.log('✅ Uninstalled SLD pre-commit hook and restored original hook.');
+    } else {
+      fs.unlinkSync(hookFile);
+      console.log('✅ Removed Secret Leak Detector pre-commit hook.');
+    }
+  } else {
+    console.error('Usage: secret-leak-detector hook [install|uninstall]');
+    process.exit(1);
   }
 }
 

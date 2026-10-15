@@ -12,6 +12,7 @@ export interface ScannerOptions {
   rules?: RuleDefinition[];
   minEntropyThreshold?: number;
   workspaceRoot?: string;
+  onSkippedFile?: (filePath: string, reason: string) => void;
 }
 
 export function scanContent(
@@ -79,20 +80,12 @@ export function scanContent(
     return { lines: windowLines, relativeTargetIdx: targetIdx0 - windowStartIdx };
   }
 
-  // Adversarial normalization: resolve split string concatenations (e.g. "ghp_" + "123...")
-  let scanTargetContent = content;
-  const concatRegex = /"([^"\r\n]{2,80})"\s*\+\s*"([^"\r\n]{10,120})"/g;
-  let concatMatch: RegExpExecArray | null;
-  while ((concatMatch = concatRegex.exec(content)) !== null) {
-    const combined = concatMatch[1] + concatMatch[2];
-    scanTargetContent += `\nconst _deobfuscated = "${combined}";`;
-  }
-
+  // 1. Direct rule scanning across content
   for (const rule of rules) {
     rule.pattern.lastIndex = 0;
     let match: RegExpExecArray | null;
 
-    while ((match = rule.pattern.exec(scanTargetContent)) !== null) {
+    while ((match = rule.pattern.exec(content)) !== null) {
       const rawSecret = match[1] || match[0];
       const matchIndex = match.index;
 
@@ -184,21 +177,125 @@ export function scanContent(
     }
   }
 
+  // 2. Adversarial normalization: resolve split string concatenations (e.g. "ghp_" + "123...")
+  // Maps match coordinates directly back to the original concatenation token's source location in content
+  const concatRegex = /["']([^"'\r\n]{2,80})["']\s*\+\s*["']([^"'\r\n]{8,120})["']/g;
+  let concatMatch: RegExpExecArray | null;
+  while ((concatMatch = concatRegex.exec(content)) !== null) {
+    const combined = concatMatch[1] + concatMatch[2];
+    const matchOffset = concatMatch.index;
+
+    for (const rule of rules) {
+      rule.pattern.lastIndex = 0;
+      let ruleMatch: RegExpExecArray | null;
+
+      while ((ruleMatch = rule.pattern.exec(combined)) !== null) {
+        const rawSecret = ruleMatch[1] || ruleMatch[0];
+
+        // Map directly to original source coordinates of concatenation expression
+        const { line: lineNumber, column: columnNumber } = getPosition(matchOffset);
+
+        const ctxWindow = getContextWindow(lineNumber);
+        const lexicalContext = analyzeLexicalContext(ctxWindow.lines, ctxWindow.relativeTargetIdx);
+        const astContext = analyzeAstContext(ctxWindow.lines, ctxWindow.relativeTargetIdx, filePath);
+
+        const evidenceResult = buildEvidenceModel(
+          rule,
+          rawSecret,
+          fileContext,
+          lexicalContext,
+          filePath,
+          astContext
+        );
+
+        if (evidenceResult.isSuppressed) continue;
+
+        if (
+          rule.minEntropy &&
+          evidenceResult.evidence.shannonEntropy < rule.minEntropy &&
+          rule.baseRiskWeight < 90
+        ) {
+          continue;
+        }
+
+        let relativePath = filePath;
+        if (workspaceRoot && filePath.startsWith(workspaceRoot)) {
+          relativePath = filePath.substring(workspaceRoot.length).replace(/^[\\/]+/, '');
+        }
+
+        const riskAssessment = calculateRiskAssessment(
+          rule,
+          evidenceResult.confidence,
+          fileContext
+        );
+
+        const remediation = buildRemediationPlan(
+          rule,
+          rawSecret,
+          relativePath,
+          lineNumber,
+          lexicalContext.inferredVariable
+        );
+
+        evidenceResult.evidence.items.unshift({
+          signal: 'ADVERSARIAL_DEOBFUSCATION_RESOLVED',
+          description: `Resolved split string concatenation: '${concatMatch[0]}'`,
+          confidenceImpact: +10,
+        });
+
+        const id = `sec_${generateFingerprint(rawSecret)}_${lineNumber}`;
+        const fingerprint = generateFingerprint(rawSecret);
+        const redacted = redactSecret(rawSecret);
+
+        findings.push({
+          id,
+          fingerprint,
+          type: rule.name,
+          provider: rule.provider,
+          file: relativePath,
+          fullPath: filePath,
+          line: lineNumber,
+          column: columnNumber,
+          length: concatMatch[0].length,
+          rawSecret,
+          redactedSecret: redacted,
+          confidence: Math.min(100, evidenceResult.confidence + 5),
+          risk: riskAssessment.tier,
+          riskAssessment,
+          evidence: evidenceResult.evidence,
+          remediation,
+          status: 'ACTIVE',
+          detectedAt: new Date().toISOString(),
+          signals: evidenceResult.evidence.items.map((i) => i.description),
+          exampleFix: remediation.replacementCode,
+          entropy: evidenceResult.evidence.shannonEntropy,
+        });
+      }
+    }
+  }
+
   // Deduplicate overlapping findings
   return deduplicateFindings(findings);
 }
 
 export function scanFile(filePath: string, options: ScannerOptions = {}): SecretFinding[] {
   try {
-    if (!fs.existsSync(filePath)) return [];
+    if (!fs.existsSync(filePath)) {
+      options.onSkippedFile?.(filePath, 'File does not exist');
+      return [];
+    }
     const stat = fs.statSync(filePath);
-    if (stat.isDirectory() || stat.size > 5 * 1024 * 1024) {
-      // Skip directories or files over 5MB
+    if (stat.isDirectory()) {
+      return [];
+    }
+    if (stat.size > 5 * 1024 * 1024) {
+      options.onSkippedFile?.(filePath, `File exceeds 5MB limit (${Math.round(stat.size / 1024 / 1024)}MB)`);
       return [];
     }
     const content = fs.readFileSync(filePath, 'utf8');
     return scanContent(content, filePath, options);
-  } catch {
+  } catch (err: any) {
+    options.onSkippedFile?.(filePath, err.message || 'File read error');
     return [];
   }
 }

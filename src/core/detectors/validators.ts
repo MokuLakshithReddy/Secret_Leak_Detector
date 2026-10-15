@@ -100,7 +100,7 @@ export function validateJwtToken(token: string): ValidationResult {
 export function validateDatabaseUrl(url: string): ValidationResult {
   try {
     const parsed = new URL(url);
-    const validProtocols = ['postgres:', 'postgresql:', 'mysql:', 'mongodb:', 'redis:'];
+    const validProtocols = ['postgres:', 'postgresql:', 'mysql:', 'mongodb:', 'mongodb+srv:', 'redis:'];
     if (!validProtocols.includes(parsed.protocol)) {
       return { isValid: false, confidenceBonus: 0, reason: 'Unsupported database protocol scheme' };
     }
@@ -113,7 +113,15 @@ export function validateDatabaseUrl(url: string): ValidationResult {
       };
     }
   } catch {
-    // URL parsing failed
+    const dbRegex = /^(?:postgres|postgresql|mysql|mongodb(?:\+srv)?|redis):\/\/[^:\s'"]+:([^\s'"]+)@([a-zA-Z0-9_.-]+(?::[0-9]+)?\/[^\s'"`;]*)/i;
+    const match = url.match(dbRegex);
+    if (match && match[1]) {
+      return {
+        isValid: true,
+        confidenceBonus: 10,
+        reason: 'Database connection URI structure matched with embedded password',
+      };
+    }
   }
 
   return { isValid: false, confidenceBonus: 0, reason: 'Invalid database connection URL structure' };

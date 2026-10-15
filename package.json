@@ -61,6 +61,17 @@
         "icon": "$(check)"
       },
       {
+        "command": "secret-leak-detector.uninstallGitHook",
+        "title": "Secret Leak Detector: Uninstall Git Pre-Commit Hook",
+        "category": "Security",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "secret-leak-detector.ignoreFinding",
+        "title": "Secret Leak Detector: Ignore Finding as False Positive",
+        "category": "Security"
+      },
+      {
         "command": "secret-leak-detector.clearFindings",
         "title": "Secret Leak Detector: Clear Findings",
         "category": "Security",

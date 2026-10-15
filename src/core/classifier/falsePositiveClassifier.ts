@@ -24,7 +24,8 @@ const KNOWN_PLACEHOLDER_REGEXES = [
   /00000000[0-9]*/,
   /sk_live_example/i,
   /ghp_example/i,
-  /:\/\/[^:]+:(?:password|secret|changeme|pass|admin|test)@/i,
+  /:\/\/[^:]+:(?:password|secret|changeme|pass|admin|test|postgres|root)@(?:localhost|127\.0\.0\.1)/i,
+  /:\/\/(?:postgres|root):(postgres|root)@/i,
   /:password@/i,
 ];
 

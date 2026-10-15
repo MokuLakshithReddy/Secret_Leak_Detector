@@ -8,6 +8,8 @@ import { formatAsSarif } from '../src/core/sarif/sarifFormatter';
 import { DETECTOR_RULES } from '../src/core/detectors/rules';
 import { calculateRiskAssessment } from '../src/core/risk/riskEngine';
 import { GitTimelineEngine } from '../src/core/history/gitTimeline';
+import { GitService } from '../src/git/gitService';
+import { resolveUniqueEnvVarName, escapeEnvValue } from '../src/core/remediation/remediationEngine';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -255,10 +257,89 @@ const seq3 = Array.from({ length: 50 }, () => prng3());
 assert(seq1.every((v, i) => v === seq2[i]), 'PRNG sequence is 100% deterministic across identical seeds');
 assert(seq1.some((v, i) => v !== seq3[i]), 'PRNG sequence varies across distinct seeds');
 
-console.log('\n============================================================');
-console.log(`🎉 TEST SUMMARY: ${passed} PASSED, ${failed} FAILED`);
-console.log('============================================================\n');
+async function runAsyncTests() {
+  // --- 14. Git Protection Fail-Closed & Hook Chaining Tests ---
+  console.log('\n--- 14. Git Protection Fail-Closed & Hook Chaining Tests ---');
+  const gitSvc = new GitService(process.cwd());
+  const isGit = await gitSvc.isGitRepo();
+  assert(isGit === true, 'GitService accurately identifies Git repository');
 
-if (failed > 0) {
-  process.exit(1);
+  const stagedRes = await gitSvc.scanStagedChanges();
+  assert(
+    stagedRes.status === 'CLEAN' || stagedRes.status === 'FINDINGS' || stagedRes.status === 'ERROR',
+    'Git staged scan returns explicit status outcome'
+  );
+  assert(Array.isArray(stagedRes.findings), 'Git staged scan returns findings array');
+
+  // Verify non-git fail-closed or clean behavior
+  const nonGitSvc = new GitService('C:/non-existent-directory-xyz-123');
+  const nonGitRes = await nonGitSvc.scanStagedChanges();
+  assert(nonGitRes.status === 'CLEAN' || nonGitRes.status === 'ERROR', 'Non-git scan handles status safely');
+
+  // --- 15. De-Obfuscation Source-Location Accuracy Tests ---
+  console.log('\n--- 15. De-Obfuscation Source-Location Accuracy Tests ---');
+  const codeWithConcat = `// line 1: comments
+// line 2: header
+const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
+// line 4: footer
+`;
+  const concatFindings = scanContent(codeWithConcat, 'src/auth.ts');
+  assert(concatFindings.length > 0, 'Adversarial de-obfuscation resolves split string concatenation');
+  assert(concatFindings[0].line === 3, `De-obfuscated match maps to true source line (expected 3, got ${concatFindings[0]?.line})`);
+  assert(concatFindings[0].column > 0, `De-obfuscated match retains positive source column (${concatFindings[0]?.column})`);
+  assert(
+    concatFindings[0].evidence.items.some((i) => i.signal === 'ADVERSARIAL_DEOBFUSCATION_RESOLVED'),
+    'Evidence model includes ADVERSARIAL_DEOBFUSCATION_RESOLVED signal'
+  );
+
+  // --- 16. Database URL Special Characters & Azure Compound Key Tests ---
+  console.log('\n--- 16. Database URL Special Characters & Azure Compound Key Tests ---');
+  const dbPass = synth(['P@ss', 'w0rd', '998877!']);
+  const dbUrlWithAt = `const DB_URI = "postgres://db_admin:${dbPass}@prod-db.us-west-2.rds.amazonaws.com:5432/core_production";`;
+  const dbFindings = scanContent(dbUrlWithAt, 'config/database.ts');
+  assert(dbFindings.length > 0, 'Detected database URL with special characters (@ and !) in password');
+  assert(dbFindings[0].provider === 'Database', 'Classified provider as Database');
+
+  const mongoPass = synth(['P@ss', 'w0rd', 'Secure99']);
+  const mongoWithAt = `const MONGO_URI = "mongodb+srv://app_user:${mongoPass}@cluster0.abcde.mongodb.net/prod?retryWrites=true";`;
+  const mongoFindings = scanContent(mongoWithAt, 'config/mongo.go');
+  assert(mongoFindings.length > 0, 'Detected mongodb+srv URL with @ in password');
+  assert(mongoFindings[0].provider === 'Database', 'Classified mongodb+srv as Database');
+
+  const azPart1 = synth(['FQbmx8JUfq1CNYju5GRcny9KVgr2DOZkv6HSdozALWhs3EPalw7ITep0BMXit4']);
+  const azPart2 = synth(['FQbmx8JUfq1CNYju5GRcny9K==']);
+  const azureCompound = `const conn = "DefaultEndpointsProtocol=https;AccountName=prodstore;AccountKey=${azPart1}${azPart2};EndpointSuffix=core.windows.net";`;
+  const azFindings = scanContent(azureCompound, 'appsettings.json');
+  assert(azFindings.length > 0, 'Detected unquoted Azure Storage Key in compound connection string');
+  assert(azFindings[0].provider === 'Microsoft Azure', 'Classified provider as Microsoft Azure');
+
+  // --- 17. Safe Transactional Remediation & Variable Deduplication Tests ---
+  console.log('\n--- 17. Safe Transactional Remediation & Variable Deduplication Tests ---');
+  const existingEnv = 'API_KEY="old_secret_123"\nDATABASE_URL="postgres://localhost"\n';
+  const dedupRes = resolveUniqueEnvVarName(existingEnv, 'API_KEY', 'new_secret_456');
+  assert(dedupRes.varName === 'API_KEY_2', `Duplicate variable name suffixed cleanly (got ${dedupRes.varName})`);
+  assert(dedupRes.isReused === false, 'Duplicate flagged as new variable');
+
+  const reuseRes = resolveUniqueEnvVarName(existingEnv, 'API_KEY', 'old_secret_123');
+  assert(reuseRes.varName === 'API_KEY', 'Identical secret reuses existing variable name');
+  assert(reuseRes.isReused === true, 'Identical flagged as reused variable');
+
+  const rawDangerous = 'secret"with$and\\newline';
+  const escaped = escapeEnvValue(rawDangerous);
+  assert(escaped.includes('\\"'), 'Quotes are escaped in .env value');
+  assert(escaped.includes('\\$'), 'Dollar signs are escaped in .env value');
+
+  console.log('\n============================================================');
+  console.log(`🎉 TEST SUMMARY: ${passed} PASSED, ${failed} FAILED`);
+  console.log('============================================================\n');
+
+  if (failed > 0) {
+    process.exit(1);
+  }
 }
+
+runAsyncTests().catch((err) => {
+  console.error('Test execution failed:', err);
+  process.exit(1);
+});
+

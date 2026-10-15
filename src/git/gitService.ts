@@ -7,6 +7,15 @@ import { scanContent } from '../core/scanner/scanner';
 
 const execAsync = promisify(exec);
 
+export type GitScanStatus = 'CLEAN' | 'FINDINGS' | 'ERROR';
+
+export interface StagedScanResult {
+  status: GitScanStatus;
+  findings: SecretFinding[];
+  error?: string;
+  filesScanned?: number;
+}
+
 export class GitService {
   private workspaceRoot: string;
 
@@ -27,46 +36,120 @@ export class GitService {
   }
 
   /**
-   * Retrieves staged diff and scans all newly added lines for leaked secrets.
+   * Retrieves staged diff, extracts exact modified line coordinates,
+   * scans the staged file version, and returns a fail-closed scan result.
    */
-  public async scanStagedChanges(): Promise<SecretFinding[]> {
-    if (!(await this.isGitRepo())) {
-      return [];
+  public async scanStagedChanges(): Promise<StagedScanResult> {
+    const isGit = await this.isGitRepo();
+    if (!isGit) {
+      return {
+        status: 'CLEAN',
+        findings: [],
+        error: 'Not a Git repository.',
+      };
     }
 
     try {
-      const { stdout } = await execAsync('git diff --cached --unified=0', { cwd: this.workspaceRoot });
-      if (!stdout || stdout.trim().length === 0) {
-        return [];
+      // Get unified diff of staged changes with 0 lines of context to isolate added lines
+      const { stdout: diffOutput } = await execAsync('git diff --cached --unified=0', {
+        cwd: this.workspaceRoot,
+        maxBuffer: 10 * 1024 * 1024,
+      });
+
+      if (!diffOutput || diffOutput.trim().length === 0) {
+        return {
+          status: 'CLEAN',
+          findings: [],
+          filesScanned: 0,
+        };
       }
 
       const allFindings: SecretFinding[] = [];
-      const fileDiffs = stdout.split(/^diff --git /m);
+      const fileDiffs = diffOutput.split(/^diff --git /m);
+      let filesScanned = 0;
 
       for (const diff of fileDiffs) {
         if (!diff.trim()) continue;
 
+        // Parse file path
         const fileMatch = diff.match(/^[ab]\/(.+?) [ab]\/(.+)/m) || diff.match(/^\+\+\+ b\/(.+)/m);
-        const fileName = fileMatch ? fileMatch[1] : 'staged-file';
-        const fullPath = path.join(this.workspaceRoot, fileName);
+        if (!fileMatch) continue;
 
-        // Extract newly added lines marked with '+'
-        const addedLines = diff
-          .split('\n')
-          .filter((line) => line.startsWith('+') && !line.startsWith('+++'))
-          .map((line) => line.substring(1))
-          .join('\n');
+        const relativePath = fileMatch[2] || fileMatch[1];
+        if (relativePath === '/dev/null') continue; // File deleted
 
-        if (addedLines.trim()) {
-          const findings = scanContent(addedLines, fullPath, this.workspaceRoot);
-          allFindings.push(...findings);
+        const normalizedRelPath = relativePath.replace(/\\/g, '/');
+        const fullPath = path.join(this.workspaceRoot, relativePath);
+
+        // Parse diff hunk headers to get exact added line numbers in the staged version
+        // Format: @@ -oldStart[,oldCount] +newStart[,newCount] @@
+        const addedLineNumbers = new Set<number>();
+        const hunkRegex = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/gm;
+        let hunkMatch: RegExpExecArray | null;
+
+        while ((hunkMatch = hunkRegex.exec(diff)) !== null) {
+          const newStart = parseInt(hunkMatch[1], 10);
+          const newCount = hunkMatch[2] !== undefined ? parseInt(hunkMatch[2], 10) : 1;
+
+          for (let i = 0; i < newCount; i++) {
+            addedLineNumbers.add(newStart + i);
+          }
+        }
+
+        if (addedLineNumbers.size === 0) continue;
+
+        // Read the exact staged blob content from Git index
+        let stagedContent = '';
+        try {
+          const { stdout: blobContent } = await execAsync(`git show :${normalizedRelPath}`, {
+            cwd: this.workspaceRoot,
+            maxBuffer: 10 * 1024 * 1024,
+          });
+          stagedContent = blobContent;
+        } catch {
+          // Fallback if git show fails (e.g. new untracked or special encoding): read from disk
+          if (fs.existsSync(fullPath)) {
+            stagedContent = fs.readFileSync(fullPath, 'utf8');
+          } else {
+            continue;
+          }
+        }
+
+        filesScanned++;
+
+        // Scan full staged content: preserves AST structure, lexical context, and line/col mapping
+        const fileFindings = scanContent(stagedContent, fullPath, { workspaceRoot: this.workspaceRoot });
+
+        // Filter findings to only those that fall on newly added/modified lines in this commit
+        for (const finding of fileFindings) {
+          if (addedLineNumbers.has(finding.line)) {
+            allFindings.push(finding);
+          }
         }
       }
 
-      return allFindings;
-    } catch (err) {
+      if (allFindings.length > 0) {
+        return {
+          status: 'FINDINGS',
+          findings: allFindings,
+          filesScanned,
+        };
+      }
+
+      return {
+        status: 'CLEAN',
+        findings: [],
+        filesScanned,
+      };
+    } catch (err: any) {
       console.error('Failed to run git diff --cached:', err);
-      return [];
+      // FAIL CLOSED: Do not return an empty findings list on error.
+      // An error must be explicitly reported as ERROR so security gates can block.
+      return {
+        status: 'ERROR',
+        findings: [],
+        error: `Git staged scan failed: ${err.message || String(err)}`,
+      };
     }
   }
 
@@ -125,7 +208,8 @@ After fixing:
   }
 
   /**
-   * Installs a standalone pre-commit hook into .git/hooks/pre-commit
+   * Installs pre-commit hook into .git/hooks/pre-commit.
+   * If an existing hook exists, backs it up to .git/hooks/pre-commit.sld-backup and chains it.
    */
   public async installPreCommitHook(): Promise<{ success: boolean; message: string }> {
     if (!(await this.isGitRepo())) {
@@ -142,41 +226,65 @@ After fixing:
     }
 
     const hookPath = path.join(hooksDir, 'pre-commit');
+    const backupPath = path.join(hooksDir, 'pre-commit.sld-backup');
+    const marker = '# [SLD_HOOK_MANAGED]';
+
+    // If existing hook exists and is not managed by SLD, back it up for chaining
+    if (fs.existsSync(hookPath)) {
+      try {
+        const existingContent = fs.readFileSync(hookPath, 'utf8');
+        if (!existingContent.includes(marker)) {
+          fs.writeFileSync(backupPath, existingContent, { mode: 0o755 });
+        }
+      } catch (err) {
+        return { success: false, message: `Could not backup existing hook: ${err}` };
+      }
+    }
+
     const hookContent = `#!/bin/sh
+${marker}
 # Secret Leak Detector Pre-Commit Hook
-# Automatically blocks git commit if secrets are detected in staged changes
+# Intercepts git commit and blocks unredacted credentials before they leave the machine.
 
-echo "🔐 [Secret Leak Detector] Scanning staged changes for credentials..."
+echo "🔐 [Secret Leak Detector] Inspecting staged changes for credentials..."
 
-DIFF=$(git diff --cached --unified=0)
-
-# Check for AWS Access Keys
-if echo "$DIFF" | grep -E '^[+]' | grep -E -q '(AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16}'; then
-    echo "❌ COMMIT BLOCKED: Potential AWS Access Key found in staged changes!"
-    echo "Please remove the credential or use an environment variable before committing."
-    exit 1
+# Try local CLI first, then global secret-leak-detector, then npx
+SCAN_CMD=""
+if [ -f "./dist/cli.js" ]; then
+  SCAN_CMD="node ./dist/cli.js scan --staged --fail-on CRITICAL"
+elif command -v secret-leak-detector >/dev/null 2>&1; then
+  SCAN_CMD="secret-leak-detector scan --staged --fail-on CRITICAL"
+elif command -v npx >/dev/null 2>&1; then
+  SCAN_CMD="npx --no-install secret-leak-detector scan --staged --fail-on CRITICAL"
 fi
 
-# Check for GitHub Tokens
-if echo "$DIFF" | grep -E '^[+]' | grep -E -q '(gh[pousr]_[A-Za-z0-9_]{36}|github_pat_[A-Za-z0-9_]{82})'; then
-    echo "❌ COMMIT BLOCKED: Potential GitHub Personal Access Token found in staged changes!"
-    echo "Please remove the token before committing."
+if [ -n "$SCAN_CMD" ]; then
+  eval "$SCAN_CMD"
+  SCAN_STATUS=$?
+  if [ $SCAN_STATUS -ne 0 ]; then
+    echo ""
+    echo "❌ COMMIT BLOCKED: Secret Leak Detector detected credentials in staged files!"
+    echo "Please rotate the secret or migrate it to an environment variable."
     exit 1
+  fi
+else
+  # Fail-safe regex inspection if Node/CLI is unavailable in this environment
+  DIFF=$(git diff --cached --unified=0)
+  if echo "$DIFF" | grep -E '^[+]' | grep -E -q '(AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16}|(gh[pousr]_[A-Za-z0-9_]{36}|github_pat_[A-Za-z0-9_]{82})|(sk|rk)_(live|test)_[0-9a-zA-Z]{24}|-----BEGIN (RSA|EC|DSA|OPENSSH|PGP) PRIVATE KEY-----'; then
+    echo "❌ COMMIT BLOCKED: Potential secret detected in staged changes!"
+    exit 1
+  fi
 fi
 
-# Check for Stripe Secret Keys
-if echo "$DIFF" | grep -E '^[+]' | grep -E -q '(sk|rk)_(live|test)_[0-9a-zA-Z]{24}'; then
-    echo "❌ COMMIT BLOCKED: Stripe Secret Key found in staged changes!"
-    exit 1
+# Chain existing user hook if it was previously backed up
+HOOKS_DIR="$(cd "$(dirname "$0")" && pwd)"
+BACKUP_HOOK="$HOOKS_DIR/pre-commit.sld-backup"
+if [ -f "$BACKUP_HOOK" ]; then
+  echo "🔗 Running chained pre-commit hook..."
+  sh "$BACKUP_HOOK" "$@"
+  exit $?
 fi
 
-# Check for Private Keys
-if echo "$DIFF" | grep -E '^[+]' | grep -E -q '-----BEGIN (RSA|EC|DSA|OPENSSH|PGP) PRIVATE KEY-----'; then
-    echo "❌ COMMIT BLOCKED: Unencrypted Private Key found in staged changes!"
-    exit 1
-fi
-
-echo "✅ [Secret Leak Detector] Staged changes clean. Proceeding with commit."
 exit 0
 `;
 
@@ -185,6 +293,33 @@ exit 0
       return { success: true, message: `Pre-commit hook successfully installed to ${hookPath}` };
     } catch (err) {
       return { success: false, message: `Failed to write hook file: ${err}` };
+    }
+  }
+
+  /**
+   * Safely uninstalls pre-commit hook and restores any previous backup.
+   */
+  public async uninstallPreCommitHook(): Promise<{ success: boolean; message: string }> {
+    const hookPath = path.join(this.workspaceRoot, '.git', 'hooks', 'pre-commit');
+    const backupPath = path.join(this.workspaceRoot, '.git', 'hooks', 'pre-commit.sld-backup');
+
+    if (!fs.existsSync(hookPath)) {
+      return { success: true, message: 'No pre-commit hook found to uninstall.' };
+    }
+
+    try {
+      if (fs.existsSync(backupPath)) {
+        // Restore backup
+        fs.copyFileSync(backupPath, hookPath);
+        fs.unlinkSync(backupPath);
+        return { success: true, message: 'Uninstalled SLD hook and restored original pre-commit hook.' };
+      } else {
+        // Remove hook
+        fs.unlinkSync(hookPath);
+        return { success: true, message: 'Removed Secret Leak Detector pre-commit hook.' };
+      }
+    } catch (err: any) {
+      return { success: false, message: `Failed to uninstall hook: ${err.message}` };
     }
   }
 }

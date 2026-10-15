@@ -3,6 +3,11 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { DiagnosticProvider } from './diagnosticProvider';
 import { SecretFinding } from '../core/types';
+import {
+  escapeEnvValue,
+  resolveUniqueEnvVarName,
+  ensureGitignoreProtectsEnv,
+} from '../core/remediation/remediationEngine';
 
 export class SecretCodeActionProvider implements vscode.CodeActionProvider {
   public static readonly providedCodeActionKinds = [vscode.CodeActionKind.QuickFix];
@@ -44,7 +49,7 @@ export class SecretCodeActionProvider implements vscode.CodeActionProvider {
       const moveToEnvAction = this.createMoveToEnvAction(document, diagnostic.range, finding);
       actions.push(moveToEnvAction);
 
-      // QuickFix 2: Ignore this finding
+      // QuickFix 2: Ignore this finding (False Positive)
       const ignoreAction = new vscode.CodeAction(
         'Ignore this finding (False Positive)',
         vscode.CodeActionKind.QuickFix
@@ -81,7 +86,7 @@ export class SecretCodeActionProvider implements vscode.CodeActionProvider {
   }
 
   /**
-   * Performs the automated extraction to .env and ensures .gitignore protects .env.
+   * Performs automated, transactional extraction to .env with collision avoidance and rollback safety.
    */
   public static async executeRemediation(
     documentUri: vscode.Uri,
@@ -96,59 +101,95 @@ export class SecretCodeActionProvider implements vscode.CodeActionProvider {
 
     const workspaceRoot = workspaceFolder.uri.fsPath;
     const envPath = path.join(workspaceRoot, '.env');
-    const gitignorePath = path.join(workspaceRoot, '.gitignore');
 
-    // Generate appropriate environment variable name from remediation plan if available
-    let envVarName = finding.remediation?.envVarName;
-    if (!envVarName) {
-      if (finding.type.includes('AWS Access Key')) envVarName = 'AWS_ACCESS_KEY_ID';
-      else if (finding.type.includes('AWS Secret')) envVarName = 'AWS_SECRET_ACCESS_KEY';
-      else if (finding.type.includes('GitHub')) envVarName = 'GITHUB_TOKEN';
-      else if (finding.type.includes('OpenAI')) envVarName = 'OPENAI_API_KEY';
-      else if (finding.type.includes('Anthropic')) envVarName = 'ANTHROPIC_API_KEY';
-      else if (finding.type.includes('Stripe')) envVarName = 'STRIPE_SECRET_KEY';
-      else if (finding.type.includes('Slack')) envVarName = 'SLACK_TOKEN';
-      else if (finding.type.includes('Database')) envVarName = 'DATABASE_URL';
+    // 1. Generate suggested environment variable name
+    let suggestedName = finding.remediation?.envVarName;
+    if (!suggestedName) {
+      if (finding.type.includes('AWS Access Key')) suggestedName = 'AWS_ACCESS_KEY_ID';
+      else if (finding.type.includes('AWS Secret')) suggestedName = 'AWS_SECRET_ACCESS_KEY';
+      else if (finding.type.includes('GitHub')) suggestedName = 'GITHUB_TOKEN';
+      else if (finding.type.includes('OpenAI')) suggestedName = 'OPENAI_API_KEY';
+      else if (finding.type.includes('Anthropic')) suggestedName = 'ANTHROPIC_API_KEY';
+      else if (finding.type.includes('Stripe')) suggestedName = 'STRIPE_SECRET_KEY';
+      else if (finding.type.includes('Slack')) suggestedName = 'SLACK_TOKEN';
+      else if (finding.type.includes('Database')) suggestedName = 'DATABASE_URL';
       else {
-        envVarName = `${finding.provider.replace(/[^a-zA-Z0-9]/g, '_').toUpperCase()}_API_KEY`;
+        suggestedName = `${finding.provider.replace(/[^a-zA-Z0-9]/g, '_').toUpperCase()}_API_KEY`;
       }
     }
 
-    // Append to .env
-    const envLine = `\n${envVarName}="${finding.rawSecret}"\n`;
+    // 2. Read existing .env if present and determine unique non-colliding variable name
+    let existingEnvContent = '';
+    let hadExistingEnv = false;
+    if (fs.existsSync(envPath)) {
+      hadExistingEnv = true;
+      try {
+        existingEnvContent = fs.readFileSync(envPath, 'utf8');
+      } catch (err) {
+        vscode.window.showErrorMessage(`Failed to read .env file: ${err}`);
+        return;
+      }
+    }
+
+    const { varName, isReused } = resolveUniqueEnvVarName(
+      existingEnvContent,
+      suggestedName,
+      finding.rawSecret
+    );
+
+    // 3. Ensure .gitignore protects .env BEFORE any credentials are saved to disk
     try {
-      fs.appendFileSync(envPath, envLine, 'utf8');
+      ensureGitignoreProtectsEnv(workspaceRoot);
     } catch (err) {
-      vscode.window.showErrorMessage(`Failed to write to .env: ${err}`);
+      vscode.window.showErrorMessage(`Failed to verify .gitignore security: ${err}`);
       return;
     }
 
-    // Ensure .env is added to .gitignore
-    if (fs.existsSync(gitignorePath)) {
-      const gitignoreContent = fs.readFileSync(gitignorePath, 'utf8');
-      if (!gitignoreContent.includes('.env')) {
-        fs.appendFileSync(gitignorePath, '\n# Credentials\n.env\n.env.*.local\n', 'utf8');
-      }
-    } else {
-      fs.writeFileSync(gitignorePath, '# Credentials\n.env\n.env.*.local\n', 'utf8');
-    }
-
-    // Update .env.example
-    const envExamplePath = path.join(workspaceRoot, '.env.example');
-    const exampleLine = `${envVarName}=your_${envVarName.toLowerCase()}_here\n`;
-    if (!fs.existsSync(envExamplePath) || !fs.readFileSync(envExamplePath, 'utf8').includes(envVarName)) {
-      fs.appendFileSync(envExamplePath, exampleLine, 'utf8');
-    }
-
-    // Replace the secret in the active file with process.env.<NAME>
+    // 4. Apply WorkspaceEdit to replace the secret with process.env.<VAR_NAME>
+    const replacement = `process.env.${varName}`;
     const edit = new vscode.WorkspaceEdit();
-    // Replace raw secret with process.env.NAME or "process.env.NAME"
-    const replacement = `process.env.${envVarName}`;
     edit.replace(documentUri, range, replacement);
-    await vscode.workspace.applyEdit(edit);
+
+    const editSuccess = await vscode.workspace.applyEdit(edit);
+    if (!editSuccess) {
+      vscode.window.showErrorMessage(
+        'Failed to modify source document. Remediation aborted with zero file alterations.'
+      );
+      return;
+    }
+
+    // 5. If source file was successfully updated, write escaped value to .env
+    const escapedSecret = escapeEnvValue(finding.rawSecret);
+    const envLine = `${varName}="${escapedSecret}"\n`;
+
+    try {
+      if (!isReused) {
+        const prefix = existingEnvContent.endsWith('\n') || existingEnvContent.length === 0 ? '' : '\n';
+        fs.appendFileSync(envPath, `${prefix}${envLine}`, 'utf8');
+      }
+
+      // Update .env.example
+      const envExamplePath = path.join(workspaceRoot, '.env.example');
+      const exampleLine = `${varName}=your_${varName.toLowerCase()}_here\n`;
+      if (!fs.existsSync(envExamplePath) || !fs.readFileSync(envExamplePath, 'utf8').includes(varName)) {
+        const exContent = fs.existsSync(envExamplePath) ? fs.readFileSync(envExamplePath, 'utf8') : '';
+        const exPrefix = exContent.endsWith('\n') || exContent.length === 0 ? '' : '\n';
+        fs.appendFileSync(envExamplePath, `${exPrefix}${exampleLine}`, 'utf8');
+      }
+    } catch (err) {
+      // Rollback source code change if writing .env fails
+      const rollbackEdit = new vscode.WorkspaceEdit();
+      rollbackEdit.replace(documentUri, range, finding.rawSecret);
+      await vscode.workspace.applyEdit(rollbackEdit);
+
+      vscode.window.showErrorMessage(
+        `Failed to write to .env: ${err}. Document edit was safely rolled back.`
+      );
+      return;
+    }
 
     vscode.window.showInformationMessage(
-      `✅ Moved ${finding.type} to .env (${envVarName}) and protected in .gitignore!`
+      `✅ Moved ${finding.type} to .env (${varName}) and verified .gitignore protection!`
     );
   }
 }

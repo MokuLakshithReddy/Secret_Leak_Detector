@@ -4,7 +4,6 @@ import { SecretCodeActionProvider } from './diagnostics/codeActionProvider';
 import { FindingsTreeProvider, OverviewTreeProvider } from './sidebar/findingsTreeProvider';
 import { DashboardPanel } from './webview/dashboardPanel';
 import { GitService } from './git/gitService';
-import { scanContent } from './core/scanner/scanner';
 import { SecretFinding } from './core/types';
 
 let outputChannel: vscode.OutputChannel;
@@ -87,30 +86,47 @@ export function activate(context: vscode.ExtensionContext) {
           const excludeGlobs = config.get<string[]>('excludeGlobs', []);
           const excludePattern = `{${excludeGlobs.join(',')}}`;
 
-          const files = await vscode.workspace.findFiles('**/*', excludePattern, 1000);
+          const MAX_SCAN_FILES = 1000;
+          const files = await vscode.workspace.findFiles('**/*', excludePattern, MAX_SCAN_FILES);
           let allFindings: SecretFinding[] = [];
           let scannedCount = 0;
+          let skippedCount = 0;
 
           for (const file of files) {
             try {
+              const stat = await vscode.workspace.fs.stat(file);
+              // Skip files larger than 5MB to preserve editor responsiveness
+              if (stat.size > 5 * 1024 * 1024) {
+                skippedCount++;
+                continue;
+              }
               const doc = await vscode.workspace.openTextDocument(file);
               const findings = diagnosticProvider.scanDocument(doc);
               allFindings.push(...findings);
               scannedCount++;
             } catch {
-              // Ignore binary or inaccessible files
+              skippedCount++;
             }
+          }
+
+          const isCapped = files.length >= MAX_SCAN_FILES;
+          let notice = `Scanned ${scannedCount} files.`;
+          if (isCapped) {
+            notice += ` ⚠️ Scan was capped at ${MAX_SCAN_FILES} files.`;
+          }
+          if (skippedCount > 0) {
+            notice += ` (${skippedCount} large or binary files skipped)`;
           }
 
           if (allFindings.length === 0) {
             vscode.window.showInformationMessage(
-              `✅ Scan complete: Scanned ${scannedCount} files. No secrets or credentials detected!`
+              `✅ Scan complete: ${notice} No secrets or credentials detected!`
             );
           } else {
             const criticalCount = allFindings.filter((f) => f.risk === 'CRITICAL').length;
             vscode.window
               .showErrorMessage(
-                `🚨 Found ${allFindings.length} leaked secret(s) (${criticalCount} Critical)! Commits may be blocked.`,
+                `🚨 Found ${allFindings.length} leaked secret(s) (${criticalCount} Critical)! ${notice}`,
                 'Open Dashboard',
                 'View Findings'
               )
@@ -127,34 +143,53 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
-  // Command: Scan Staged Changes
+  // Command: Scan Staged Changes (Fail-Closed Security Gate)
   context.subscriptions.push(
     vscode.commands.registerCommand('secret-leak-detector.scanStaged', async () => {
       outputChannel.clear();
       outputChannel.appendLine('🔐 [Secret Leak Detector] Scanning Git staged changes...');
       outputChannel.show(true);
 
-      const stagedFindings = await gitService.scanStagedChanges();
+      const blockCommits = config.get<boolean>('blockGitCommits', true);
+      const scanResult = await gitService.scanStagedChanges();
 
-      if (stagedFindings.length === 0) {
+      if (scanResult.status === 'ERROR') {
+        outputChannel.appendLine(`❌ [Secret Leak Detector] Scan error: ${scanResult.error}`);
+        if (blockCommits) {
+          vscode.window.showErrorMessage(
+            `❌ COMMIT GATE BLOCKED: Git security scan failed (${scanResult.error}). Failing closed for safety.`,
+            'View Output'
+          );
+        } else {
+          vscode.window.showWarningMessage(
+            `⚠️ Git scan encountered an error: ${scanResult.error}`
+          );
+        }
+        return;
+      }
+
+      if (scanResult.status === 'CLEAN') {
         outputChannel.appendLine('✅ All staged changes are clean! No credentials detected.');
         vscode.window.showInformationMessage('✅ Git staged changes are safe to commit.');
-      } else {
-        const terminalMessage = gitService.formatTerminalBlockedMessage(stagedFindings);
-        outputChannel.appendLine(terminalMessage);
-
-        vscode.window
-          .showErrorMessage(
-            `❌ COMMIT BLOCKED: ${stagedFindings.length} secret(s) detected in staged changes!`,
-            'Open Dashboard',
-            'View Output'
-          )
-          .then((sel) => {
-            if (sel === 'Open Dashboard') {
-              DashboardPanel.createOrShow(context.extensionUri, stagedFindings);
-            }
-          });
+        return;
       }
+
+      // Findings detected
+      const findings = scanResult.findings;
+      const terminalMessage = gitService.formatTerminalBlockedMessage(findings);
+      outputChannel.appendLine(terminalMessage);
+
+      const msg = blockCommits
+        ? `❌ COMMIT BLOCKED: ${findings.length} secret(s) detected in staged changes!`
+        : `⚠️ WARNING: ${findings.length} secret(s) detected in staged changes!`;
+
+      vscode.window
+        .showErrorMessage(msg, 'Open Dashboard', 'View Output')
+        .then((sel) => {
+          if (sel === 'Open Dashboard') {
+            DashboardPanel.createOrShow(context.extensionUri, findings);
+          }
+        });
     })
   );
 
@@ -174,6 +209,27 @@ export function activate(context: vscode.ExtensionContext) {
       } else {
         vscode.window.showErrorMessage(`Failed to install hook: ${result.message}`);
       }
+    })
+  );
+
+  // Command: Uninstall Git Pre-Commit Hook
+  context.subscriptions.push(
+    vscode.commands.registerCommand('secret-leak-detector.uninstallGitHook', async () => {
+      const result = await gitService.uninstallPreCommitHook();
+      if (result.success) {
+        vscode.window.showInformationMessage(`🛡️ ${result.message}`);
+      } else {
+        vscode.window.showErrorMessage(`Failed to uninstall hook: ${result.message}`);
+      }
+    })
+  );
+
+  // Command: Ignore Finding (False Positive suppression)
+  context.subscriptions.push(
+    vscode.commands.registerCommand('secret-leak-detector.ignoreFinding', (findingId: string) => {
+      if (!findingId) return;
+      diagnosticProvider.ignoreFinding(findingId);
+      vscode.window.showInformationMessage(`🛡️ Finding marked as false-positive and suppressed.`);
     })
   );
 

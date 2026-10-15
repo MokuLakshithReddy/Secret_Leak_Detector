@@ -5,6 +5,7 @@ samples/**
 scripts/**
 evaluation/**
 tools/**
+scratch/**
 docs/**
 public/**
 .github/**
@@ -22,3 +23,4 @@ AGENTS.md
 
 dist/*
 !dist/extension.js
+!dist/cli.js

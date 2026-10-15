@@ -5,6 +5,7 @@ import { SecretFinding } from '../core/types';
 export class DiagnosticProvider {
   private diagnosticCollection: vscode.DiagnosticCollection;
   private currentFindings: Map<string, SecretFinding[]> = new Map();
+  private ignoredFindings: Set<string> = new Set();
   private onFindingsChangedEmitter = new vscode.EventEmitter<SecretFinding[]>();
   public readonly onFindingsChanged = this.onFindingsChangedEmitter.event;
 
@@ -30,6 +31,29 @@ export class DiagnosticProvider {
     this.onFindingsChangedEmitter.fire([]);
   }
 
+  public ignoreFinding(findingId: string): void {
+    this.ignoredFindings.add(findingId);
+
+    for (const [filePath, findings] of this.currentFindings.entries()) {
+      const remaining = findings.filter((f) => f.id !== findingId);
+      if (remaining.length !== findings.length) {
+        this.currentFindings.set(filePath, remaining);
+
+        const uri = vscode.Uri.file(filePath);
+        const currentDiags = this.diagnosticCollection.get(uri);
+        if (currentDiags) {
+          const filteredDiags = currentDiags.filter((d) => {
+            const codeVal = typeof d.code === 'object' ? d.code?.value : d.code;
+            return codeVal !== findingId;
+          });
+          this.diagnosticCollection.set(uri, filteredDiags);
+        }
+      }
+    }
+
+    this.onFindingsChangedEmitter.fire(this.getAllFindings());
+  }
+
   public scanDocument(document: vscode.TextDocument): SecretFinding[] {
     // Skip virtual or output documents
     if (document.uri.scheme !== 'file') {
@@ -40,7 +64,8 @@ export class DiagnosticProvider {
     const workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri);
     const workspaceRoot = workspaceFolder ? workspaceFolder.uri.fsPath : undefined;
 
-    const findings = scanContent(text, document.uri.fsPath, workspaceRoot);
+    const allDetected = scanContent(text, document.uri.fsPath, workspaceRoot);
+    const findings = allDetected.filter((f) => !this.ignoredFindings.has(f.id));
     this.currentFindings.set(document.uri.fsPath, findings);
 
     const diagnostics: vscode.Diagnostic[] = [];
@@ -58,9 +83,14 @@ export class DiagnosticProvider {
         severity = vscode.DiagnosticSeverity.Information;
       }
 
+      const remediationSummary =
+        typeof finding.remediation === 'string'
+          ? finding.remediation
+          : finding.remediation?.steps?.[0] || 'Migrate to .env';
+
       const diagnostic = new vscode.Diagnostic(
         range,
-        `[Secret Leak Detector] ${finding.type} detected! Confidence: ${finding.confidence}%. ${finding.remediation}`,
+        `[Secret Leak Detector] ${finding.type} detected! Confidence: ${finding.confidence}%. ${remediationSummary}`,
         severity
       );
 

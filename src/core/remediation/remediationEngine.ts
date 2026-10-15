@@ -3,6 +3,15 @@ import * as path from 'path';
 import { RuleDefinition, RemediationPlan, SecretFinding } from '../types';
 import { redactSecret } from '../redactor/redactor';
 
+export function escapeEnvValue(val: string): string {
+  return val
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\$/g, '\\$')
+    .replace(/\n/g, '\\n')
+    .replace(/\r/g, '\\r');
+}
+
 export function buildRemediationPlan(
   rule: RuleDefinition,
   rawSecret: string,
@@ -13,6 +22,7 @@ export function buildRemediationPlan(
   const envVarName = rule.suggestedEnvName(inferredVarName);
   const replacementCode = `process.env.${envVarName}`;
   const redacted = redactSecret(rawSecret);
+  const escapedSecret = escapeEnvValue(rawSecret);
 
   const steps = [
     `1. Revoke / rotate credential immediately with provider: ${rule.provider}`,
@@ -23,7 +33,7 @@ export function buildRemediationPlan(
     `6. Rescan file and commit to verify exposure is eliminated`,
   ];
 
-  const envFileSnippet = `${envVarName}="${rawSecret}"`;
+  const envFileSnippet = `${envVarName}="${escapedSecret}"`;
   const envExampleSnippet = `${envVarName}=your_${envVarName.toLowerCase()}_here`;
 
   const gitHistoryPurgeCommand = `git filter-repo --invert-paths --path "${filePath}"`;
@@ -53,12 +63,83 @@ export interface ApplyRemediationResult {
   modifiedFile: string;
 }
 
+/**
+ * Resolves a unique environment variable name, avoiding collisions
+ * or reusing existing key if the secret value matches.
+ */
+export function resolveUniqueEnvVarName(
+  envContent: string,
+  suggestedName: string,
+  rawSecret: string
+): { varName: string; isReused: boolean } {
+  const lines = envContent.split(/\r?\n/);
+  const existingVars = new Map<string, string>();
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eqIdx = trimmed.indexOf('=');
+    if (eqIdx !== -1) {
+      const key = trimmed.substring(0, eqIdx).trim();
+      let val = trimmed.substring(eqIdx + 1).trim();
+      if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+        val = val.substring(1, val.length - 1);
+      }
+      existingVars.set(key, val);
+    }
+  }
+
+  // If suggested name exists with identical secret value, safely reuse it
+  if (existingVars.has(suggestedName)) {
+    const existingVal = existingVars.get(suggestedName);
+    if (existingVal === escapeEnvValue(rawSecret) || existingVal === rawSecret) {
+      return { varName: suggestedName, isReused: true };
+    }
+    // Conflict: variable exists with different value, create unique suffix
+    let suffix = 2;
+    while (existingVars.has(`${suggestedName}_${suffix}`)) {
+      if (existingVars.get(`${suggestedName}_${suffix}`) === rawSecret) {
+        return { varName: `${suggestedName}_${suffix}`, isReused: true };
+      }
+      suffix++;
+    }
+    return { varName: `${suggestedName}_${suffix}`, isReused: false };
+  }
+
+  return { varName: suggestedName, isReused: false };
+}
+
+/**
+ * Safely updates .gitignore to ensure .env is strictly protected.
+ */
+export function ensureGitignoreProtectsEnv(workspaceRoot: string): void {
+  const gitignorePath = path.join(workspaceRoot, '.gitignore');
+  if (fs.existsSync(gitignorePath)) {
+    const content = fs.readFileSync(gitignorePath, 'utf8');
+    const lines = content.split(/\r?\n/);
+    const hasExactEnv = lines.some((line) => /^\s*\.env(?:\s|$)/.test(line));
+    if (!hasExactEnv) {
+      const prefix = content.endsWith('\n') || content.length === 0 ? '' : '\n';
+      fs.appendFileSync(gitignorePath, `${prefix}# Credentials\n.env\n.env.*.local\n`, 'utf8');
+    }
+  } else {
+    fs.writeFileSync(gitignorePath, '# Credentials\n.env\n.env.*.local\n', 'utf8');
+  }
+}
+
+/**
+ * Applies atomic remediation with automatic rollback if any phase fails.
+ */
 export function applyControlledRemediation(
   finding: SecretFinding,
   workspaceRoot: string
 ): ApplyRemediationResult {
+  const targetFile = finding.fullPath;
+  let originalFileContent: string | null = null;
+  let originalEnvContent: string | null = null;
+  const envPath = path.join(workspaceRoot, '.env');
+
   try {
-    const targetFile = finding.fullPath;
     if (!fs.existsSync(targetFile)) {
       return {
         success: false,
@@ -68,8 +149,8 @@ export function applyControlledRemediation(
       };
     }
 
-    const fileContent = fs.readFileSync(targetFile, 'utf8');
-    if (!fileContent.includes(finding.rawSecret)) {
+    originalFileContent = fs.readFileSync(targetFile, 'utf8');
+    if (!originalFileContent.includes(finding.rawSecret)) {
       return {
         success: false,
         message: 'Secret no longer found in target file (may have already been modified).',
@@ -78,46 +159,66 @@ export function applyControlledRemediation(
       };
     }
 
-    // 1. Replace the secret in target file
-    const newContent = fileContent.replace(
+    // 1. Read existing .env if present and determine unique variable name
+    let envContent = '';
+    if (fs.existsSync(envPath)) {
+      originalEnvContent = fs.readFileSync(envPath, 'utf8');
+      envContent = originalEnvContent;
+    }
+
+    const suggestedName = finding.remediation?.envVarName || 'API_KEY';
+    const { varName, isReused } = resolveUniqueEnvVarName(envContent, suggestedName, finding.rawSecret);
+    const replacementCode = `process.env.${varName}`;
+    const escapedValue = escapeEnvValue(finding.rawSecret);
+    const envLine = `${varName}="${escapedValue}"\n`;
+
+    // 2. Ensure .gitignore protects .env BEFORE writing credentials to disk
+    ensureGitignoreProtectsEnv(workspaceRoot);
+
+    // 3. Write to .env
+    if (!isReused) {
+      const prefix = envContent.endsWith('\n') || envContent.length === 0 ? '' : '\n';
+      fs.appendFileSync(envPath, `${prefix}${envLine}`, 'utf8');
+    }
+
+    // 4. Update .env.example
+    const envExamplePath = path.join(workspaceRoot, '.env.example');
+    const exampleLine = `${varName}=your_${varName.toLowerCase()}_here\n`;
+    if (!fs.existsSync(envExamplePath) || !fs.readFileSync(envExamplePath, 'utf8').includes(varName)) {
+      const exContent = fs.existsSync(envExamplePath) ? fs.readFileSync(envExamplePath, 'utf8') : '';
+      const exPrefix = exContent.endsWith('\n') || exContent.length === 0 ? '' : '\n';
+      fs.appendFileSync(envExamplePath, `${exPrefix}${exampleLine}`, 'utf8');
+    }
+
+    // 5. Replace secret literal in source file
+    const newContent = originalFileContent.replace(
       new RegExp(escapeRegExp(finding.rawSecret), 'g'),
-      finding.remediation.replacementCode
+      replacementCode
     );
     fs.writeFileSync(targetFile, newContent, 'utf8');
 
-    // 2. Append to .env
-    const envPath = path.join(workspaceRoot, '.env');
-    const envLine = `\n# Secured by Secret Leak Detector\n${finding.remediation.envFileSnippet}\n`;
-    fs.appendFileSync(envPath, envLine, 'utf8');
-
-    // 3. Ensure .env is in .gitignore
-    const gitignorePath = path.join(workspaceRoot, '.gitignore');
-    if (fs.existsSync(gitignorePath)) {
-      const gitignore = fs.readFileSync(gitignorePath, 'utf8');
-      if (!gitignore.includes('.env')) {
-        fs.appendFileSync(gitignorePath, '\n# Credentials\n.env\n.env.*.local\n', 'utf8');
-      }
-    } else {
-      fs.writeFileSync(gitignorePath, '# Credentials\n.env\n.env.*.local\n', 'utf8');
-    }
-
-    // 4. Update or create .env.example
-    const envExamplePath = path.join(workspaceRoot, '.env.example');
-    const exampleLine = `${finding.remediation.envExampleSnippet}\n`;
-    if (!fs.existsSync(envExamplePath) || !fs.readFileSync(envExamplePath, 'utf8').includes(finding.remediation.envVarName)) {
-      fs.appendFileSync(envExamplePath, exampleLine, 'utf8');
-    }
-
     return {
       success: true,
-      message: `Successfully migrated ${finding.type} to .env (${finding.remediation.envVarName}) and replaced in ${finding.file}.`,
+      message: `Successfully migrated ${finding.type} to .env (${varName}) and replaced in ${finding.file}.`,
       envPath,
       modifiedFile: targetFile,
     };
   } catch (err: any) {
+    // Transactional Rollback: Restore files to previous state on failure
+    if (originalFileContent !== null && fs.existsSync(targetFile)) {
+      try {
+        fs.writeFileSync(targetFile, originalFileContent, 'utf8');
+      } catch {}
+    }
+    if (originalEnvContent !== null && fs.existsSync(envPath)) {
+      try {
+        fs.writeFileSync(envPath, originalEnvContent, 'utf8');
+      } catch {}
+    }
+
     return {
       success: false,
-      message: `Remediation failed: ${err.message}`,
+      message: `Remediation failed and rolled back: ${err.message}`,
       envPath: '',
       modifiedFile: finding.fullPath,
     };
