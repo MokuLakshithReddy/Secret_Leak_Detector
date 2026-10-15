@@ -1,4 +1,4 @@
-import { exec } from 'child_process';
+import { exec, execFile } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -6,6 +6,7 @@ import { SecretFinding } from '../core/types';
 import { scanContent } from '../core/scanner/scanner';
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 export type GitScanStatus = 'CLEAN' | 'FINDINGS' | 'ERROR';
 
@@ -42,10 +43,13 @@ export class GitService {
   public async scanStagedChanges(): Promise<StagedScanResult> {
     const isGit = await this.isGitRepo();
     if (!isGit) {
+      // FAIL CLOSED: A non-Git workspace cannot be scanned for staged secrets.
+      // Returning ERROR ensures callers treat this as an explicit scan failure,
+      // not as an absence of secrets.
       return {
-        status: 'CLEAN',
+        status: 'ERROR',
         findings: [],
-        error: 'Not a Git repository.',
+        error: 'Not a Git repository — staged scan cannot run.',
       };
     }
 
@@ -98,13 +102,16 @@ export class GitService {
 
         if (addedLineNumbers.size === 0) continue;
 
-        // Read the exact staged blob content from Git index
+        // Read the exact staged blob content from Git index.
+        // SECURITY: Use execFile with an argument array instead of execAsync to prevent
+        // shell injection via filenames containing metacharacters (spaces, $(), backticks, etc.).
         let stagedContent = '';
         try {
-          const { stdout: blobContent } = await execAsync(`git show :${normalizedRelPath}`, {
-            cwd: this.workspaceRoot,
-            maxBuffer: 10 * 1024 * 1024,
-          });
+          const { stdout: blobContent } = await execFileAsync(
+            'git',
+            ['show', `:${normalizedRelPath}`],
+            { cwd: this.workspaceRoot, maxBuffer: 10 * 1024 * 1024 }
+          );
           stagedContent = blobContent;
         } catch {
           // Fallback if git show fails (e.g. new untracked or special encoding): read from disk
@@ -226,7 +233,11 @@ After fixing:
     }
 
     const hookPath = path.join(hooksDir, 'pre-commit');
-    const backupPath = path.join(hooksDir, 'pre-commit.sld-backup');
+    // Use a timestamped backup name so repeated installs never silently overwrite a prior backup.
+    const timestamp = Date.now();
+    const backupPath = path.join(hooksDir, `pre-commit.sld-backup.${timestamp}`);
+    // The latest backup symlink always points to the most recent one, used during uninstall.
+    const latestBackupMarkerPath = path.join(hooksDir, 'pre-commit.sld-backup.latest');
     const marker = '# [SLD_HOOK_MANAGED]';
 
     // If existing hook exists and is not managed by SLD, back it up for chaining
@@ -235,6 +246,8 @@ After fixing:
         const existingContent = fs.readFileSync(hookPath, 'utf8');
         if (!existingContent.includes(marker)) {
           fs.writeFileSync(backupPath, existingContent, { mode: 0o755 });
+          // Record path of the most recent backup so uninstall can locate it
+          fs.writeFileSync(latestBackupMarkerPath, backupPath, 'utf8');
         }
       } catch (err) {
         return { success: false, message: `Could not backup existing hook: ${err}` };
@@ -248,41 +261,45 @@ ${marker}
 
 echo "🔐 [Secret Leak Detector] Inspecting staged changes for credentials..."
 
-# Try local CLI first, then global secret-leak-detector, then npx
-SCAN_CMD=""
+# Determine CLI binary without using eval (avoids shell injection via env var content).
+# Priority: local dist/cli.js > global binary > npx.
 if [ -f "./dist/cli.js" ]; then
-  SCAN_CMD="node ./dist/cli.js scan --staged --fail-on CRITICAL"
-elif command -v secret-leak-detector >/dev/null 2>&1; then
-  SCAN_CMD="secret-leak-detector scan --staged --fail-on CRITICAL"
-elif command -v npx >/dev/null 2>&1; then
-  SCAN_CMD="npx --no-install secret-leak-detector scan --staged --fail-on CRITICAL"
-fi
-
-if [ -n "$SCAN_CMD" ]; then
-  eval "$SCAN_CMD"
+  node ./dist/cli.js scan --staged --fail-on CRITICAL
   SCAN_STATUS=$?
-  if [ $SCAN_STATUS -ne 0 ]; then
-    echo ""
-    echo "❌ COMMIT BLOCKED: Secret Leak Detector detected credentials in staged files!"
-    echo "Please rotate the secret or migrate it to an environment variable."
-    exit 1
-  fi
+elif command -v secret-leak-detector >/dev/null 2>&1; then
+  secret-leak-detector scan --staged --fail-on CRITICAL
+  SCAN_STATUS=$?
+elif command -v npx >/dev/null 2>&1; then
+  npx --no-install secret-leak-detector scan --staged --fail-on CRITICAL
+  SCAN_STATUS=$?
 else
   # Fail-safe regex inspection if Node/CLI is unavailable in this environment
   DIFF=$(git diff --cached --unified=0)
-  if echo "$DIFF" | grep -E '^[+]' | grep -E -q '(AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16}|(gh[pousr]_[A-Za-z0-9_]{36}|github_pat_[A-Za-z0-9_]{82})|(sk|rk)_(live|test)_[0-9a-zA-Z]{24}|-----BEGIN (RSA|EC|DSA|OPENSSH|PGP) PRIVATE KEY-----'; then
+  if echo "$DIFF" | grep -E '^[+]' | grep -E -q '(AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16}|(gh[pousr]_[A-Za-z0-9_]{36,82}|github_pat_[A-Za-z0-9_]{82})|(sk|rk)_(live|test)_[0-9a-zA-Z]{24}|-----BEGIN (RSA|EC|DSA|OPENSSH|PGP) PRIVATE KEY-----'; then
     echo "❌ COMMIT BLOCKED: Potential secret detected in staged changes!"
     exit 1
   fi
+  SCAN_STATUS=0
 fi
 
-# Chain existing user hook if it was previously backed up
+if [ "$SCAN_STATUS" -ne 0 ]; then
+  echo ""
+  echo "❌ COMMIT BLOCKED: Secret Leak Detector detected credentials in staged files!"
+  echo "Please rotate the secret or migrate it to an environment variable."
+  exit 1
+fi
+
+# Chain existing user hook if it was previously backed up.
+# Read the path of the most recent backup from the marker file.
 HOOKS_DIR="$(cd "$(dirname "$0")" && pwd)"
-BACKUP_HOOK="$HOOKS_DIR/pre-commit.sld-backup"
-if [ -f "$BACKUP_HOOK" ]; then
-  echo "🔗 Running chained pre-commit hook..."
-  sh "$BACKUP_HOOK" "$@"
-  exit $?
+LATEST_MARKER="$HOOKS_DIR/pre-commit.sld-backup.latest"
+if [ -f "$LATEST_MARKER" ]; then
+  BACKUP_HOOK=$(cat "$LATEST_MARKER")
+  if [ -f "$BACKUP_HOOK" ]; then
+    echo "🔗 Running chained pre-commit hook..."
+    sh "$BACKUP_HOOK" "$@"
+    exit $?
+  fi
 fi
 
 exit 0
@@ -300,24 +317,28 @@ exit 0
    * Safely uninstalls pre-commit hook and restores any previous backup.
    */
   public async uninstallPreCommitHook(): Promise<{ success: boolean; message: string }> {
-    const hookPath = path.join(this.workspaceRoot, '.git', 'hooks', 'pre-commit');
-    const backupPath = path.join(this.workspaceRoot, '.git', 'hooks', 'pre-commit.sld-backup');
+    const hooksDir = path.join(this.workspaceRoot, '.git', 'hooks');
+    const hookPath = path.join(hooksDir, 'pre-commit');
+    const latestBackupMarkerPath = path.join(hooksDir, 'pre-commit.sld-backup.latest');
 
     if (!fs.existsSync(hookPath)) {
       return { success: true, message: 'No pre-commit hook found to uninstall.' };
     }
 
     try {
-      if (fs.existsSync(backupPath)) {
-        // Restore backup
-        fs.copyFileSync(backupPath, hookPath);
-        fs.unlinkSync(backupPath);
-        return { success: true, message: 'Uninstalled SLD hook and restored original pre-commit hook.' };
-      } else {
-        // Remove hook
-        fs.unlinkSync(hookPath);
-        return { success: true, message: 'Removed Secret Leak Detector pre-commit hook.' };
+      // Locate the most recent backup via the marker file
+      if (fs.existsSync(latestBackupMarkerPath)) {
+        const backupPath = fs.readFileSync(latestBackupMarkerPath, 'utf8').trim();
+        if (backupPath && fs.existsSync(backupPath)) {
+          fs.copyFileSync(backupPath, hookPath);
+          fs.unlinkSync(backupPath);
+          fs.unlinkSync(latestBackupMarkerPath);
+          return { success: true, message: 'Uninstalled SLD hook and restored original pre-commit hook.' };
+        }
       }
+      // No backup — simply remove the SLD hook
+      fs.unlinkSync(hookPath);
+      return { success: true, message: 'Removed Secret Leak Detector pre-commit hook.' };
     } catch (err: any) {
       return { success: false, message: `Failed to uninstall hook: ${err.message}` };
     }

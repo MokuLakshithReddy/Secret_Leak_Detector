@@ -36,7 +36,13 @@ export function buildRemediationPlan(
   const envFileSnippet = `${envVarName}="${escapedSecret}"`;
   const envExampleSnippet = `${envVarName}=your_${envVarName.toLowerCase()}_here`;
 
-  const gitHistoryPurgeCommand = `git filter-repo --invert-paths --path "${filePath}"`;
+  const gitHistoryPurgeCommand =
+    `# WARNING: Use BFG Repo Cleaner to purge secrets from history (safer than filter-repo --invert-paths):\n` +
+    `#   java -jar bfg.jar --replace-text secrets.txt <repo-dir>\n` +
+    `# Where secrets.txt lists the exact literal to redact (one per line).\n` +
+    `# Then force-push: git push --force --all && git push --force --tags\n` +
+    `# Alternatively with git-filter-repo (rewrites content, not paths):\n` +
+    `#   git filter-repo --replace-text secrets.txt`;
 
   // Create unified diff preview
   const diffPreview = `--- a/${filePath}
@@ -137,7 +143,14 @@ export function applyControlledRemediation(
   const targetFile = finding.fullPath;
   let originalFileContent: string | null = null;
   let originalEnvContent: string | null = null;
+  let originalGitignoreContent: string | null = null;
+  let originalEnvExampleContent: string | null = null;
+  // Track whether each file was newly created by this function
+  let envWasNewlyCreated = false;
+  let gitignoreWasNewlyCreated = false;
+  let envExampleWasNewlyCreated = false;
   const envPath = path.join(workspaceRoot, '.env');
+  const gitignorePath = path.join(workspaceRoot, '.gitignore');
 
   try {
     if (!fs.existsSync(targetFile)) {
@@ -164,6 +177,15 @@ export function applyControlledRemediation(
     if (fs.existsSync(envPath)) {
       originalEnvContent = fs.readFileSync(envPath, 'utf8');
       envContent = originalEnvContent;
+    } else {
+      envWasNewlyCreated = true;
+    }
+
+    // Snapshot .gitignore state before mutation
+    if (fs.existsSync(gitignorePath)) {
+      originalGitignoreContent = fs.readFileSync(gitignorePath, 'utf8');
+    } else {
+      gitignoreWasNewlyCreated = true;
     }
 
     const suggestedName = finding.remediation?.envVarName || 'API_KEY';
@@ -184,8 +206,14 @@ export function applyControlledRemediation(
     // 4. Update .env.example
     const envExamplePath = path.join(workspaceRoot, '.env.example');
     const exampleLine = `${varName}=your_${varName.toLowerCase()}_here\n`;
-    if (!fs.existsSync(envExamplePath) || !fs.readFileSync(envExamplePath, 'utf8').includes(varName)) {
-      const exContent = fs.existsSync(envExamplePath) ? fs.readFileSync(envExamplePath, 'utf8') : '';
+    const envExampleExists = fs.existsSync(envExamplePath);
+    if (!envExampleExists) {
+      envExampleWasNewlyCreated = true;
+    } else {
+      originalEnvExampleContent = fs.readFileSync(envExamplePath, 'utf8');
+    }
+    if (!envExampleExists || !fs.readFileSync(envExamplePath, 'utf8').includes(varName)) {
+      const exContent = envExampleExists ? fs.readFileSync(envExamplePath, 'utf8') : '';
       const exPrefix = exContent.endsWith('\n') || exContent.length === 0 ? '' : '\n';
       fs.appendFileSync(envExamplePath, `${exPrefix}${exampleLine}`, 'utf8');
     }
@@ -204,16 +232,29 @@ export function applyControlledRemediation(
       modifiedFile: targetFile,
     };
   } catch (err: any) {
-    // Transactional Rollback: Restore files to previous state on failure
+    // Transactional Rollback: Restore all mutated files to their pre-call state.
+    // Source file
     if (originalFileContent !== null && fs.existsSync(targetFile)) {
-      try {
-        fs.writeFileSync(targetFile, originalFileContent, 'utf8');
-      } catch {}
+      try { fs.writeFileSync(targetFile, originalFileContent, 'utf8'); } catch {}
     }
-    if (originalEnvContent !== null && fs.existsSync(envPath)) {
-      try {
-        fs.writeFileSync(envPath, originalEnvContent, 'utf8');
-      } catch {}
+    // .env: delete if newly created, restore original content if pre-existing
+    if (envWasNewlyCreated && fs.existsSync(envPath)) {
+      try { fs.unlinkSync(envPath); } catch {}
+    } else if (originalEnvContent !== null && fs.existsSync(envPath)) {
+      try { fs.writeFileSync(envPath, originalEnvContent, 'utf8'); } catch {}
+    }
+    // .gitignore: delete if newly created, restore original content if pre-existing
+    if (gitignoreWasNewlyCreated && fs.existsSync(gitignorePath)) {
+      try { fs.unlinkSync(gitignorePath); } catch {}
+    } else if (originalGitignoreContent !== null && fs.existsSync(gitignorePath)) {
+      try { fs.writeFileSync(gitignorePath, originalGitignoreContent, 'utf8'); } catch {}
+    }
+    // .env.example: delete if newly created, restore original content if pre-existing
+    const envExamplePath = path.join(workspaceRoot, '.env.example');
+    if (envExampleWasNewlyCreated && fs.existsSync(envExamplePath)) {
+      try { fs.unlinkSync(envExamplePath); } catch {}
+    } else if (originalEnvExampleContent !== null && fs.existsSync(envExamplePath)) {
+      try { fs.writeFileSync(envExamplePath, originalEnvExampleContent, 'utf8'); } catch {}
     }
 
     return {
