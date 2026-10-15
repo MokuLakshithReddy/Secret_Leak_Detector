@@ -127,54 +127,103 @@ async function runScan(cmdArgs: string[], cwd: string) {
       console.error('Error: Not a Git repository.');
       process.exit(1);
     }
-    // Scan staged diff with exact hunk line coordinates and staged blob context
-    const { execSync } = require('child_process');
+    // Scan staged diff with exact hunk line coordinates and staged blob context.
+    //
+    // SECURITY: Every Git invocation below uses execFileSync with an argument array
+    // (never execSync with a shell-interpolated command string), so a staged filename
+    // containing shell metacharacters (`; $ ` ` | & ( ) < >`) cannot reach a shell.
+    // We use NUL-delimited machine-readable output (`git diff --cached -z ...`) to
+    // enumerate staged paths unambiguously — filenames with spaces, quotes, newlines,
+    // renames, and other edge cases are handled as raw bytes instead of being parsed
+    // from human-readable diff headers with regular expressions.
+    //
+    // The staged blob is read from the Git index only. We never fall back to
+    // working-tree content, since the index and working tree can diverge.
+    const { execFileSync } = require('child_process');
+    const gitBaseArgs = ['-c', 'core.quotepath=false'];
     try {
-      const stdout = execSync('git diff --cached --unified=0', { cwd, encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 });
-      if (stdout.trim()) {
-        const fileDiffs = stdout.split(/^diff --git /m);
-        for (const diff of fileDiffs) {
-          if (!diff.trim()) continue;
-          const match = diff.match(/^[ab]\/(.+?) [ab]\/(.+)/m) || diff.match(/^\+\+\+ b\/(.+)/m);
-          if (!match) continue;
-          const relPath = match[2] || match[1];
-          if (relPath === '/dev/null') continue;
+      // Enumerate every staged path unambiguously (NUL-separated, unquoted, raw bytes).
+      // status records:  STATUS\0PATH\0   or   STATUS\0OLD_PATH\0NEW_PATH\0 (rename/copy)
+      let statusOutput: string;
+      try {
+        statusOutput = execFileSync(
+          'git',
+          [...gitBaseArgs, 'diff', '--cached', '-z', '--name-status'],
+          { cwd, encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 }
+        );
+      } catch (listErr: any) {
+        console.error(`Git staged scan error: ${listErr.message}`);
+        process.exit(1);
+      }
 
-          const addedLineNumbers = new Set<number>();
+      const parts = statusOutput.split('\0').filter(Boolean);
+
+      for (let i = 0; i < parts.length; ) {
+        const status = parts[i];
+        const oldPath = parts[i + 1];
+        let relPath = oldPath;
+        let step = 2;
+        if ((status === 'R' || status === 'C') && parts[i + 2] !== undefined) {
+          // Renamed/copied file: scan the destination path (new content).
+          relPath = parts[i + 2];
+          step = 3;
+        }
+        i += step;
+
+        const normalizedRelPath = relPath.replace(/\\/g, '/');
+        if (normalizedRelPath === '/dev/null') continue;
+        if (status === 'D') continue; // Deleted — no staged content to scan.
+
+        // Read the exact staged blob from the Git index via an argument array.
+        // No shell interpolation: safe against crafted staged filenames.
+        let stagedBlob: string;
+        try {
+          stagedBlob = execFileSync(
+            'git',
+            [...gitBaseArgs, 'show', `:${normalizedRelPath}`],
+            { cwd, encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 }
+          );
+        } catch (blobErr: any) {
+          // A staged file whose blob cannot be read is a scan error. Block the commit
+          // rather than substituting working-tree content (which could be secret-free
+          // while the staged version contains a credential).
+          console.error(`Error: Could not read staged blob for '${normalizedRelPath}': ${blobErr.message}`);
+          console.error('Commit blocked: staged content could not be verified.');
+          process.exit(1);
+        }
+
+        // Added lines for this exact path (path passed as argv — no shell).
+        const addedLineNumbers = new Set<number>();
+        try {
+          const diffForFile = execFileSync(
+            'git',
+            [...gitBaseArgs, 'diff', '--cached', '-U0', '--', normalizedRelPath],
+            { cwd, encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 }
+          );
           const hunkRegex = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/gm;
           let hunkMatch: RegExpExecArray | null;
-
-          while ((hunkMatch = hunkRegex.exec(diff)) !== null) {
+          while ((hunkMatch = hunkRegex.exec(diffForFile)) !== null) {
             const newStart = parseInt(hunkMatch[1], 10);
             const newCount = hunkMatch[2] !== undefined ? parseInt(hunkMatch[2], 10) : 1;
-            for (let i = 0; i < newCount; i++) {
-              addedLineNumbers.add(newStart + i);
+            for (let k = 0; k < newCount; k++) {
+              addedLineNumbers.add(newStart + k);
             }
           }
-
-          if (addedLineNumbers.size === 0) continue;
-
-          let stagedBlob = '';
-          try {
-            stagedBlob = execSync(`git show :${relPath.replace(/\\/g, '/')}`, { cwd, encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 });
-          } catch (blobErr: any) {
-            // SECURITY: Do NOT fall back to working-tree content.
-            // The index and working tree can diverge; substituting disk content would scan
-            // the wrong data and could produce a false-clean result.
-            // Treat an unreadable staged blob as a scan error and block the commit.
-            console.error(`Error: Could not read staged blob for '${relPath}': ${blobErr.message}`);
-            console.error('Commit blocked: staged content could not be verified.');
-            process.exit(1);
-          }
-
-          const fileFindings = scanContent(stagedBlob, relPath, { workspaceRoot: cwd });
-          for (const f of fileFindings) {
-            if (addedLineNumbers.has(f.line)) {
-              findings.push(f);
-            }
-          }
-          filesScanned++;
+        } catch (diffErr: any) {
+          console.error(`Error: Could not determine staged diff for '${normalizedRelPath}': ${diffErr.message}`);
+          console.error('Commit blocked: staged content could not be verified.');
+          process.exit(1);
         }
+
+        if (addedLineNumbers.size === 0) continue;
+
+        const fileFindings = scanContent(stagedBlob, normalizedRelPath, { workspaceRoot: cwd });
+        for (const f of fileFindings) {
+          if (addedLineNumbers.has(f.line)) {
+            findings.push(f);
+          }
+        }
+        filesScanned++;
       }
     } catch (e: any) {
       console.error(`Git staged scan error: ${e.message}`);

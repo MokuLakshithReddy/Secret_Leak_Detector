@@ -9,9 +9,10 @@ import { DETECTOR_RULES } from '../src/core/detectors/rules';
 import { calculateRiskAssessment } from '../src/core/risk/riskEngine';
 import { GitTimelineEngine } from '../src/core/history/gitTimeline';
 import { GitService } from '../src/git/gitService';
-import { resolveUniqueEnvVarName, escapeEnvValue } from '../src/core/remediation/remediationEngine';
+import { applyControlledRemediation, resolveUniqueEnvVarName, escapeEnvValue } from '../src/core/remediation/remediationEngine';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as cp from 'child_process';
 
 let passed = 0;
 let failed = 0;
@@ -328,6 +329,217 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
   const escaped = escapeEnvValue(rawDangerous);
   assert(escaped.includes('\\"'), 'Quotes are escaped in .env value');
   assert(escaped.includes('\\$'), 'Dollar signs are escaped in .env value');
+
+  // --- 18. Git Staged-Scan: Adversarial Filenames, Renames & Commit Gate ---
+  console.log('\n--- 18. Git Staged-Scan: Adversarial Filenames, Renames & Commit Gate ---');
+    const scratchRoot = path.join(process.cwd(), 'scratch', 'sld-staged-tests');
+    fs.rmSync(scratchRoot, { recursive: true, force: true });
+    fs.mkdirSync(scratchRoot, { recursive: true });
+
+    const awsSecret = 'AKIA1234567890ABCDEF';
+    const ghSecret = 'ghp_1234567890abcdefghijklmnopqrstuvwxyz';
+
+    const makeRepo = (name: string) => {
+      const r = path.join(scratchRoot, name);
+      fs.rmSync(r, { recursive: true, force: true });
+      fs.mkdirSync(r, { recursive: true });
+      cp.execSync('git init -q .', { cwd: r, stdio: 'ignore' });
+      cp.execSync('git config user.email test@test.com', { cwd: r, stdio: 'ignore' });
+      cp.execSync('git config user.name test', { cwd: r, stdio: 'ignore' });
+      // Raw, unquoted paths so adversarial filenames are enumerated unambiguously.
+      cp.execSync('git config core.quotepath false', { cwd: r, stdio: 'ignore' });
+      fs.writeFileSync(path.join(r, 'readme.md'), '# safe\n');
+      cp.execSync('git add -A', { cwd: r, stdio: 'ignore' });
+      cp.execSync('git commit -q -m initial', { cwd: r, stdio: 'ignore' });
+      return r;
+    };
+
+    // Ensure the CLI binary is built (the pre-commit hook invokes dist/cli.js).
+    const cli = path.join(process.cwd(), 'dist', 'cli.js');
+    if (!fs.existsSync(cli)) {
+      cp.execSync('node esbuild.js --cli', { cwd: process.cwd(), stdio: 'ignore' });
+    }
+
+    // 18a. Adversarial filenames (spaces, $, ;) scanned from the staged blob, never the working tree.
+    {
+      const r = makeRepo('adv-filenames');
+      fs.writeFileSync(path.join(r, 'normal.txt'), `const key = "${awsSecret}";\n`);
+      fs.writeFileSync(path.join(r, 'file with spaces.ts'), `const token = "${ghSecret}";\n`);
+      fs.writeFileSync(path.join(r, 'weird;name$.ts'), `const token = "${ghSecret}";\n`);
+      cp.execSync('git add -A', { cwd: r, stdio: 'ignore' });
+      const res = await new GitService(r).scanStagedChanges();
+      assert(res.status === 'FINDINGS', `Adversarial filenames: expected FINDINGS, got ${res.status}`);
+      const files = res.findings.map((f) => f.file);
+      assert(files.some((f) => String(f).includes('file with spaces.ts')), 'File with spaces scanned from staged blob');
+      assert(files.some((f) => String(f).includes('weird;name$.ts')), 'File with $ and ; scanned from staged blob');
+      assert(files.some((f) => String(f).includes('normal.txt')), 'normal.txt scanned from staged blob');
+      assert(res.filesScanned >= 2, `Staged files scanned (got ${res.filesScanned})`);
+    }
+
+    // 18b. Rename: the destination path (new content) is scanned.
+    {
+      const r = makeRepo('rename');
+      fs.writeFileSync(path.join(r, 'oldname.ts'), `const key = "${awsSecret}";\n`);
+      cp.execSync('git add -A', { cwd: r, stdio: 'ignore' });
+      cp.execSync('git mv oldname.ts newname.ts', { cwd: r, stdio: 'ignore' });
+      cp.execSync('git add -A', { cwd: r, stdio: 'ignore' });
+      const res = await new GitService(r).scanStagedChanges();
+      assert(res.status === 'FINDINGS', `Rename: expected FINDINGS, got ${res.status}`);
+      assert(res.findings.some((f) => String(f.file) === 'newname.ts'), 'Renamed destination newname.ts scanned');
+    }
+
+    // 18c. Clean staged changes -> CLEAN (commit allowed).
+    {
+      const r = makeRepo('clean');
+      fs.writeFileSync(path.join(r, 'safe.ts'), `const x = 1;\n`);
+      cp.execSync('git add -A', { cwd: r, stdio: 'ignore' });
+      const res = await new GitService(r).scanStagedChanges();
+      assert(res.status === 'CLEAN', `Clean staged: expected CLEAN, got ${res.status}`);
+    }
+
+    // 18d. Deleted file skipped (nothing to scan), not an error.
+    {
+      const r = makeRepo('delete');
+      fs.writeFileSync(path.join(r, 'todelete.txt'), `const key = "${awsSecret}";\n`);
+      cp.execSync('git add -A', { cwd: r, stdio: 'ignore' });
+      cp.execSync('git commit -q -m add', { cwd: r, stdio: 'ignore' });
+      cp.execSync('git rm -q todelete.txt', { cwd: r, stdio: 'ignore' });
+      const res = await new GitService(r).scanStagedChanges();
+      assert(res.status === 'CLEAN', `Deleted file skipped: expected CLEAN, got ${res.status}`);
+    }
+
+    // 18e. Secret staged -> CLI scan exits non-zero (commit blocked).
+    {
+      const r = makeRepo('commit-gate');
+      fs.writeFileSync(path.join(r, 'secrets.ts'), `const key = "${awsSecret}";\n`);
+      cp.execSync('git add -A', { cwd: r, stdio: 'ignore' });
+      let threw = false;
+      try {
+        cp.execSync(`${process.execPath} "${cli}" scan --staged --fail-on HIGH`, {
+          cwd: r, encoding: 'utf8', stdio: 'pipe',
+        });
+      } catch (e: any) {
+        threw = true;
+        assert(e.status === 1 || /exit code 1/.test(String(e)), `Secret staged scan blocked (status ${e.status})`);
+      }
+      assert(threw, 'Secret staged scan must exit non-zero to block the commit');
+    }
+
+    // 18f. Clean staged change -> CLI scan exits 0 (commit allowed).
+    {
+      const r = makeRepo('commit-gate-clean');
+      fs.writeFileSync(path.join(r, 'safe.ts'), `const x = 1;\n`);
+      cp.execSync('git add -A', { cwd: r, stdio: 'ignore' });
+      let threw = false;
+      let errDetail = '';
+      try {
+        cp.execSync(`"${process.execPath}" "${cli}" scan --staged --fail-on HIGH`, {
+          cwd: r, encoding: 'utf8', stdio: 'pipe',
+        });
+      } catch (e: any) {
+        threw = true;
+        errDetail = String(e.stderr || e.stdout || e.message || '');
+      }
+      assert(!threw, `Clean staged scan must exit 0 to allow the commit (${errDetail})`);
+    }
+
+    fs.rmSync(scratchRoot, { recursive: true, force: true });
+
+  // --- 19. Remediation: Fault-Injection Rollback Tests ---
+  console.log('\n--- 19. Remediation: Fault-Injection Rollback Tests ---');
+  const remScratchRoot = path.join(process.cwd(), 'scratch', 'sld-remediation-fault');
+  fs.rmSync(remScratchRoot, { recursive: true, force: true });
+  fs.mkdirSync(remScratchRoot, { recursive: true });
+
+  const remSecret = 'AKIA1234567890ABCDEF';
+
+  const makeWs = () => {
+    const w = path.join(remScratchRoot, 'ws-' + Date.now() + '-' + Math.random().toString(36).slice(2));
+    fs.rmSync(w, { recursive: true, force: true });
+    fs.mkdirSync(w, { recursive: true });
+    fs.writeFileSync(path.join(w, 'config.ts'), `const key = "${remSecret}";\n`);
+    fs.writeFileSync(path.join(w, '.env'), 'OTHER="x"\n');
+    fs.writeFileSync(path.join(w, '.gitignore'), 'node_modules\n');
+    fs.writeFileSync(path.join(w, '.env.example'), 'OTHER=example\n');
+    return w;
+  };
+
+  const finding = (w: string): any => ({
+    type: 'AWS Access Key ID',
+    provider: 'Amazon Web Services',
+    file: 'config.ts',
+    fullPath: path.join(w, 'config.ts'),
+    rawSecret: remSecret,
+    remediation: {
+      envVarName: 'AWS_ACCESS_KEY_ID',
+      replacementCode: 'process.env.AWS_ACCESS_KEY_ID',
+      steps: [],
+      envFileSnippet: '',
+      envExampleSnippet: '',
+      gitHistoryPurgeCommand: '',
+      diffPreview: '',
+    },
+  });
+
+  const assertOriginalPreserved = (w: string, msg: string) => {
+    const content = fs.readFileSync(path.join(w, 'config.ts'), 'utf8');
+    assert(content.includes(remSecret), msg);
+  };
+
+  try {
+    // 19a. Write failure (target file read-only) -> remediation fails, rollback runs, original preserved.
+    {
+      const w = makeWs();
+      fs.chmodSync(path.join(w, 'config.ts'), 0o444);
+      try {
+        const result = applyControlledRemediation(finding(w), w);
+        assert(result.success === false, 'Write failure should fail remediation');
+        assert(/EPERM|operation not permitted/i.test(result.message || ''),
+          `Write failure reason reported (got: ${result.message})`);
+        assertOriginalPreserved(w, 'Target file preserved original secret after write failure');
+        assert(typeof result.message === 'string' && result.message.length > 0, 'Failure message reported');
+      } finally {
+        fs.chmodSync(path.join(w, 'config.ts'), 0o666);
+      }
+    }
+
+    // 19b. Rename failure during rollback: target read-only makes the rollback's
+    // atomic restore (temp -> target rename) fail. Rollback failure is reported,
+    // and the original secret is still preserved (target never replaced).
+    {
+      const w = makeWs();
+      fs.chmodSync(path.join(w, 'config.ts'), 0o444);
+      try {
+        const result = applyControlledRemediation(finding(w), w);
+        assert(result.success === false, 'Rename failure during rollback should fail remediation');
+        assert(/rollback/i.test(result.message), 'Rollback status reported on rename failure');
+        assert(/restore|rename/i.test(result.message), 'Restore/rename failure detail reported');
+        assertOriginalPreserved(w, 'Target file preserved original secret after rename failure');
+      } finally {
+        fs.chmodSync(path.join(w, 'config.ts'), 0o666);
+      }
+    }
+
+    // 19c. Delete path: a newly-created .env is removed by rollback when a later
+    // step (target write) fails. config.ts is read-only so the write fails after
+    // .env has been created; rollback must delete the newly-created .env.
+    {
+      const w = makeWs();
+      fs.unlinkSync(path.join(w, '.env')); // .env will be newly created by remediation
+      fs.chmodSync(path.join(w, 'config.ts'), 0o444); // write fails after .env is created
+      try {
+        const result = applyControlledRemediation(finding(w), w);
+        assert(result.success === false, 'Delete-path scenario should fail remediation');
+        assert(!fs.existsSync(path.join(w, '.env')), 'Newly-created .env removed by rollback on failure');
+        assertOriginalPreserved(w, 'Target file preserved original secret in delete-path scenario');
+      } finally {
+        fs.chmodSync(path.join(w, 'config.ts'), 0o666);
+        try { fs.unlinkSync(path.join(w, '.env')); } catch {}
+      }
+    }
+  } finally {
+    fs.rmSync(remScratchRoot, { recursive: true, force: true });
+  }
 
   console.log('\n============================================================');
   console.log(`🎉 TEST SUMMARY: ${passed} PASSED, ${failed} FAILED`);
