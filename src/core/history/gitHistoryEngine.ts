@@ -1,11 +1,14 @@
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { GitExposure, GitCommitInfo, SecretFinding } from '../types';
 import { scanContent } from '../scanner/scanner';
 import { calculateRiskAssessment } from '../risk/riskEngine';
 import { CORE_RULES } from '../detectors/rules';
 
-const execAsync = promisify(exec);
+// execFile (argument array) is used everywhere so untrusted values such as the
+// credential being traced are passed as argv elements and NEVER interpreted by a
+// shell. Shell string interpolation here was a command-injection vector.
+const execFileAsync = promisify(execFile);
 
 export class GitHistoryEngine {
   private workspaceRoot: string;
@@ -16,7 +19,9 @@ export class GitHistoryEngine {
 
   public async isGitRepo(): Promise<boolean> {
     try {
-      await execAsync('git rev-parse --is-inside-work-tree', { cwd: this.workspaceRoot });
+      await execFileAsync('git', ['rev-parse', '--is-inside-work-tree'], {
+        cwd: this.workspaceRoot,
+      });
       return true;
     } catch {
       return false;
@@ -40,11 +45,22 @@ export class GitHistoryEngine {
     }
 
     try {
-      // Find all commits that added or removed the secret string
-      // git log -S <string> --all --format="%H|%an|%ad|%s" --date=iso
-      const escapedSecret = secret.replace(/"/g, '\\"');
-      const { stdout } = await execAsync(
-        `git log -S "${escapedSecret}" --all --format="%H|%an|%ad|%s" --date=iso`,
+      // Find all commits that added or removed the secret string.
+      // The secret is passed as a single `-S<string>` argv token (no shell),
+      // so quotes / metacharacters / command substitution cannot be injected.
+      if (secret.length === 0) {
+        return {
+          isPresentInHead: false,
+          isPresentInHistory: false,
+          exposureDurationDays: 0,
+          branches: ['working-tree'],
+          isRemote: false,
+          statusDescription: 'Empty string is not a traceable credential',
+        };
+      }
+      const { stdout } = await execFileAsync(
+        'git',
+        ['log', `-S${secret}`, '--all', '--format=%H|%an|%ad|%s', '--date=iso'],
         { cwd: this.workspaceRoot, maxBuffer: 10 * 1024 * 1024 }
       );
 
@@ -74,13 +90,13 @@ export class GitHistoryEngine {
       const introducedCommit = parsedCommits[parsedCommits.length - 1];
       const lastModifiedCommit = parsedCommits[0];
 
-      // Check if secret currently exists in HEAD
+      // Check if secret currently exists in HEAD. `-e` separates the pattern so
+      // a credential beginning with '-' is still treated as data by git.
       let isPresentInHead = false;
       try {
-        const { stdout: grepOut } = await execAsync(
-          `git grep -F -q "${escapedSecret}" HEAD`,
-          { cwd: this.workspaceRoot }
-        );
+        await execFileAsync('git', ['grep', '-F', '-q', '-e', secret, 'HEAD'], {
+          cwd: this.workspaceRoot,
+        });
         isPresentInHead = true;
       } catch {
         isPresentInHead = false;
@@ -90,8 +106,9 @@ export class GitHistoryEngine {
       let branches: string[] = [];
       let isRemote = false;
       try {
-        const { stdout: branchOut } = await execAsync(
-          `git branch -a --contains ${introducedCommit.sha}`,
+        const { stdout: branchOut } = await execFileAsync(
+          'git',
+          ['branch', '-a', '--contains', introducedCommit.sha],
           { cwd: this.workspaceRoot }
         );
         branches = branchOut
@@ -158,8 +175,9 @@ export class GitHistoryEngine {
 
     try {
       // Get recent commit diffs
-      const { stdout } = await execAsync(
-        `git log -n ${maxCommits} -p -U1 --no-merges`,
+      const { stdout } = await execFileAsync(
+        'git',
+        ['log', '-n', String(maxCommits), '-p', '-U1', '--no-merges'],
         { cwd: this.workspaceRoot, maxBuffer: 20 * 1024 * 1024 }
       );
 

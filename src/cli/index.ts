@@ -11,6 +11,8 @@ import { redactSecret } from '../core/redactor/redactor';
 import { formatAsSarif } from '../core/sarif/sarifFormatter';
 import { SecretFinding, Risk } from '../core/types';
 import { scanStagedChangesSync } from '../git/stagedScanner';
+import { GitService } from '../git/gitService';
+import { DEFAULT_FAIL_ON, resolveFailOn, shouldBlock } from '../core/policy';
 
 const args = process.argv.slice(2);
 const command = args[0] || 'help';
@@ -76,7 +78,8 @@ Commands:
                            --sarif            Output findings in SARIF v2.1.0 (for CI/CD)
                            --baseline <file>  Evaluate against baseline (pass on known secrets)
                            --staged           Scan only Git staged changes (pre-commit check)
-                           --fail-on <tier>   Exit code 1 on tier: CRITICAL (default), HIGH, MEDIUM
+                           --fail-on <tier>   Exit code 1 on this tier and above: LOW, MEDIUM, HIGH, CRITICAL
+                                              (default: HIGH — see src/core/policy.ts)
 
   history                Scan Git commit history for previously introduced credentials
                          Options:
@@ -112,7 +115,7 @@ async function runScan(cmdArgs: string[], cwd: string) {
   const baselineFile = baselineIdx !== -1 ? cmdArgs[baselineIdx + 1] : undefined;
 
   const failOnIdx = cmdArgs.indexOf('--fail-on');
-  const failOn: Risk = (failOnIdx !== -1 ? cmdArgs[failOnIdx + 1]?.toUpperCase() : 'CRITICAL') as Risk;
+  const failOn: Risk = resolveFailOn(failOnIdx !== -1 ? cmdArgs[failOnIdx + 1] : undefined);
 
   let targetPath = cmdArgs.find((a) => !a.startsWith('--') && a !== baselineFile && a !== failOn) || '.';
   const absPath = path.resolve(cwd, targetPath);
@@ -227,21 +230,9 @@ async function runScan(cmdArgs: string[], cwd: string) {
 }
 
 function processExitCheck(findings: SecretFinding[], failOn: Risk) {
-  const riskLevels: Record<Risk, number> = {
-    CRITICAL: 4,
-    HIGH: 3,
-    MEDIUM: 2,
-    LOW: 1,
-  };
-
-  const threshold = riskLevels[failOn] || 4;
-  const shouldFail = findings.some((f) => (riskLevels[f.risk] || 0) >= threshold);
-
-  if (shouldFail) {
-    process.exit(1);
-  } else {
-    process.exit(0);
-  }
+  // Threshold comparison lives in the shared policy module so the CLI, the
+  // pre-commit hook and the extension can never disagree on what "blocks".
+  process.exit(shouldBlock(findings, failOn) ? 1 : 0);
 }
 
 async function runHistory(cmdArgs: string[], cwd: string) {
@@ -445,80 +436,28 @@ async function runVerify(cmdArgs: string[], cwd: string) {
 
 async function runHook(cmdArgs: string[], cwd: string) {
   const subCommand = cmdArgs[0] || 'install';
-  const hooksDir = path.join(cwd, '.git', 'hooks');
-  const hookFile = path.join(hooksDir, 'pre-commit');
-  const backupFile = path.join(hooksDir, 'pre-commit.sld-backup');
-  const marker = '# [SLD_HOOK_MANAGED]';
+  const gitService = new GitService(cwd);
 
   if (subCommand === 'install') {
-    const gitEngine = new GitHistoryEngine(cwd);
-    if (!(await gitEngine.isGitRepo())) {
-      console.error('Error: Current directory is not a Git repository.');
+    // Delegate to the single hook implementation shared with the VS Code
+    // extension. This keeps one policy and one fail-closed contract everywhere.
+    const result = await gitService.installPreCommitHook();
+    if (!result.success) {
+      console.error(`Error: ${result.message}`);
       process.exit(1);
     }
-
-    if (!fs.existsSync(hooksDir)) fs.mkdirSync(hooksDir, { recursive: true });
-
-    // Preserve existing hook by backing it up
-    if (fs.existsSync(hookFile)) {
-      const existing = fs.readFileSync(hookFile, 'utf8');
-      if (!existing.includes(marker)) {
-        fs.writeFileSync(backupFile, existing, { mode: 0o755 });
-        console.log(`ℹ️ Backed up existing pre-commit hook to ${backupFile}`);
-      }
-    }
-
-    const hookScript = `#!/bin/sh
-${marker}
-# Secret Leak Detector Pre-Commit Hook
-echo "🔐 [Secret Leak Detector] Inspecting staged changes for credentials..."
-
-SCAN_CMD=""
-if [ -f "./dist/cli.js" ]; then
-  SCAN_CMD="node ./dist/cli.js scan --staged --fail-on CRITICAL"
-elif command -v secret-leak-detector >/dev/null 2>&1; then
-  SCAN_CMD="secret-leak-detector scan --staged --fail-on CRITICAL"
-elif command -v npx >/dev/null 2>&1; then
-  SCAN_CMD="npx --no-install secret-leak-detector scan --staged --fail-on CRITICAL"
-fi
-
-if [ -n "$SCAN_CMD" ]; then
-  eval "$SCAN_CMD"
-  EXIT_CODE=$?
-  if [ $EXIT_CODE -ne 0 ]; then
-    echo ""
-    echo "❌ COMMIT REJECTED: Unredacted credentials found in staged commit!"
-    echo "Run 'secret-leak-detector fix <file>' or migrate credentials to .env."
-    exit 1
-  fi
-fi
-
-# Chain existing user hook if it was previously backed up
-HOOKS_DIR="$(cd "$(dirname "$0")" && pwd)"
-BACKUP_HOOK="$HOOKS_DIR/pre-commit.sld-backup"
-if [ -f "$BACKUP_HOOK" ]; then
-  echo "🔗 Running chained pre-commit hook..."
-  sh "$BACKUP_HOOK" "$@"
-  exit $?
-fi
-
-exit 0
-`;
-    fs.writeFileSync(hookFile, hookScript, { mode: 0o755 });
-    console.log(`✅ Pre-commit hook successfully installed to ${hookFile}`);
+    console.log(`✅ ${result.message}`);
+    console.log(
+      `   Severity policy (single source: src/core/policy.ts): blocks ${DEFAULT_FAIL_ON} and above; ` +
+        `fails closed when the scanner cannot run.`
+    );
   } else if (subCommand === 'uninstall') {
-    if (!fs.existsSync(hookFile)) {
-      console.log('No pre-commit hook found to uninstall.');
-      return;
+    const result = await gitService.uninstallPreCommitHook();
+    if (!result.success) {
+      console.error(`Error: ${result.message}`);
+      process.exit(1);
     }
-    if (fs.existsSync(backupFile)) {
-      fs.copyFileSync(backupFile, hookFile);
-      fs.unlinkSync(backupFile);
-      console.log('✅ Uninstalled SLD pre-commit hook and restored original hook.');
-    } else {
-      fs.unlinkSync(hookFile);
-      console.log('✅ Removed Secret Leak Detector pre-commit hook.');
-    }
+    console.log(`✅ ${result.message}`);
   } else {
     console.error('Usage: secret-leak-detector hook [install|uninstall]');
     process.exit(1);

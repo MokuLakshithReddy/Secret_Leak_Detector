@@ -1,11 +1,12 @@
-import { exec, execFile } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs';
 import * as path from 'path';
 import { SecretFinding } from '../core/types';
 import { scanStagedChangesSync } from './stagedScanner';
+import { buildPreCommitHook, SLD_HOOK_MARKER } from './preCommitHook';
+import { DEFAULT_FAIL_ON } from '../core/policy';
 
-const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 
 export type GitScanStatus = 'CLEAN' | 'FINDINGS' | 'ERROR';
@@ -29,7 +30,9 @@ export class GitService {
    */
   public async isGitRepo(): Promise<boolean> {
     try {
-      await execAsync('git rev-parse --is-inside-work-tree', { cwd: this.workspaceRoot });
+      await execFileAsync('git', ['rev-parse', '--is-inside-work-tree'], {
+        cwd: this.workspaceRoot,
+      });
       return true;
     } catch {
       return false;
@@ -149,7 +152,7 @@ After fixing:
     const backupPath = path.join(hooksDir, `pre-commit.sld-backup.${timestamp}`);
     // The latest backup symlink always points to the most recent one, used during uninstall.
     const latestBackupMarkerPath = path.join(hooksDir, 'pre-commit.sld-backup.latest');
-    const marker = '# [SLD_HOOK_MANAGED]';
+    const marker = SLD_HOOK_MARKER;
 
     // If existing hook exists and is not managed by SLD, back it up for chaining
     if (fs.existsSync(hookPath)) {
@@ -165,67 +168,9 @@ After fixing:
       }
     }
 
-    const hookContent = `#!/bin/sh
-${marker}
-# Secret Leak Detector Pre-Commit Hook
-# Intercepts git commit and blocks unredacted credentials before they leave the machine.
-#
-# Severity policy: blocks commits containing findings at HIGH or CRITICAL risk.
-# LOW / MEDIUM findings are reported but do not block the commit by default.
-# To change this threshold, edit --fail-on below (CRITICAL | HIGH | MEDIUM).
-SLD_FAIL_ON="HIGH"
-
-echo "🔐 [Secret Leak Detector] Inspecting staged changes for credentials..."
-
-# Determine CLI binary without using eval (avoids shell injection via env var content).
-# Priority: local dist/cli.js > global binary > npx.
-if [ -f "./dist/cli.js" ]; then
-  node ./dist/cli.js scan --staged --fail-on "$SLD_FAIL_ON"
-  SCAN_STATUS=$?
-elif command -v secret-leak-detector >/dev/null 2>&1; then
-  secret-leak-detector scan --staged --fail-on "$SLD_FAIL_ON"
-  SCAN_STATUS=$?
-elif command -v npx >/dev/null 2>&1; then
-  npx --no-install secret-leak-detector scan --staged --fail-on "$SLD_FAIL_ON"
-  SCAN_STATUS=$?
-else
-  # Fail-safe regex inspection if Node/CLI is unavailable in this environment.
-  # Check that git diff itself succeeds before examining its output.
-  DIFF_OUTPUT=$(git diff --cached --unified=0 2>&1)
-  GIT_DIFF_STATUS=$?
-  if [ $GIT_DIFF_STATUS -ne 0 ]; then
-    echo "❌ COMMIT BLOCKED: git diff --cached failed (exit $GIT_DIFF_STATUS). Cannot verify staged content is secret-free."
-    exit 1
-  fi
-  if echo "$DIFF_OUTPUT" | grep -E '^[+]' | grep -E -q '(AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16}|(gh[pousr]_[A-Za-z0-9_]{36,82}|github_pat_[A-Za-z0-9_]{82})|(sk|rk)_(live|test)_[0-9a-zA-Z]{24}|-----BEGIN (RSA|EC|DSA|OPENSSH|PGP) PRIVATE KEY-----'; then
-    echo "❌ COMMIT BLOCKED: Potential secret detected in staged changes!"
-    exit 1
-  fi
-  SCAN_STATUS=0
-fi
-
-if [ "$SCAN_STATUS" -ne 0 ]; then
-  echo ""
-  echo "❌ COMMIT BLOCKED: Secret Leak Detector detected credentials in staged files!"
-  echo "Please rotate the secret or migrate it to an environment variable."
-  exit 1
-fi
-
-# Chain existing user hook if it was previously backed up.
-# Read the path of the most recent backup from the marker file.
-HOOKS_DIR="$(cd "$(dirname "$0")" && pwd)"
-LATEST_MARKER="$HOOKS_DIR/pre-commit.sld-backup.latest"
-if [ -f "$LATEST_MARKER" ]; then
-  BACKUP_HOOK=$(cat "$LATEST_MARKER")
-  if [ -f "$BACKUP_HOOK" ]; then
-    echo "🔗 Running chained pre-commit hook..."
-    sh "$BACKUP_HOOK" "$@"
-    exit $?
-  fi
-fi
-
-exit 0
-`;
+    // Hook body is built by the shared, fail-closed builder so the CLI and the
+    // VS Code extension install byte-identical hooks using the one project policy.
+    const hookContent = buildPreCommitHook(DEFAULT_FAIL_ON);
 
     try {
       fs.writeFileSync(hookPath, hookContent, { mode: 0o755 });

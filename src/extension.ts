@@ -5,6 +5,7 @@ import { FindingsTreeProvider, OverviewTreeProvider } from './sidebar/findingsTr
 import { DashboardPanel } from './webview/dashboardPanel';
 import { GitService } from './git/gitService';
 import { SecretFinding } from './core/types';
+import { DEFAULT_FAIL_ON, meetsThreshold } from './core/policy';
 
 let outputChannel: vscode.OutputChannel;
 
@@ -176,12 +177,18 @@ export function activate(context: vscode.ExtensionContext) {
 
       // Findings detected
       const findings = scanResult.findings;
-      const terminalMessage = gitService.formatTerminalBlockedMessage(findings);
+      // Single project policy: only findings at or above DEFAULT_FAIL_ON block a
+      // commit. Lower tiers are surfaced but never gate.
+      const blocking = findings.filter((f) => meetsThreshold(f.risk, DEFAULT_FAIL_ON));
+      const terminalMessage = gitService.formatTerminalBlockedMessage(
+        blocking.length > 0 ? blocking : findings
+      );
       outputChannel.appendLine(terminalMessage);
 
-      const msg = blockCommits
-        ? `❌ COMMIT BLOCKED: ${findings.length} secret(s) detected in staged changes!`
-        : `⚠️ WARNING: ${findings.length} secret(s) detected in staged changes!`;
+      const willBlock = blockCommits && blocking.length > 0;
+      const msg = willBlock
+        ? `❌ COMMIT BLOCKED: ${blocking.length} secret(s) at or above ${DEFAULT_FAIL_ON} detected in staged changes!`
+        : `⚠️ WARNING: ${findings.length} secret(s) detected in staged changes (none block at the ${DEFAULT_FAIL_ON} threshold).`;
 
       vscode.window
         .showErrorMessage(msg, 'Open Dashboard', 'View Output')

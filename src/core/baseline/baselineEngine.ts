@@ -4,6 +4,15 @@ import { SecretFinding, BaselineFile, BaselineFinding } from '../types';
 
 export const DEFAULT_BASELINE_FILENAME = '.secretleak-baseline.json';
 
+/**
+ * Normalise a repository-relative path so a baseline generated on one platform
+ * (e.g. Windows, backslashes) still matches findings produced on another
+ * (e.g. Linux CI, forward slashes).
+ */
+function normalizeBaselinePath(p: string): string {
+  return String(p).replace(/\\/g, '/');
+}
+
 export class BaselineEngine {
   private baselinePath: string;
 
@@ -32,7 +41,7 @@ export class BaselineEngine {
       id: f.id,
       fingerprint: f.fingerprint,
       ruleId: f.type,
-      file: f.file,
+      file: normalizeBaselinePath(f.file),
       line: f.line,
       firstSeen: f.detectedAt,
     }));
@@ -66,9 +75,9 @@ export class BaselineEngine {
 
     const baselineMap = new Map<string, BaselineFinding>();
     for (const b of baseline.findings) {
-      // Key by fingerprint or file+rule
+      // Key by fingerprint or file+rule (normalised so the key is portable).
       baselineMap.set(b.fingerprint, b);
-      baselineMap.set(`${b.file}:${b.ruleId}:${b.line}`, b);
+      baselineMap.set(`${normalizeBaselinePath(b.file)}:${b.ruleId}:${b.line}`, b);
     }
 
     const newFindings: SecretFinding[] = [];
@@ -78,7 +87,7 @@ export class BaselineEngine {
     for (const finding of currentFindings) {
       const match =
         baselineMap.get(finding.fingerprint) ||
-        baselineMap.get(`${finding.file}:${finding.type}:${finding.line}`);
+        baselineMap.get(`${normalizeBaselinePath(finding.file)}:${finding.type}:${finding.line}`);
 
       if (match) {
         finding.status = 'BASELINE';

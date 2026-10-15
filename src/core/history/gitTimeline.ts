@@ -1,7 +1,9 @@
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 
-const execAsync = promisify(exec);
+// execFile (argument array) keeps untrusted values out of a shell, preventing
+// command injection via the credential being traced.
+const execFileAsync = promisify(execFile);
 
 export interface GitTimelineEvent {
   eventType: 'INTRODUCED' | 'MODIFIED' | 'REMOVED' | 'MERGED_IN';
@@ -69,12 +71,12 @@ export class GitTimelineEngine {
   }
 
   public async buildTimeline(secret: string, redactedSecret: string): Promise<ExposureTimelineReport> {
-    const escaped = secret.replace(/"/g, '\\"');
     let logOutput = '';
 
     try {
-      const { stdout } = await execAsync(
-        `git log -S "${escaped}" --all --reverse --format="%H|%P|%an|%ae|%ad|%s" --date=iso`,
+      const { stdout } = await execFileAsync(
+        'git',
+        ['log', `-S${secret}`, '--all', '--reverse', '--format=%H|%P|%an|%ae|%ad|%s', '--date=iso'],
         { cwd: this.workspaceRoot, maxBuffer: 15 * 1024 * 1024 }
       );
       logOutput = stdout.trim();
@@ -139,9 +141,11 @@ export class GitTimelineEngine {
       // Branches containing this commit
       let branches: string[] = [];
       try {
-        const { stdout: bOut } = await execAsync(`git branch -a --contains ${sha}`, {
-          cwd: this.workspaceRoot,
-        });
+        const { stdout: bOut } = await execFileAsync(
+          'git',
+          ['branch', '-a', '--contains', sha],
+          { cwd: this.workspaceRoot }
+        );
         branches = bOut
           .split('\n')
           .map((b) => b.trim().replace(/^[\*\s]+/, ''))
@@ -171,7 +175,9 @@ export class GitTimelineEngine {
       } else if (i === lines.length - 1) {
         // Check if secret currently in HEAD
         try {
-          await execAsync(`git grep -F -q "${escaped}" HEAD`, { cwd: this.workspaceRoot });
+          await execFileAsync('git', ['grep', '-F', '-q', '-e', secret, 'HEAD'], {
+            cwd: this.workspaceRoot,
+          });
           eventType = 'MODIFIED';
         } catch {
           eventType = 'REMOVED';
@@ -197,7 +203,9 @@ export class GitTimelineEngine {
     const lastEvent = events[events.length - 1];
     let isPresentInHead = false;
     try {
-      await execAsync(`git grep -F -q "${escaped}" HEAD`, { cwd: this.workspaceRoot });
+      await execFileAsync('git', ['grep', '-F', '-q', '-e', secret, 'HEAD'], {
+        cwd: this.workspaceRoot,
+      });
       isPresentInHead = true;
     } catch {
       isPresentInHead = false;
