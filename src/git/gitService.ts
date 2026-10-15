@@ -105,7 +105,10 @@ export class GitService {
         // Read the exact staged blob content from Git index.
         // SECURITY: Use execFile with an argument array instead of execAsync to prevent
         // shell injection via filenames containing metacharacters (spaces, $(), backticks, etc.).
-        let stagedContent = '';
+        // SECURITY: Do NOT fall back to working-tree content. The staged index and the
+        // working tree can diverge; substituting disk content would scan the wrong data
+        // and could produce a false-clean result for a file that IS staged with a secret.
+        let stagedContent: string;
         try {
           const { stdout: blobContent } = await execFileAsync(
             'git',
@@ -113,13 +116,27 @@ export class GitService {
             { cwd: this.workspaceRoot, maxBuffer: 10 * 1024 * 1024 }
           );
           stagedContent = blobContent;
-        } catch {
-          // Fallback if git show fails (e.g. new untracked or special encoding): read from disk
-          if (fs.existsSync(fullPath)) {
-            stagedContent = fs.readFileSync(fullPath, 'utf8');
-          } else {
-            continue;
-          }
+        } catch (blobErr: any) {
+          // Blob read failed — treat as a scan error for this file.
+          // Do NOT continue silently: push an error marker so callers know a file was skipped.
+          allFindings.push({
+            // Minimal synthetic finding that signals a scan failure without false-positive.
+            type: 'SCAN_ERROR',
+            provider: 'Internal',
+            file: normalizedRelPath,
+            fullPath,
+            line: 0,
+            column: 0,
+            rawSecret: '',
+            redactedSecret: '',
+            confidence: 0,
+            risk: 'CRITICAL' as any,
+            signals: [`git show failed: ${blobErr.message || String(blobErr)}`],
+            evidence: { score: 0, items: [] },
+            riskAssessment: { score: 100, blastRadius: { level: 'UNKNOWN', summary: 'Staged blob unreadable — scan blocked' }, factors: [] },
+            remediation: { steps: [], envVarName: '', replacementCode: '', envFileSnippet: '', envExampleSnippet: '', gitHistoryPurgeCommand: '', diffPreview: '' },
+          } as any);
+          continue;
         }
 
         filesScanned++;
@@ -215,20 +232,43 @@ After fixing:
   }
 
   /**
-   * Installs pre-commit hook into .git/hooks/pre-commit.
-   * If an existing hook exists, backs it up to .git/hooks/pre-commit.sld-backup and chains it.
+   * Resolves the effective Git hooks directory for this repository.
+   * Handles worktrees, bare repos, and core.hooksPath overrides correctly
+   * by asking Git itself rather than assuming .git/hooks.
+   */
+  private async resolveHooksDir(): Promise<string> {
+    try {
+      const { stdout } = await execFileAsync(
+        'git',
+        ['rev-parse', '--git-path', 'hooks'],
+        { cwd: this.workspaceRoot }
+      );
+      const resolved = stdout.trim();
+      // git rev-parse --git-path can return a relative path
+      return path.isAbsolute(resolved)
+        ? resolved
+        : path.resolve(this.workspaceRoot, resolved);
+    } catch {
+      // Fall back to the conventional location if git itself fails
+      return path.join(this.workspaceRoot, '.git', 'hooks');
+    }
+  }
+
+  /**
+   * Installs pre-commit hook into the effective Git hooks directory.
+   * If an existing hook exists, backs it up with a timestamped name and chains it.
    */
   public async installPreCommitHook(): Promise<{ success: boolean; message: string }> {
     if (!(await this.isGitRepo())) {
       return { success: false, message: 'Workspace is not a Git repository.' };
     }
 
-    const hooksDir = path.join(this.workspaceRoot, '.git', 'hooks');
+    const hooksDir = await this.resolveHooksDir();
     if (!fs.existsSync(hooksDir)) {
       try {
         fs.mkdirSync(hooksDir, { recursive: true });
       } catch (err) {
-        return { success: false, message: `Could not create .git/hooks directory: ${err}` };
+        return { success: false, message: `Could not create hooks directory (${hooksDir}): ${err}` };
       }
     }
 
@@ -258,24 +298,35 @@ After fixing:
 ${marker}
 # Secret Leak Detector Pre-Commit Hook
 # Intercepts git commit and blocks unredacted credentials before they leave the machine.
+#
+# Severity policy: blocks commits containing findings at HIGH or CRITICAL risk.
+# LOW / MEDIUM findings are reported but do not block the commit by default.
+# To change this threshold, edit --fail-on below (CRITICAL | HIGH | MEDIUM).
+SLD_FAIL_ON="HIGH"
 
 echo "🔐 [Secret Leak Detector] Inspecting staged changes for credentials..."
 
 # Determine CLI binary without using eval (avoids shell injection via env var content).
 # Priority: local dist/cli.js > global binary > npx.
 if [ -f "./dist/cli.js" ]; then
-  node ./dist/cli.js scan --staged --fail-on CRITICAL
+  node ./dist/cli.js scan --staged --fail-on "$SLD_FAIL_ON"
   SCAN_STATUS=$?
 elif command -v secret-leak-detector >/dev/null 2>&1; then
-  secret-leak-detector scan --staged --fail-on CRITICAL
+  secret-leak-detector scan --staged --fail-on "$SLD_FAIL_ON"
   SCAN_STATUS=$?
 elif command -v npx >/dev/null 2>&1; then
-  npx --no-install secret-leak-detector scan --staged --fail-on CRITICAL
+  npx --no-install secret-leak-detector scan --staged --fail-on "$SLD_FAIL_ON"
   SCAN_STATUS=$?
 else
-  # Fail-safe regex inspection if Node/CLI is unavailable in this environment
-  DIFF=$(git diff --cached --unified=0)
-  if echo "$DIFF" | grep -E '^[+]' | grep -E -q '(AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16}|(gh[pousr]_[A-Za-z0-9_]{36,82}|github_pat_[A-Za-z0-9_]{82})|(sk|rk)_(live|test)_[0-9a-zA-Z]{24}|-----BEGIN (RSA|EC|DSA|OPENSSH|PGP) PRIVATE KEY-----'; then
+  # Fail-safe regex inspection if Node/CLI is unavailable in this environment.
+  # Check that git diff itself succeeds before examining its output.
+  DIFF_OUTPUT=$(git diff --cached --unified=0 2>&1)
+  GIT_DIFF_STATUS=$?
+  if [ $GIT_DIFF_STATUS -ne 0 ]; then
+    echo "❌ COMMIT BLOCKED: git diff --cached failed (exit $GIT_DIFF_STATUS). Cannot verify staged content is secret-free."
+    exit 1
+  fi
+  if echo "$DIFF_OUTPUT" | grep -E '^[+]' | grep -E -q '(AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16}|(gh[pousr]_[A-Za-z0-9_]{36,82}|github_pat_[A-Za-z0-9_]{82})|(sk|rk)_(live|test)_[0-9a-zA-Z]{24}|-----BEGIN (RSA|EC|DSA|OPENSSH|PGP) PRIVATE KEY-----'; then
     echo "❌ COMMIT BLOCKED: Potential secret detected in staged changes!"
     exit 1
   fi
@@ -315,9 +366,10 @@ exit 0
 
   /**
    * Safely uninstalls pre-commit hook and restores any previous backup.
+   * Resolves the same hooks directory used during install.
    */
   public async uninstallPreCommitHook(): Promise<{ success: boolean; message: string }> {
-    const hooksDir = path.join(this.workspaceRoot, '.git', 'hooks');
+    const hooksDir = await this.resolveHooksDir();
     const hookPath = path.join(hooksDir, 'pre-commit');
     const latestBackupMarkerPath = path.join(hooksDir, 'pre-commit.sld-backup.latest');
 

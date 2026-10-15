@@ -232,34 +232,90 @@ export function applyControlledRemediation(
       modifiedFile: targetFile,
     };
   } catch (err: any) {
-    // Transactional Rollback: Restore all mutated files to their pre-call state.
+    // Transactional Rollback: restore all mutated files to their pre-call state.
+    // Each rollback step is verified and failures are accumulated so callers receive
+    // a precise report of the workspace state rather than a silent partial restoration.
+    const rollbackFailures: string[] = [];
+
+    // Helper: atomic write-via-temp-file to avoid leaving a partially-written file
+    // if the process is interrupted mid-write.
+    const atomicWrite = (filePath: string, content: string): void => {
+      const tmp = `${filePath}.sld-tmp-${Date.now()}`;
+      fs.writeFileSync(tmp, content, 'utf8');
+      fs.renameSync(tmp, filePath);
+    };
+
     // Source file
-    if (originalFileContent !== null && fs.existsSync(targetFile)) {
-      try { fs.writeFileSync(targetFile, originalFileContent, 'utf8'); } catch {}
+    if (originalFileContent !== null) {
+      try {
+        atomicWrite(targetFile, originalFileContent);
+        // Verify the file actually contains the original content
+        const restored = fs.readFileSync(targetFile, 'utf8');
+        if (restored !== originalFileContent) {
+          rollbackFailures.push(`source file restored with mismatched content (${targetFile})`);
+        }
+      } catch (rbErr: any) {
+        rollbackFailures.push(`source file restore failed (${targetFile}): ${rbErr.message}`);
+      }
     }
-    // .env: delete if newly created, restore original content if pre-existing
+
+    // .env: delete if newly created, restore if pre-existing
     if (envWasNewlyCreated && fs.existsSync(envPath)) {
-      try { fs.unlinkSync(envPath); } catch {}
+      try {
+        fs.unlinkSync(envPath);
+        if (fs.existsSync(envPath)) rollbackFailures.push(`.env delete did not take effect`);
+      } catch (rbErr: any) {
+        rollbackFailures.push(`.env delete failed: ${rbErr.message}`);
+      }
     } else if (originalEnvContent !== null && fs.existsSync(envPath)) {
-      try { fs.writeFileSync(envPath, originalEnvContent, 'utf8'); } catch {}
+      try {
+        atomicWrite(envPath, originalEnvContent);
+      } catch (rbErr: any) {
+        rollbackFailures.push(`.env restore failed: ${rbErr.message}`);
+      }
     }
-    // .gitignore: delete if newly created, restore original content if pre-existing
+
+    // .gitignore: delete if newly created, restore if pre-existing
     if (gitignoreWasNewlyCreated && fs.existsSync(gitignorePath)) {
-      try { fs.unlinkSync(gitignorePath); } catch {}
+      try {
+        fs.unlinkSync(gitignorePath);
+        if (fs.existsSync(gitignorePath)) rollbackFailures.push(`.gitignore delete did not take effect`);
+      } catch (rbErr: any) {
+        rollbackFailures.push(`.gitignore delete failed: ${rbErr.message}`);
+      }
     } else if (originalGitignoreContent !== null && fs.existsSync(gitignorePath)) {
-      try { fs.writeFileSync(gitignorePath, originalGitignoreContent, 'utf8'); } catch {}
+      try {
+        atomicWrite(gitignorePath, originalGitignoreContent);
+      } catch (rbErr: any) {
+        rollbackFailures.push(`.gitignore restore failed: ${rbErr.message}`);
+      }
     }
-    // .env.example: delete if newly created, restore original content if pre-existing
+
+    // .env.example: delete if newly created, restore if pre-existing
     const envExamplePath = path.join(workspaceRoot, '.env.example');
     if (envExampleWasNewlyCreated && fs.existsSync(envExamplePath)) {
-      try { fs.unlinkSync(envExamplePath); } catch {}
+      try {
+        fs.unlinkSync(envExamplePath);
+        if (fs.existsSync(envExamplePath)) rollbackFailures.push(`.env.example delete did not take effect`);
+      } catch (rbErr: any) {
+        rollbackFailures.push(`.env.example delete failed: ${rbErr.message}`);
+      }
     } else if (originalEnvExampleContent !== null && fs.existsSync(envExamplePath)) {
-      try { fs.writeFileSync(envExamplePath, originalEnvExampleContent, 'utf8'); } catch {}
+      try {
+        atomicWrite(envExamplePath, originalEnvExampleContent);
+      } catch (rbErr: any) {
+        rollbackFailures.push(`.env.example restore failed: ${rbErr.message}`);
+      }
     }
+
+    const rollbackStatus =
+      rollbackFailures.length === 0
+        ? 'Rollback completed successfully.'
+        : `ROLLBACK INCOMPLETE — manual inspection required: ${rollbackFailures.join('; ')}`;
 
     return {
       success: false,
-      message: `Remediation failed and rolled back: ${err.message}`,
+      message: `Remediation failed: ${err.message}. ${rollbackStatus}`,
       envPath: '',
       modifiedFile: finding.fullPath,
     };

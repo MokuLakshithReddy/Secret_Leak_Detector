@@ -157,13 +157,14 @@ async function runScan(cmdArgs: string[], cwd: string) {
           let stagedBlob = '';
           try {
             stagedBlob = execSync(`git show :${relPath.replace(/\\/g, '/')}`, { cwd, encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 });
-          } catch {
-            const diskPath = path.join(cwd, relPath);
-            if (fs.existsSync(diskPath)) {
-              stagedBlob = fs.readFileSync(diskPath, 'utf8');
-            } else {
-              continue;
-            }
+          } catch (blobErr: any) {
+            // SECURITY: Do NOT fall back to working-tree content.
+            // The index and working tree can diverge; substituting disk content would scan
+            // the wrong data and could produce a false-clean result.
+            // Treat an unreadable staged blob as a scan error and block the commit.
+            console.error(`Error: Could not read staged blob for '${relPath}': ${blobErr.message}`);
+            console.error('Commit blocked: staged content could not be verified.');
+            process.exit(1);
           }
 
           const fileFindings = scanContent(stagedBlob, relPath, { workspaceRoot: cwd });
