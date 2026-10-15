@@ -388,6 +388,40 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
       assert(res.findings.some((f) => String(f.file) === 'newname.ts'), 'Renamed destination newname.ts scanned');
     }
 
+    // 18g. Scored rename status (R100): git reports R100, not bare R.
+    {
+      const r = makeRepo('rename-scored');
+      fs.writeFileSync(path.join(r, 'oldname.ts'), `const key = "${awsSecret}";\n`);
+      cp.execSync('git add -A', { cwd: r, stdio: 'ignore' });
+      cp.execSync('git commit -q -m add-oldname', { cwd: r, stdio: 'ignore' });
+      cp.execSync('git mv oldname.ts newname.ts', { cwd: r, stdio: 'ignore' });
+      // Confirm git emits a scored status (R100) when rename detection is enabled.
+      const raw = cp.execSync('git diff --cached -z -M --name-status', {
+        cwd: r, encoding: 'utf8',
+      }).toString();
+      assert(/^R\d+\0/.test(raw), `Git rename status should be scored (e.g. R100), got: ${JSON.stringify(raw)}`);
+      const res = await new GitService(r).scanStagedChanges();
+      assert(res.status === 'FINDINGS', `Scored rename R100: expected FINDINGS, got ${res.status}`);
+      assert(res.findings.some((f) => String(f.file) === 'newname.ts'), 'Scored rename destination scanned');
+    }
+
+    // 18h. Scored copy status (C100): git reports C100 for copies.
+    {
+      const r = makeRepo('copy-scored');
+      fs.writeFileSync(path.join(r, 'orig.ts'), `const key = "${awsSecret}";\n`);
+      cp.execSync('git add -A', { cwd: r, stdio: 'ignore' });
+      cp.execSync('git commit -q -m add-orig', { cwd: r, stdio: 'ignore' });
+      fs.copyFileSync(path.join(r, 'orig.ts'), path.join(r, 'copy.ts'));
+      cp.execSync('git add -A', { cwd: r, stdio: 'ignore' });
+      const raw = cp.execSync('git diff --cached -z -C --find-copies-harder --name-status', {
+        cwd: r, encoding: 'utf8',
+      }).toString();
+      assert(/^C\d+\0/.test(raw), `Git copy status should be scored (e.g. C100), got: ${JSON.stringify(raw)}`);
+      const res = await new GitService(r).scanStagedChanges();
+      assert(res.status === 'FINDINGS', `Scored copy C100: expected FINDINGS, got ${res.status}`);
+      assert(res.findings.some((f) => String(f.file) === 'copy.ts'), 'Scored copy destination scanned');
+    }
+
     // 18c. Clean staged changes -> CLEAN (commit allowed).
     {
       const r = makeRepo('clean');
@@ -486,56 +520,133 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
     assert(content.includes(remSecret), msg);
   };
 
+  // Build a mock fs that fails on chosen operations. applyControlledRemediation
+  // accepts an injectable fsModule, so we can fault-inject without relying on
+  // filesystem permissions (ineffective when CI runs as root).
+  const makeMockFs = (failOps: Set<string>): typeof fs => {
+    const mock: any = { ...fs };
+    const isEnvPath = (target: string) => path.basename(target) === '.env';
+    const isConfigPath = (target: string) => path.basename(target) === 'config.ts';
+
+    if (failOps.has('write-env') || failOps.has('write-config')) {
+      const realWrite = fs.writeFileSync.bind(fs);
+      const realAppend = fs.appendFileSync.bind(fs);
+      let currentWrite = realWrite;
+      let currentAppend = realAppend;
+
+      if (failOps.has('write-env')) {
+        currentWrite = (...args: any[]) => {
+          if (isEnvPath(String(args[0]))) {
+            const e: any = new Error('EPERM: operation not permitted, open .env');
+            e.code = 'EPERM';
+            throw e;
+          }
+          return realWrite(...args);
+        };
+        currentAppend = (...args: any[]) => {
+          if (isEnvPath(String(args[0]))) {
+            const e: any = new Error('EPERM: operation not permitted, open .env');
+            e.code = 'EPERM';
+            throw e;
+          }
+          return realAppend(...args);
+        };
+      }
+      if (failOps.has('write-config')) {
+        const prevWrite = currentWrite;
+        const prevAppend = currentAppend;
+        currentWrite = (...args: any[]) => {
+          if (isConfigPath(String(args[0]))) {
+            const e: any = new Error('EPERM: operation not permitted, open config.ts');
+            e.code = 'EPERM';
+            throw e;
+          }
+          return prevWrite(...args);
+        };
+        currentAppend = (...args: any[]) => {
+          if (isConfigPath(String(args[0]))) {
+            const e: any = new Error('EPERM: operation not permitted, open config.ts');
+            e.code = 'EPERM';
+            throw e;
+          }
+          return prevAppend(...args);
+        };
+      }
+      mock.writeFileSync = currentWrite;
+      mock.appendFileSync = currentAppend;
+    }
+
+    if (failOps.has('rename')) {
+      mock.renameSync = (...args: any[]) => {
+        const e: any = new Error('EPERM: operation not permitted, rename');
+        e.code = 'EPERM';
+        throw e;
+      };
+    }
+    if (failOps.has('unlink-env')) {
+      const realUnlink = fs.unlinkSync.bind(fs);
+      mock.unlinkSync = (...args: any[]) => {
+        if (isEnvPath(String(args[0]))) {
+          const e: any = new Error('EPERM: operation not permitted, unlink .env');
+          e.code = 'EPERM';
+          throw e;
+        }
+        return realUnlink(...args);
+      };
+    }
+    return mock as typeof fs;
+  };
+
   try {
-    // 19a. Write failure (target file read-only) -> remediation fails, rollback runs, original preserved.
+    // 19a. Write failure (config.ts write fails) -> remediation fails, rollback runs, original preserved.
     {
       const w = makeWs();
-      fs.chmodSync(path.join(w, 'config.ts'), 0o444);
-      try {
-        const result = applyControlledRemediation(finding(w), w);
-        assert(result.success === false, 'Write failure should fail remediation');
-        assert(/EPERM|operation not permitted/i.test(result.message || ''),
-          `Write failure reason reported (got: ${result.message})`);
-        assertOriginalPreserved(w, 'Target file preserved original secret after write failure');
-        assert(typeof result.message === 'string' && result.message.length > 0, 'Failure message reported');
-      } finally {
-        fs.chmodSync(path.join(w, 'config.ts'), 0o666);
-      }
+      const result = applyControlledRemediation(finding(w), w, makeMockFs(new Set(['write-config'])));
+      assert(result.success === false, 'Write failure should fail remediation');
+      assert(/EPERM|operation not permitted/i.test(result.message || ''),
+        `Write failure reason reported (got: ${result.message})`);
+      assertOriginalPreserved(w, 'Target file preserved original secret after write failure');
+      assert(typeof result.message === 'string' && result.message.length > 0, 'Failure message reported');
     }
 
-    // 19b. Rename failure during rollback: target read-only makes the rollback's
-    // atomic restore (temp -> target rename) fail. Rollback failure is reported,
-    // and the original secret is still preserved (target never replaced).
+    // 19b. Rename failure during rollback: .env write fails (triggers catch), then
+    // rollback's atomic rename fails. Rollback failure reported, original preserved.
     {
       const w = makeWs();
-      fs.chmodSync(path.join(w, 'config.ts'), 0o444);
-      try {
-        const result = applyControlledRemediation(finding(w), w);
-        assert(result.success === false, 'Rename failure during rollback should fail remediation');
-        assert(/rollback/i.test(result.message), 'Rollback status reported on rename failure');
-        assert(/restore|rename/i.test(result.message), 'Restore/rename failure detail reported');
-        assertOriginalPreserved(w, 'Target file preserved original secret after rename failure');
-      } finally {
-        fs.chmodSync(path.join(w, 'config.ts'), 0o666);
-      }
+      const result = applyControlledRemediation(
+        finding(w), w, makeMockFs(new Set(['write-env', 'rename']))
+      );
+      assert(result.success === false, 'Rename failure during rollback should fail remediation');
+      assert(/rollback/i.test(result.message), 'Rollback status reported on rename failure');
+      assert(/restore|rename/i.test(result.message), 'Restore/rename failure detail reported');
+      assertOriginalPreserved(w, 'Target file preserved original secret after rename failure');
     }
 
-    // 19c. Delete path: a newly-created .env is removed by rollback when a later
-    // step (target write) fails. config.ts is read-only so the write fails after
-    // .env has been created; rollback must delete the newly-created .env.
+    // 19c. Delete path: .env pre-deleted, config.ts write fails -> rollback deletes
+    // newly-created .env. .env removed, original preserved.
     {
       const w = makeWs();
       fs.unlinkSync(path.join(w, '.env')); // .env will be newly created by remediation
-      fs.chmodSync(path.join(w, 'config.ts'), 0o444); // write fails after .env is created
-      try {
-        const result = applyControlledRemediation(finding(w), w);
-        assert(result.success === false, 'Delete-path scenario should fail remediation');
-        assert(!fs.existsSync(path.join(w, '.env')), 'Newly-created .env removed by rollback on failure');
-        assertOriginalPreserved(w, 'Target file preserved original secret in delete-path scenario');
-      } finally {
-        fs.chmodSync(path.join(w, 'config.ts'), 0o666);
-        try { fs.unlinkSync(path.join(w, '.env')); } catch {}
-      }
+      const result = applyControlledRemediation(
+        finding(w), w, makeMockFs(new Set(['write-config']))
+      );
+      assert(result.success === false, 'Delete-path scenario should fail remediation');
+      assert(!fs.existsSync(path.join(w, '.env')), 'Newly-created .env removed by rollback on failure');
+      assertOriginalPreserved(w, 'Target file preserved original secret in delete-path scenario');
+    }
+
+    // 19d. Unlink failure during rollback: .env pre-deleted + newly created, config.ts
+    // write fails -> rollback tries to unlink .env but unlink fails. Rollback failure
+    // reported, original preserved.
+    {
+      const w = makeWs();
+      fs.unlinkSync(path.join(w, '.env')); // .env will be newly created by remediation
+      const result = applyControlledRemediation(
+        finding(w), w, makeMockFs(new Set(['write-config', 'unlink-env']))
+      );
+      assert(result.success === false, 'Unlink failure during rollback should fail remediation');
+      assert(/rollback/i.test(result.message), 'Rollback status reported on unlink failure');
+      assertOriginalPreserved(w, 'Target file preserved original secret after unlink failure');
     }
   } finally {
     fs.rmSync(remScratchRoot, { recursive: true, force: true });

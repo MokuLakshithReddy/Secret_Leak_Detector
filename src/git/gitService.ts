@@ -3,7 +3,7 @@ import { promisify } from 'util';
 import * as fs from 'fs';
 import * as path from 'path';
 import { SecretFinding } from '../core/types';
-import { scanContent } from '../core/scanner/scanner';
+import { scanStagedChangesSync } from './stagedScanner';
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -39,142 +39,13 @@ export class GitService {
   /**
    * Retrieves staged diff, extracts exact modified line coordinates,
    * scans the staged file version, and returns a fail-closed scan result.
+   *
+   * Delegates to the shared staged-scan module (execFileSync argument arrays +
+   * NUL-delimited output), so the CLI and the extension use one tested parser.
+   * Handles scored statuses (R100/C80) and never falls back to working-tree content.
    */
   public async scanStagedChanges(): Promise<StagedScanResult> {
-    const isGit = await this.isGitRepo();
-    if (!isGit) {
-      // FAIL CLOSED: A non-Git workspace cannot be scanned for staged secrets.
-      // Returning ERROR ensures callers treat this as an explicit scan failure,
-      // not as an absence of secrets.
-      return {
-        status: 'ERROR',
-        findings: [],
-        error: 'Not a Git repository — staged scan cannot run.',
-      };
-    }
-
-    try {
-      // Get unified diff of staged changes with 0 lines of context to isolate added lines
-      const { stdout: diffOutput } = await execAsync('git diff --cached --unified=0', {
-        cwd: this.workspaceRoot,
-        maxBuffer: 10 * 1024 * 1024,
-      });
-
-      if (!diffOutput || diffOutput.trim().length === 0) {
-        return {
-          status: 'CLEAN',
-          findings: [],
-          filesScanned: 0,
-        };
-      }
-
-      const allFindings: SecretFinding[] = [];
-      const fileDiffs = diffOutput.split(/^diff --git /m);
-      let filesScanned = 0;
-
-      for (const diff of fileDiffs) {
-        if (!diff.trim()) continue;
-
-        // Parse file path
-        const fileMatch = diff.match(/^[ab]\/(.+?) [ab]\/(.+)/m) || diff.match(/^\+\+\+ b\/(.+)/m);
-        if (!fileMatch) continue;
-
-        const relativePath = fileMatch[2] || fileMatch[1];
-        if (relativePath === '/dev/null') continue; // File deleted
-
-        const normalizedRelPath = relativePath.replace(/\\/g, '/');
-        const fullPath = path.join(this.workspaceRoot, relativePath);
-
-        // Parse diff hunk headers to get exact added line numbers in the staged version
-        // Format: @@ -oldStart[,oldCount] +newStart[,newCount] @@
-        const addedLineNumbers = new Set<number>();
-        const hunkRegex = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/gm;
-        let hunkMatch: RegExpExecArray | null;
-
-        while ((hunkMatch = hunkRegex.exec(diff)) !== null) {
-          const newStart = parseInt(hunkMatch[1], 10);
-          const newCount = hunkMatch[2] !== undefined ? parseInt(hunkMatch[2], 10) : 1;
-
-          for (let i = 0; i < newCount; i++) {
-            addedLineNumbers.add(newStart + i);
-          }
-        }
-
-        if (addedLineNumbers.size === 0) continue;
-
-        // Read the exact staged blob content from Git index.
-        // SECURITY: Use execFile with an argument array instead of execAsync to prevent
-        // shell injection via filenames containing metacharacters (spaces, $(), backticks, etc.).
-        // SECURITY: Do NOT fall back to working-tree content. The staged index and the
-        // working tree can diverge; substituting disk content would scan the wrong data
-        // and could produce a false-clean result for a file that IS staged with a secret.
-        let stagedContent: string;
-        try {
-          const { stdout: blobContent } = await execFileAsync(
-            'git',
-            ['show', `:${normalizedRelPath}`],
-            { cwd: this.workspaceRoot, maxBuffer: 10 * 1024 * 1024 }
-          );
-          stagedContent = blobContent;
-        } catch (blobErr: any) {
-          // Blob read failed — treat as a scan error for this file.
-          // Do NOT continue silently: push an error marker so callers know a file was skipped.
-          allFindings.push({
-            // Minimal synthetic finding that signals a scan failure without false-positive.
-            type: 'SCAN_ERROR',
-            provider: 'Internal',
-            file: normalizedRelPath,
-            fullPath,
-            line: 0,
-            column: 0,
-            rawSecret: '',
-            redactedSecret: '',
-            confidence: 0,
-            risk: 'CRITICAL' as any,
-            signals: [`git show failed: ${blobErr.message || String(blobErr)}`],
-            evidence: { score: 0, items: [] },
-            riskAssessment: { score: 100, blastRadius: { level: 'UNKNOWN', summary: 'Staged blob unreadable — scan blocked' }, factors: [] },
-            remediation: { steps: [], envVarName: '', replacementCode: '', envFileSnippet: '', envExampleSnippet: '', gitHistoryPurgeCommand: '', diffPreview: '' },
-          } as any);
-          continue;
-        }
-
-        filesScanned++;
-
-        // Scan full staged content: preserves AST structure, lexical context, and line/col mapping
-        const fileFindings = scanContent(stagedContent, fullPath, { workspaceRoot: this.workspaceRoot });
-
-        // Filter findings to only those that fall on newly added/modified lines in this commit
-        for (const finding of fileFindings) {
-          if (addedLineNumbers.has(finding.line)) {
-            allFindings.push(finding);
-          }
-        }
-      }
-
-      if (allFindings.length > 0) {
-        return {
-          status: 'FINDINGS',
-          findings: allFindings,
-          filesScanned,
-        };
-      }
-
-      return {
-        status: 'CLEAN',
-        findings: [],
-        filesScanned,
-      };
-    } catch (err: any) {
-      console.error('Failed to run git diff --cached:', err);
-      // FAIL CLOSED: Do not return an empty findings list on error.
-      // An error must be explicitly reported as ERROR so security gates can block.
-      return {
-        status: 'ERROR',
-        findings: [],
-        error: `Git staged scan failed: ${err.message || String(err)}`,
-      };
-    }
+    return scanStagedChangesSync(this.workspaceRoot);
   }
 
   public formatTerminalBlockedMessage(findings: SecretFinding[]): string {

@@ -138,7 +138,8 @@ export function ensureGitignoreProtectsEnv(workspaceRoot: string): void {
  */
 export function applyControlledRemediation(
   finding: SecretFinding,
-  workspaceRoot: string
+  workspaceRoot: string,
+  fsModule: typeof fs = fs
 ): ApplyRemediationResult {
   const targetFile = finding.fullPath;
   let originalFileContent: string | null = null;
@@ -153,7 +154,7 @@ export function applyControlledRemediation(
   const gitignorePath = path.join(workspaceRoot, '.gitignore');
 
   try {
-    if (!fs.existsSync(targetFile)) {
+    if (!fsModule.existsSync(targetFile)) {
       return {
         success: false,
         message: `Target file not found: ${targetFile}`,
@@ -162,7 +163,7 @@ export function applyControlledRemediation(
       };
     }
 
-    originalFileContent = fs.readFileSync(targetFile, 'utf8');
+    originalFileContent = fsModule.readFileSync(targetFile, 'utf8');
     if (!originalFileContent.includes(finding.rawSecret)) {
       return {
         success: false,
@@ -174,16 +175,16 @@ export function applyControlledRemediation(
 
     // 1. Read existing .env if present and determine unique variable name
     let envContent = '';
-    if (fs.existsSync(envPath)) {
-      originalEnvContent = fs.readFileSync(envPath, 'utf8');
+    if (fsModule.existsSync(envPath)) {
+      originalEnvContent = fsModule.readFileSync(envPath, 'utf8');
       envContent = originalEnvContent;
     } else {
       envWasNewlyCreated = true;
     }
 
     // Snapshot .gitignore state before mutation
-    if (fs.existsSync(gitignorePath)) {
-      originalGitignoreContent = fs.readFileSync(gitignorePath, 'utf8');
+    if (fsModule.existsSync(gitignorePath)) {
+      originalGitignoreContent = fsModule.readFileSync(gitignorePath, 'utf8');
     } else {
       gitignoreWasNewlyCreated = true;
     }
@@ -200,22 +201,22 @@ export function applyControlledRemediation(
     // 3. Write to .env
     if (!isReused) {
       const prefix = envContent.endsWith('\n') || envContent.length === 0 ? '' : '\n';
-      fs.appendFileSync(envPath, `${prefix}${envLine}`, 'utf8');
+      fsModule.appendFileSync(envPath, `${prefix}${envLine}`, 'utf8');
     }
 
     // 4. Update .env.example
     const envExamplePath = path.join(workspaceRoot, '.env.example');
     const exampleLine = `${varName}=your_${varName.toLowerCase()}_here\n`;
-    const envExampleExists = fs.existsSync(envExamplePath);
+    const envExampleExists = fsModule.existsSync(envExamplePath);
     if (!envExampleExists) {
       envExampleWasNewlyCreated = true;
     } else {
-      originalEnvExampleContent = fs.readFileSync(envExamplePath, 'utf8');
+      originalEnvExampleContent = fsModule.readFileSync(envExamplePath, 'utf8');
     }
-    if (!envExampleExists || !fs.readFileSync(envExamplePath, 'utf8').includes(varName)) {
-      const exContent = envExampleExists ? fs.readFileSync(envExamplePath, 'utf8') : '';
+    if (!envExampleExists || !fsModule.readFileSync(envExamplePath, 'utf8').includes(varName)) {
+      const exContent = envExampleExists ? fsModule.readFileSync(envExamplePath, 'utf8') : '';
       const exPrefix = exContent.endsWith('\n') || exContent.length === 0 ? '' : '\n';
-      fs.appendFileSync(envExamplePath, `${exPrefix}${exampleLine}`, 'utf8');
+      fsModule.appendFileSync(envExamplePath, `${exPrefix}${exampleLine}`, 'utf8');
     }
 
     // 5. Replace secret literal in source file
@@ -223,7 +224,7 @@ export function applyControlledRemediation(
       new RegExp(escapeRegExp(finding.rawSecret), 'g'),
       replacementCode
     );
-    fs.writeFileSync(targetFile, newContent, 'utf8');
+    fsModule.writeFileSync(targetFile, newContent, 'utf8');
 
     return {
       success: true,
@@ -241,8 +242,8 @@ export function applyControlledRemediation(
     // if the process is interrupted mid-write.
     const atomicWrite = (filePath: string, content: string): void => {
       const tmp = `${filePath}.sld-tmp-${Date.now()}`;
-      fs.writeFileSync(tmp, content, 'utf8');
-      fs.renameSync(tmp, filePath);
+      fsModule.writeFileSync(tmp, content, 'utf8');
+      fsModule.renameSync(tmp, filePath);
     };
 
     // Source file
@@ -250,7 +251,7 @@ export function applyControlledRemediation(
       try {
         atomicWrite(targetFile, originalFileContent);
         // Verify the file actually contains the original content
-        const restored = fs.readFileSync(targetFile, 'utf8');
+        const restored = fsModule.readFileSync(targetFile, 'utf8');
         if (restored !== originalFileContent) {
           rollbackFailures.push(`source file restored with mismatched content (${targetFile})`);
         }
@@ -260,14 +261,14 @@ export function applyControlledRemediation(
     }
 
     // .env: delete if newly created, restore if pre-existing
-    if (envWasNewlyCreated && fs.existsSync(envPath)) {
+    if (envWasNewlyCreated && fsModule.existsSync(envPath)) {
       try {
-        fs.unlinkSync(envPath);
-        if (fs.existsSync(envPath)) rollbackFailures.push(`.env delete did not take effect`);
+        fsModule.unlinkSync(envPath);
+        if (fsModule.existsSync(envPath)) rollbackFailures.push(`.env delete did not take effect`);
       } catch (rbErr: any) {
         rollbackFailures.push(`.env delete failed: ${rbErr.message}`);
       }
-    } else if (originalEnvContent !== null && fs.existsSync(envPath)) {
+    } else if (originalEnvContent !== null && fsModule.existsSync(envPath)) {
       try {
         atomicWrite(envPath, originalEnvContent);
       } catch (rbErr: any) {
@@ -276,14 +277,14 @@ export function applyControlledRemediation(
     }
 
     // .gitignore: delete if newly created, restore if pre-existing
-    if (gitignoreWasNewlyCreated && fs.existsSync(gitignorePath)) {
+    if (gitignoreWasNewlyCreated && fsModule.existsSync(gitignorePath)) {
       try {
-        fs.unlinkSync(gitignorePath);
-        if (fs.existsSync(gitignorePath)) rollbackFailures.push(`.gitignore delete did not take effect`);
+        fsModule.unlinkSync(gitignorePath);
+        if (fsModule.existsSync(gitignorePath)) rollbackFailures.push(`.gitignore delete did not take effect`);
       } catch (rbErr: any) {
         rollbackFailures.push(`.gitignore delete failed: ${rbErr.message}`);
       }
-    } else if (originalGitignoreContent !== null && fs.existsSync(gitignorePath)) {
+    } else if (originalGitignoreContent !== null && fsModule.existsSync(gitignorePath)) {
       try {
         atomicWrite(gitignorePath, originalGitignoreContent);
       } catch (rbErr: any) {
@@ -293,14 +294,14 @@ export function applyControlledRemediation(
 
     // .env.example: delete if newly created, restore if pre-existing
     const envExamplePath = path.join(workspaceRoot, '.env.example');
-    if (envExampleWasNewlyCreated && fs.existsSync(envExamplePath)) {
+    if (envExampleWasNewlyCreated && fsModule.existsSync(envExamplePath)) {
       try {
-        fs.unlinkSync(envExamplePath);
-        if (fs.existsSync(envExamplePath)) rollbackFailures.push(`.env.example delete did not take effect`);
+        fsModule.unlinkSync(envExamplePath);
+        if (fsModule.existsSync(envExamplePath)) rollbackFailures.push(`.env.example delete did not take effect`);
       } catch (rbErr: any) {
         rollbackFailures.push(`.env.example delete failed: ${rbErr.message}`);
       }
-    } else if (originalEnvExampleContent !== null && fs.existsSync(envExamplePath)) {
+    } else if (originalEnvExampleContent !== null && fsModule.existsSync(envExamplePath)) {
       try {
         atomicWrite(envExamplePath, originalEnvExampleContent);
       } catch (rbErr: any) {
