@@ -966,7 +966,7 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
         cp.execFileSync('git', ['config', 'user.email', 'verify@example.com'], { cwd: vdir, stdio: 'ignore' });
 
         const targetFile = path.join(vdir, 'auth_temp.ts');
-        const testSecret = 'AKIA1122334455667788';
+        const testSecret = synth(['AK', 'IA', '1122334455667788']);
         fs.writeFileSync(targetFile, `const apiKey = "${testSecret}";\n`, 'utf8');
         cp.execFileSync('git', ['add', 'auth_temp.ts'], { cwd: vdir });
         cp.execFileSync('git', ['commit', '-m', 'Add auth_temp with secret'], { cwd: vdir });
