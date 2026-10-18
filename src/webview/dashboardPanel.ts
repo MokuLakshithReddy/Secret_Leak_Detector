@@ -1,5 +1,8 @@
 import * as vscode from 'vscode';
+import * as crypto from 'crypto';
 import { SecretFinding } from '../core/types';
+import { RedactedFindingView, toRedactedFindingView } from './dashboardModel';
+export { RedactedFindingView, toRedactedFindingView };
 
 export class DashboardPanel {
   public static currentPanel: DashboardPanel | undefined;
@@ -78,9 +81,10 @@ export class DashboardPanel {
 
   public updateFindings(findings: SecretFinding[]) {
     this._findings = findings;
+    const redacted = this._findings.map(toRedactedFindingView);
     this._panel.webview.postMessage({
       command: 'updateData',
-      findings: this._findings,
+      findings: redacted,
     });
     this._update();
   }
@@ -101,13 +105,17 @@ export class DashboardPanel {
   }
 
   private _getHtmlForWebview(): string {
-    const findingsJson = JSON.stringify(this._findings);
+    const nonce = crypto.randomBytes(16).toString('base64');
+    const redactedFindings = this._findings.map(toRedactedFindingView);
+    // Escape < to prevent any closing script tag breakout
+    const safeInitialData = JSON.stringify(redactedFindings).replace(/</g, '\\u003c');
 
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';">
   <title>Secret Leak Detector</title>
   <style>
     :root {
@@ -312,9 +320,9 @@ export class DashboardPanel {
       <span class="badge-live">LIVE MONITORING</span>
     </div>
     <div class="btn-group">
-      <button onclick="scanStaged()">⚡ Scan Staged</button>
-      <button class="primary" onclick="scanWorkspace()">🔍 Full Workspace Scan</button>
-      <button onclick="installHook()">🛡️ Install Hook</button>
+      <button id="btn-scan-staged">⚡ Scan Staged</button>
+      <button id="btn-scan-workspace" class="primary">🔍 Full Workspace Scan</button>
+      <button id="btn-install-hook">🛡️ Install Hook</button>
     </div>
   </div>
 
@@ -338,9 +346,9 @@ export class DashboardPanel {
   </div>
 
   <div class="tabs">
-    <div class="tab active" onclick="switchTab('findings')">Active Findings</div>
-    <div class="tab" onclick="switchTab('blast')">Blast Radius & Providers</div>
-    <div class="tab" onclick="switchTab('workflow')">Workflow Architecture</div>
+    <div class="tab active" data-tab="findings">Active Findings</div>
+    <div class="tab" data-tab="blast">Blast Radius & Providers</div>
+    <div class="tab" data-tab="workflow">Workflow Architecture</div>
   </div>
 
   <div id="tab-findings" class="card">
@@ -393,9 +401,33 @@ ALLOW (Commit Proceeds)
     </pre>
   </div>
 
-  <script>
+  <script id="sld-initial-data" type="application/json" nonce="${nonce}">${safeInitialData}</script>
+  <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
-    let findings = ${findingsJson};
+    let findings = [];
+
+    try {
+      const initialEl = document.getElementById('sld-initial-data');
+      if (initialEl && initialEl.textContent) {
+        findings = JSON.parse(initialEl.textContent);
+      }
+    } catch (e) {
+      findings = [];
+    }
+
+    function openFile(file, line) {
+      vscode.postMessage({ command: 'openFile', file, line });
+    }
+
+    function switchTab(tabId, targetEl) {
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      document.getElementById('tab-findings').style.display = tabId === 'findings' ? 'block' : 'none';
+      document.getElementById('tab-blast').style.display = tabId === 'blast' ? 'block' : 'none';
+      document.getElementById('tab-workflow').style.display = tabId === 'workflow' ? 'block' : 'none';
+      if (targetEl) {
+        targetEl.classList.add('active');
+      }
+    }
 
     function render() {
       const tbody = document.getElementById('findings-table-body');
@@ -405,94 +437,200 @@ ALLOW (Commit Proceeds)
       const criticalCount = findings.filter(f => f.risk === 'CRITICAL').length;
       const highCount = findings.filter(f => f.risk === 'HIGH').length;
 
-      document.getElementById('stat-total').innerText = totalCount;
-      document.getElementById('stat-critical').innerText = criticalCount;
-      document.getElementById('stat-high').innerText = highCount;
-      document.getElementById('stat-guard').innerText = totalCount > 0 ? 'BLOCKING' : 'READY';
-      document.getElementById('stat-guard').className = totalCount > 0 ? 'stat-value critical' : 'stat-value clean';
+      document.getElementById('stat-total').textContent = String(totalCount);
+      document.getElementById('stat-critical').textContent = String(criticalCount);
+      document.getElementById('stat-high').textContent = String(highCount);
+      const guardEl = document.getElementById('stat-guard');
+      guardEl.textContent = totalCount > 0 ? 'BLOCKING' : 'READY';
+      guardEl.className = totalCount > 0 ? 'stat-value critical' : 'stat-value clean';
+
+      // Clear existing rows safely
+      while (tbody.firstChild) {
+        tbody.removeChild(tbody.firstChild);
+      }
 
       if (findings.length === 0) {
-        tbody.innerHTML = '';
         emptyState.style.display = 'block';
+        renderBlast();
         return;
       }
 
       emptyState.style.display = 'none';
-      tbody.innerHTML = findings.map(f => \`
-        <tr>
-          <td><span class="tag tag-\${f.risk}">\${f.risk}</span></td>
-          <td>
-            <strong>\${f.type}</strong><br/>
-            <span style="font-size: 11px; color: var(--text-muted)">\${f.provider}</span>
-          </td>
-          <td>
-            <span class="file-link" onclick="openFile('\${f.fullPath.replace(/\\\\/g, '\\\\\\\\')}', \${f.line})">
-              \${f.file}:\${f.line}
-            </span>
-          </td>
-          <td><span class="secret-code">\${f.redactedSecret}</span></td>
-          <td><strong>\${f.confidence}%</strong></td>
-          <td>\${f.entropy} b/c</td>
-          <td>
-            <button onclick="openFile('\${f.fullPath.replace(/\\\\/g, '\\\\\\\\')}', \${f.line})">View Line</button>
-          </td>
-        </tr>
-        <tr>
-          <td colspan="7" style="padding-top: 0; padding-bottom: 14px; background: #0e1420;">
-            <div class="remediation-box">
-              <strong>Remediation:</strong> \${f.remediation}<br/>
-              <code>\${f.exampleFix}</code>
-            </div>
-          </td>
-        </tr>
-      \`).join('');
 
-      // Blast radius view
+      for (const f of findings) {
+        // Row 1: Finding details
+        const tr1 = document.createElement('tr');
+
+        // Col 1: Risk Tag
+        const tdRisk = document.createElement('td');
+        const tag = document.createElement('span');
+        tag.className = 'tag tag-' + f.risk;
+        tag.textContent = f.risk;
+        tdRisk.appendChild(tag);
+        tr1.appendChild(tdRisk);
+
+        // Col 2: Type & Provider
+        const tdType = document.createElement('td');
+        const strongType = document.createElement('strong');
+        strongType.textContent = f.type;
+        const providerSpan = document.createElement('span');
+        providerSpan.style.fontSize = '11px';
+        providerSpan.style.color = 'var(--text-muted)';
+        providerSpan.style.display = 'block';
+        providerSpan.textContent = f.provider;
+        tdType.appendChild(strongType);
+        tdType.appendChild(providerSpan);
+        tr1.appendChild(tdType);
+
+        // Col 3: File & Line
+        const tdFile = document.createElement('td');
+        const fileLink = document.createElement('span');
+        fileLink.className = 'file-link';
+        fileLink.textContent = f.file + ':' + f.line;
+        fileLink.addEventListener('click', () => openFile(f.fullPath, f.line));
+        tdFile.appendChild(fileLink);
+        tr1.appendChild(tdFile);
+
+        // Col 4: Redacted Secret
+        const tdSecret = document.createElement('td');
+        const secretCode = document.createElement('span');
+        secretCode.className = 'secret-code';
+        secretCode.textContent = f.redactedSecret;
+        tdSecret.appendChild(secretCode);
+        tr1.appendChild(tdSecret);
+
+        // Col 5: Confidence
+        const tdConf = document.createElement('td');
+        const strongConf = document.createElement('strong');
+        strongConf.textContent = f.confidence + '%';
+        tdConf.appendChild(strongConf);
+        tr1.appendChild(tdConf);
+
+        // Col 6: Entropy
+        const tdEntropy = document.createElement('td');
+        tdEntropy.textContent = (typeof f.entropy === 'number' ? f.entropy.toFixed(2) : f.entropy) + ' b/c';
+        tr1.appendChild(tdEntropy);
+
+        // Col 7: Action Button
+        const tdAction = document.createElement('td');
+        const btnView = document.createElement('button');
+        btnView.textContent = 'View Line';
+        btnView.addEventListener('click', () => openFile(f.fullPath, f.line));
+        tdAction.appendChild(btnView);
+        tr1.appendChild(tdAction);
+
+        tbody.appendChild(tr1);
+
+        // Row 2: Remediation Box
+        const tr2 = document.createElement('tr');
+        const tdRem = document.createElement('td');
+        tdRem.colSpan = 7;
+        tdRem.style.paddingTop = '0';
+        tdRem.style.paddingBottom = '14px';
+        tdRem.style.background = '#0e1420';
+
+        const remBox = document.createElement('div');
+        remBox.className = 'remediation-box';
+
+        const remLabel = document.createElement('strong');
+        remLabel.textContent = 'Remediation: ';
+        const remText = document.createTextNode(f.remediationText);
+        remBox.appendChild(remLabel);
+        remBox.appendChild(remText);
+
+        if (f.exampleFix) {
+          const br = document.createElement('br');
+          const codeFix = document.createElement('code');
+          codeFix.textContent = f.exampleFix;
+          codeFix.style.display = 'block';
+          codeFix.style.marginTop = '4px';
+          remBox.appendChild(br);
+          remBox.appendChild(codeFix);
+        }
+
+        tdRem.appendChild(remBox);
+        tr2.appendChild(tdRem);
+        tbody.appendChild(tr2);
+      }
+
+      renderBlast();
+    }
+
+    function renderBlast() {
       const blastDiv = document.getElementById('blast-content');
+      while (blastDiv.firstChild) {
+        blastDiv.removeChild(blastDiv.firstChild);
+      }
+
       const providers = {};
       findings.forEach(f => {
         providers[f.provider] = (providers[f.provider] || 0) + 1;
       });
 
-      blastDiv.innerHTML = \`
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
-          <div style="background: #080b11; padding: 16px; border-radius: 6px;">
-            <h4>Affected Providers</h4>
-            <ul style="margin-top: 8px; padding-left: 20px;">
-              \${Object.entries(providers).map(([p, count]) => \`<li><strong>\${p}</strong>: \${count} occurrence(s)</li>\`).join('')}
-            </ul>
-          </div>
-          <div style="background: #080b11; padding: 16px; border-radius: 6px;">
-            <h4>Total Exposure Surface</h4>
-            <p style="margin-top: 8px;">\${totalCount} active credentials identified across \${new Set(findings.map(f => f.file)).size} file(s).</p>
-          </div>
-        </div>
-      \`;
+      const grid = document.createElement('div');
+      grid.style.display = 'grid';
+      grid.style.gridTemplateColumns = '1fr 1fr';
+      grid.style.gap = '16px';
+
+      // Card 1
+      const card1 = document.createElement('div');
+      card1.style.background = '#080b11';
+      card1.style.padding = '16px';
+      card1.style.borderRadius = '6px';
+      const h4_1 = document.createElement('h4');
+      h4_1.textContent = 'Affected Providers';
+      card1.appendChild(h4_1);
+
+      const ul = document.createElement('ul');
+      ul.style.marginTop = '8px';
+      ul.style.paddingLeft = '20px';
+      for (const [providerName, count] of Object.entries(providers)) {
+        const li = document.createElement('li');
+        const strongP = document.createElement('strong');
+        strongP.textContent = providerName;
+        li.appendChild(strongP);
+        li.appendChild(document.createTextNode(': ' + count + ' occurrence(s)'));
+        ul.appendChild(li);
+      }
+      card1.appendChild(ul);
+      grid.appendChild(card1);
+
+      // Card 2
+      const card2 = document.createElement('div');
+      card2.style.background = '#080b11';
+      card2.style.padding = '16px';
+      card2.style.borderRadius = '6px';
+      const h4_2 = document.createElement('h4');
+      h4_2.textContent = 'Total Exposure Surface';
+      card2.appendChild(h4_2);
+
+      const pSurface = document.createElement('p');
+      pSurface.style.marginTop = '8px';
+      const uniqueFiles = new Set(findings.map(f => f.file)).size;
+      pSurface.textContent = findings.length + ' active credentials identified across ' + uniqueFiles + ' file(s).';
+      card2.appendChild(pSurface);
+      grid.appendChild(card2);
+
+      blastDiv.appendChild(grid);
     }
 
-    function switchTab(tabId) {
-      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-      document.getElementById('tab-findings').style.display = tabId === 'findings' ? 'block' : 'none';
-      document.getElementById('tab-blast').style.display = tabId === 'blast' ? 'block' : 'none';
-      document.getElementById('tab-workflow').style.display = tabId === 'workflow' ? 'block' : 'none';
-      event.target.classList.add('active');
-    }
-
-    function scanWorkspace() {
-      vscode.postMessage({ command: 'scanWorkspace' });
-    }
-
-    function scanStaged() {
+    // Attach button listeners safely
+    document.getElementById('btn-scan-staged')?.addEventListener('click', () => {
       vscode.postMessage({ command: 'scanStaged' });
-    }
-
-    function installHook() {
+    });
+    document.getElementById('btn-scan-workspace')?.addEventListener('click', () => {
+      vscode.postMessage({ command: 'scanWorkspace' });
+    });
+    document.getElementById('btn-install-hook')?.addEventListener('click', () => {
       vscode.postMessage({ command: 'installHook' });
-    }
+    });
 
-    function openFile(file, line) {
-      vscode.postMessage({ command: 'openFile', file, line });
-    }
+    document.querySelectorAll('.tab').forEach((tabEl) => {
+      tabEl.addEventListener('click', () => {
+        const targetTab = tabEl.getAttribute('data-tab');
+        if (targetTab) switchTab(targetTab, tabEl);
+      });
+    });
 
     window.addEventListener('message', event => {
       const message = event.data;

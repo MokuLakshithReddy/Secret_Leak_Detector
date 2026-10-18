@@ -156,17 +156,23 @@ async function runScan(cmdArgs: string[], cwd: string) {
   // Baseline filtering if enabled
   let baselineStats: any;
   if (baselineFile || fs.existsSync(path.join(cwd, DEFAULT_BASELINE_FILENAME))) {
-    const baselineEngine = new BaselineEngine(cwd, baselineFile || DEFAULT_BASELINE_FILENAME);
+    const targetBaseline = baselineFile || DEFAULT_BASELINE_FILENAME;
+    const baselineEngine = new BaselineEngine(cwd, targetBaseline);
     if (baselineEngine.exists()) {
-      const filtered = baselineEngine.filterAgainstBaseline(findings);
-      baselineStats = {
-        total: findings.length,
-        existing: filtered.existingFindings.length,
-        newFindings: filtered.newFindings.length,
-        resolved: filtered.resolvedCount,
-      };
-      // Only report new findings for blocking
-      findings = filtered.newFindings;
+      try {
+        const filtered = baselineEngine.filterAgainstBaseline(findings);
+        baselineStats = {
+          total: findings.length,
+          existing: filtered.existingFindings.length,
+          newFindings: filtered.newFindings.length,
+          resolved: filtered.resolvedCount,
+        };
+        // Only report new findings for blocking
+        findings = filtered.newFindings;
+      } catch (err: any) {
+        console.error(`Error: Malformed baseline file '${targetBaseline}': ${err.message}`);
+        process.exit(1);
+      }
     }
   }
 

@@ -105,7 +105,7 @@ export interface VerificationResult {
   isResolved: boolean;
   targetFileClean: boolean;
   workingTreeClean: boolean;
-  historyStatus: 'HEAD_AND_HISTORY_CLEAN' | 'REMOVED_FROM_HEAD_STILL_IN_HISTORY' | 'NOT_FIXED';
+  historyStatus: 'HEAD_AND_HISTORY_CLEAN' | 'REMOVED_FROM_HEAD_STILL_IN_HISTORY' | 'NOT_FIXED' | 'UNKNOWN';
   details: string;
   timestamp: string;
 }

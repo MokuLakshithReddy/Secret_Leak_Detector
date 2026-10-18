@@ -10,7 +10,7 @@ inputs:
   fail-on:
     description: 'Risk tier threshold to fail CI build (CRITICAL, HIGH, MEDIUM, LOW)'
     required: false
-    default: 'CRITICAL'
+    default: 'HIGH'
   baseline:
     description: 'Path to baseline file to ignore known findings'
     required: false
@@ -37,24 +37,61 @@ runs:
   steps:
     - name: Run Secret Leak Detector
       shell: bash
+      env:
+        INPUT_PATH: ${{ inputs.path }}
+        INPUT_FAIL_ON: ${{ inputs.fail-on }}
+        INPUT_BASELINE: ${{ inputs.baseline }}
+        INPUT_SARIF_FILE: ${{ inputs.sarif-file }}
+        INPUT_SCAN_HISTORY: ${{ inputs.scan-history }}
+        ACTION_PATH: ${{ github.action_path }}
       run: |
-        ARGS=("scan" "${{ inputs.path }}" "--sarif")
-        
-        if [ -n "${{ inputs.fail-on }}" ]; then
-          ARGS+=("--fail-on" "${{ inputs.fail-on }}")
+        set -euo pipefail
+
+        # Validate fail-on severity against allowed tiers
+        FAIL_ON_UPPER=$(echo "${INPUT_FAIL_ON:-HIGH}" | tr '[:lower:]' '[:upper:]')
+        case "$FAIL_ON_UPPER" in
+          CRITICAL|HIGH|MEDIUM|LOW) ;;
+          *)
+            echo "::error::Invalid fail-on threshold: '$INPUT_FAIL_ON'. Must be one of CRITICAL, HIGH, MEDIUM, LOW."
+            exit 1
+            ;;
+        esac
+
+        # Validate path input: reject leading dashes to prevent option injection
+        TARGET_PATH="${INPUT_PATH:-.}"
+        if [[ "$TARGET_PATH" =~ ^- ]]; then
+          echo "::error::Path input cannot start with a dash (-)."
+          exit 1
         fi
 
-        if [ -n "${{ inputs.baseline }}" ] && [ -f "${{ inputs.baseline }}" ]; then
-          ARGS+=("--baseline" "${{ inputs.baseline }}")
+        # Validate sarif-file input: reject leading dashes
+        SARIF_FILE="${INPUT_SARIF_FILE:-secret-findings.sarif}"
+        if [[ "$SARIF_FILE" =~ ^- ]]; then
+          echo "::error::sarif-file input cannot start with a dash (-)."
+          exit 1
         fi
 
-        node "${{ github.action_path }}/dist/cli.js" "${ARGS[@]}" > "${{ inputs.sarif-file }}" || EXIT_CODE=$?
-        
+        ARGS=("scan" "$TARGET_PATH" "--sarif" "--fail-on" "$FAIL_ON_UPPER")
+
+        if [ -n "${INPUT_BASELINE:-}" ]; then
+          if [[ "$INPUT_BASELINE" =~ ^- ]]; then
+            echo "::error::baseline input cannot start with a dash (-)."
+            exit 1
+          fi
+          if [ -f "$INPUT_BASELINE" ]; then
+            ARGS+=("--baseline" "$INPUT_BASELINE")
+          fi
+        fi
+
+        EXIT_CODE=0
+        node "$ACTION_PATH/dist/cli.js" "${ARGS[@]}" > "$SARIF_FILE" || EXIT_CODE=$?
+
         if [ "$EXIT_CODE" -ne 0 ]; then
-          echo "::error::Critical credentials detected by Secret Leak Detector!"
+          echo "::error::Credentials detected exceeding the $FAIL_ON_UPPER threshold!"
           exit $EXIT_CODE
         fi
 
 branding:
   icon: 'shield'
   color: 'blue'
+

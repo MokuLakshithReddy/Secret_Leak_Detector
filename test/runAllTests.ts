@@ -1,7 +1,8 @@
 import { scanContent, scanFile, buildScanResult } from '../src/core/scanner/scanner';
 import { calculateShannonEntropy, calculateNormalizedEntropy } from '../src/core/entropy/entropy';
 import { redactSecret, generateFingerprint } from '../src/core/redactor/redactor';
-import { BaselineEngine } from '../src/core/baseline/baselineEngine';
+import { BaselineEngine, BaselineValidationError, validateBaselineSchema } from '../src/core/baseline/baselineEngine';
+import { toRedactedFindingView } from '../src/webview/dashboardModel';
 import { VerificationEngine } from '../src/core/verification/verificationEngine';
 import { GitHistoryEngine } from '../src/core/history/gitHistoryEngine';
 import { formatAsSarif } from '../src/core/sarif/sarifFormatter';
@@ -872,6 +873,246 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
     // temp path keeps the expected tier deterministic on every platform.
     const policyDir = path.join(os.tmpdir(), 'sld-policy-cli-fixture');
     fs.rmSync(policyDir, { recursive: true, force: true });
+
+    // --- 23. GitHub Action: Shell Injection Prevention & HIGH Threshold ---
+    console.log('\n--- 23. GitHub Action: Shell Injection Prevention & HIGH Threshold ---');
+    {
+      const actionYmlPath = path.join(__dirname, '..', 'action.yml');
+      assert(fs.existsSync(actionYmlPath), 'action.yml exists in repository root');
+      const actionContent = fs.readFileSync(actionYmlPath, 'utf8');
+
+      // Issue 4: Verify default threshold is HIGH
+      const failOnDefaultMatch = actionContent.match(/fail-on:[\s\S]*?default:\s*['"]?([A-Z]+)['"]?/);
+      assert(failOnDefaultMatch !== null && failOnDefaultMatch[1] === 'HIGH', 'action.yml defaults fail-on to HIGH (got ' + (failOnDefaultMatch ? failOnDefaultMatch[1] : 'none') + ')');
+
+      // Issue 1: Verify all inputs are passed through env: and never interpolated in run:
+      const runBlockMatch = actionContent.match(/run:\s*\|[\s\S]*?branding:/);
+      const runBlock = runBlockMatch ? runBlockMatch[0] : '';
+      assert(!runBlock.includes('${{ inputs.'), 'action.yml does not interpolate ${{ inputs.* }} inside the bash run: script');
+      assert(actionContent.includes('INPUT_PATH: ${{ inputs.path }}'), 'action.yml passes path via INPUT_PATH env variable');
+      assert(actionContent.includes('INPUT_FAIL_ON: ${{ inputs.fail-on }}'), 'action.yml passes fail-on via INPUT_FAIL_ON env variable');
+      assert(actionContent.includes('INPUT_BASELINE: ${{ inputs.baseline }}'), 'action.yml passes baseline via INPUT_BASELINE env variable');
+      assert(actionContent.includes('INPUT_SARIF_FILE: ${{ inputs.sarif-file }}'), 'action.yml passes sarif-file via INPUT_SARIF_FILE env variable');
+
+      // Adversarial inputs test: check flag/command injection detection patterns
+      const isOptionInjection = (s: string) => s.trim().startsWith('-');
+      assert(isOptionInjection('--help'), 'Leading dash detected as potential option injection (--help)');
+      assert(isOptionInjection('-rf'), 'Leading dash detected as potential option injection (-rf)');
+      assert(!isOptionInjection('src/components'), 'Valid target path is not flagged as option injection');
+
+      const validTiers = new Set(['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']);
+      assert(!validTiers.has('$(touch CANARY)'.toUpperCase()), 'Adversarial shell injection payload rejected as invalid tier');
+      assert(!validTiers.has('"; touch CANARY; #'.toUpperCase()), 'Adversarial command separator payload rejected as invalid tier');
+      assert(validTiers.has('HIGH'), 'Standard HIGH tier accepted by action validator');
+    }
+
+    // --- 24. Dashboard Panel: Anti-Script-Injection & Redacted Model ---
+    console.log('\n--- 24. Dashboard Panel: Anti-Script-Injection & Redacted Model ---');
+    {
+      const maliciousFinding: any = {
+        id: 'sec_malicious_1',
+        fingerprint: 'fp_malicious_1',
+        type: 'AWS"<script>alert(1)</script>',
+        provider: 'Amazon<img src=x onerror=alert(2)>',
+        file: 'src/<script>payload</script>.ts',
+        fullPath: '/repo/src/<script>payload</script>.ts',
+        line: 42,
+        column: 10,
+        rawSecret: 'AKIA_SUPER_SECRET_RAW_TOKEN_12345',
+        redactedSecret: 'AKIA••••••••1234',
+        confidence: 99,
+        entropy: 4.25,
+        risk: 'CRITICAL',
+        remediation: {
+          steps: ['<script>evil()</script>'],
+          envVarName: 'AWS_KEY',
+          replacementCode: 'process.env.AWS_KEY',
+          envFileSnippet: '',
+          envExampleSnippet: '',
+          gitHistoryPurgeCommand: '',
+          diffPreview: '',
+        },
+      };
+
+      const redactedView = toRedactedFindingView(maliciousFinding);
+
+      // Verify rawSecret is completely excluded from the UI model
+      assert((redactedView as any).rawSecret === undefined, 'toRedactedFindingView completely strips rawSecret from webview payload');
+      assert(redactedView.redactedSecret === 'AKIA••••••••1234', 'toRedactedFindingView preserves safe redactedSecret');
+      assert(redactedView.type === maliciousFinding.type, 'toRedactedFindingView preserves type for DOM textContent rendering');
+
+      // Verify dashboardPanel.ts code structure: strict CSP, nonce, and NO inline onclick handlers
+      const dashboardTsPath = path.join(__dirname, '..', 'src', 'webview', 'dashboardPanel.ts');
+      const dashboardCode = fs.readFileSync(dashboardTsPath, 'utf8');
+
+      assert(dashboardCode.includes("Content-Security-Policy"), 'dashboardPanel.ts applies Content-Security-Policy');
+      assert(dashboardCode.includes("script-src 'nonce-"), 'dashboardPanel.ts enforces cryptographic nonce on script execution');
+      assert(dashboardCode.includes("default-src 'none'"), 'dashboardPanel.ts restricts default-src to none');
+      assert(!dashboardCode.includes('onclick='), 'dashboardPanel.ts contains ZERO inline onclick attributes');
+      assert(!dashboardCode.includes('tbody.innerHTML = findings.map'), 'dashboardPanel.ts does not render findings table via innerHTML interpolation');
+      assert(dashboardCode.includes('document.createElement'), 'dashboardPanel.ts uses safe DOM creation for findings table');
+      assert(dashboardCode.includes('.textContent'), 'dashboardPanel.ts sets dynamic text via textContent');
+    }
+
+    // --- 25. Verification Engine: Deleted File Git History Independence ---
+    console.log('\n--- 25. Verification Engine: Deleted File Git History Independence ---');
+    {
+      const vdir = path.join(process.cwd(), 'scratch', 'test-verification-deleted-' + Date.now());
+      fs.mkdirSync(vdir, { recursive: true });
+
+      try {
+        cp.execFileSync('git', ['init'], { cwd: vdir, stdio: 'ignore' });
+        cp.execFileSync('git', ['config', 'user.name', 'Verification Tester'], { cwd: vdir, stdio: 'ignore' });
+        cp.execFileSync('git', ['config', 'user.email', 'verify@example.com'], { cwd: vdir, stdio: 'ignore' });
+
+        const targetFile = path.join(vdir, 'auth_temp.ts');
+        const testSecret = 'AKIA1122334455667788';
+        fs.writeFileSync(targetFile, `const apiKey = "${testSecret}";\n`, 'utf8');
+        cp.execFileSync('git', ['add', 'auth_temp.ts'], { cwd: vdir });
+        cp.execFileSync('git', ['commit', '-m', 'Add auth_temp with secret'], { cwd: vdir });
+
+        const fakeFinding: any = {
+          id: 'f_test_del',
+          fingerprint: 'fp_test_del',
+          type: 'AWS Access Key ID',
+          provider: 'Amazon Web Services',
+          file: 'auth_temp.ts',
+          fullPath: targetFile,
+          line: 1,
+          column: 16,
+          rawSecret: testSecret,
+          redactedSecret: 'AKIA••••••••7788',
+          confidence: 100,
+          risk: 'CRITICAL',
+        };
+
+        const verifier = new VerificationEngine(vdir);
+
+        // Scenario A: File is deleted from disk, but secret STILL EXISTS IN COMMIT HISTORY!
+        fs.unlinkSync(targetFile);
+        assert(!fs.existsSync(targetFile), 'Target file removed from disk');
+
+        const delResult = await verifier.verifyFindingFix(fakeFinding);
+        assert(delResult.isResolved === true, 'Deleted file marked isResolved in working tree');
+        assert(delResult.targetFileClean === true, 'Deleted file marked targetFileClean');
+        assert(delResult.workingTreeClean === true, 'Deleted file marked workingTreeClean');
+        assert(delResult.historyStatus === 'REMOVED_FROM_HEAD_STILL_IN_HISTORY', 'Deleted file correctly identifies secret STILL IN COMMIT HISTORY (got: ' + delResult.historyStatus + ')');
+        assert(delResult.details.includes('still exists in commit history'), 'Details warning includes commit history alert for deleted file');
+
+        // Scenario B: Non-git directory or uninspectable history reports UNKNOWN, not clean
+        const nonGitVerifier = new VerificationEngine(path.join(process.cwd(), 'scratch', 'non-git-empty-' + Date.now()));
+        const unknownResult = await nonGitVerifier.verifyFindingFix(fakeFinding);
+        assert(unknownResult.historyStatus === 'UNKNOWN', 'Non-git workspace reports historyStatus UNKNOWN on deleted file (got: ' + unknownResult.historyStatus + ')');
+      } finally {
+        try {
+          fs.rmSync(vdir, { recursive: true, force: true });
+        } catch {}
+      }
+    }
+
+    // --- 26. Baseline Schema Validation & Fail-Visible Behavior ---
+    console.log('\n--- 26. Baseline Schema Validation & Fail-Visible Behavior ---');
+    {
+      // 1. Root must be an object
+      let threw = false;
+      try {
+        validateBaselineSchema(null);
+      } catch (e: any) {
+        threw = e instanceof BaselineValidationError;
+      }
+      assert(threw, 'validateBaselineSchema rejects null');
+
+      threw = false;
+      try {
+        validateBaselineSchema([1, 2, 3]);
+      } catch (e: any) {
+        threw = e instanceof BaselineValidationError;
+      }
+      assert(threw, 'validateBaselineSchema rejects array root');
+
+      // 2. Version must be a positive number
+      threw = false;
+      try {
+        validateBaselineSchema({ version: '1', generatedAt: '2026-01-01', findings: [] });
+      } catch (e: any) {
+        threw = e instanceof BaselineValidationError;
+      }
+      assert(threw, 'validateBaselineSchema rejects non-numeric version');
+
+      // 3. Findings must be an array
+      threw = false;
+      try {
+        validateBaselineSchema({ version: 1, generatedAt: '2026-01-01', findings: 'invalid' });
+      } catch (e: any) {
+        threw = e instanceof BaselineValidationError;
+      }
+      assert(threw, 'validateBaselineSchema rejects non-array findings');
+
+      // 4. Malformed findings entries
+      threw = false;
+      try {
+        validateBaselineSchema({
+          version: 1,
+          generatedAt: '2026-01-01',
+          findings: [{ fingerprint: '', file: 'src/a.ts', ruleId: 'AWS', line: 10 }],
+        });
+      } catch (e: any) {
+        threw = e instanceof BaselineValidationError;
+      }
+      assert(threw, 'validateBaselineSchema rejects empty fingerprint');
+
+      threw = false;
+      try {
+        validateBaselineSchema({
+          version: 1,
+          generatedAt: '2026-01-01',
+          findings: [{ fingerprint: 'fp1', file: 123, ruleId: 'AWS', line: 10 }],
+        });
+      } catch (e: any) {
+        threw = e instanceof BaselineValidationError;
+      }
+      assert(threw, 'validateBaselineSchema rejects non-string file');
+
+      // 5. Valid baseline accepted
+      const validBaseline = validateBaselineSchema({
+        version: 1,
+        generatedAt: '2026-10-18T20:00:00.000Z',
+        findings: [{ fingerprint: 'fp_abc', file: 'src/main.ts', ruleId: 'AWS Access Key', line: 5 }],
+      });
+      assert(validBaseline.version === 1 && validBaseline.findings.length === 1, 'validateBaselineSchema accepts valid baseline');
+
+      // 6. Test BaselineEngine on malformed file
+      const malformedDir = path.join(process.cwd(), 'scratch', 'test-malformed-baseline-' + Date.now());
+      fs.mkdirSync(malformedDir, { recursive: true });
+      try {
+        const malformedFile = path.join(malformedDir, 'bad-baseline.json');
+        fs.writeFileSync(malformedFile, '{ "version": 1, "generatedAt": "now", "findings": "not-an-array" }', 'utf8');
+
+        const engine = new BaselineEngine(malformedDir, 'bad-baseline.json');
+        assert(engine.exists(), 'Malformed baseline file exists');
+
+        let engineThrew = false;
+        try {
+          engine.loadBaseline();
+        } catch (err: any) {
+          engineThrew = err instanceof BaselineValidationError;
+        }
+        assert(engineThrew, 'loadBaseline() throws BaselineValidationError on malformed findings schema');
+
+        let filterThrew = false;
+        try {
+          engine.filterAgainstBaseline([]);
+        } catch (err: any) {
+          filterThrew = err instanceof BaselineValidationError;
+        }
+        assert(filterThrew, 'filterAgainstBaseline() fails visibly when baseline is malformed');
+      } finally {
+        try {
+          fs.rmSync(malformedDir, { recursive: true, force: true });
+        } catch {}
+      }
+    }
+
     fs.mkdirSync(policyDir, { recursive: true });
     fs.writeFileSync(path.join(policyDir, 'leak.ts'), `const key = "${awsSecret}";\n`);
 

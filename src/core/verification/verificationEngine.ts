@@ -29,21 +29,15 @@ export class VerificationEngine {
     const filePath = finding.fullPath;
     const now = new Date().toISOString();
 
-    if (!fs.existsSync(filePath)) {
-      return {
-        isResolved: true,
-        targetFileClean: true,
-        workingTreeClean: true,
-        historyStatus: 'HEAD_AND_HISTORY_CLEAN',
-        details: 'Offending file was removed from working tree.',
-        timestamp: now,
-      };
-    }
+    const fileExists = fs.existsSync(filePath);
+    let isStillInFile = false;
 
-    const currentFindings = scanFile(filePath, { workspaceRoot: this.workspaceRoot });
-    const isStillInFile = currentFindings.some(
-      (f) => f.fingerprint === finding.fingerprint || f.rawSecret === finding.rawSecret
-    );
+    if (fileExists) {
+      const currentFindings = scanFile(filePath, { workspaceRoot: this.workspaceRoot });
+      isStillInFile = currentFindings.some(
+        (f) => f.fingerprint === finding.fingerprint || f.rawSecret === finding.rawSecret
+      );
+    }
 
     if (isStillInFile) {
       return {
@@ -56,16 +50,45 @@ export class VerificationEngine {
       };
     }
 
-    // Check Git history status
-    const gitExposure = await this.historyEngine.traceSecret(finding.rawSecret);
+    // File is either deleted or no longer contains the secret in the working tree.
+    // Check Git history independently of current file existence.
+    let gitExposure;
+    let historyCheckFailed = false;
+
+    try {
+      const isGit = await this.historyEngine.isGitRepo();
+      if (!isGit) {
+        historyCheckFailed = true;
+      } else {
+        gitExposure = await this.historyEngine.traceSecret(finding.rawSecret);
+      }
+    } catch {
+      historyCheckFailed = true;
+    }
+
+    if (historyCheckFailed || !gitExposure) {
+      return {
+        isResolved: true,
+        targetFileClean: true,
+        workingTreeClean: true,
+        historyStatus: 'UNKNOWN',
+        details: fileExists
+          ? 'Secret removed from working tree, but Git repository history could not be verified.'
+          : 'Offending file removed from working tree, but Git repository history could not be verified.',
+        timestamp: now,
+      };
+    }
 
     if (gitExposure.isPresentInHistory) {
+      const commitSha = gitExposure.introducedCommit?.sha ? gitExposure.introducedCommit.sha.substring(0, 7) : 'historical';
       return {
         isResolved: true,
         targetFileClean: true,
         workingTreeClean: true,
         historyStatus: 'REMOVED_FROM_HEAD_STILL_IN_HISTORY',
-        details: `Secret removed from active working tree! WARNING: Secret still exists in commit history (${gitExposure.introducedCommit?.sha.substring(0, 7)}). Credential revocation is mandatory.`,
+        details: fileExists
+          ? `Secret removed from active working tree! WARNING: Secret still exists in commit history (${commitSha}). Credential revocation is mandatory.`
+          : `Offending file removed from working tree, but secret still exists in commit history (${commitSha}). Credential revocation is mandatory.`,
         timestamp: now,
       };
     }
@@ -75,7 +98,9 @@ export class VerificationEngine {
       targetFileClean: true,
       workingTreeClean: true,
       historyStatus: 'HEAD_AND_HISTORY_CLEAN',
-      details: 'Secret completely eliminated from file and no historical commits detected.',
+      details: fileExists
+        ? 'Secret completely eliminated from file and no historical commits detected.'
+        : 'Offending file removed from working tree and no historical commits detected in repository.',
       timestamp: now,
     };
   }

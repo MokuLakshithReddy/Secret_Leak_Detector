@@ -13,6 +13,62 @@ function normalizeBaselinePath(p: string): string {
   return String(p).replace(/\\/g, '/');
 }
 
+export class BaselineValidationError extends Error {
+  constructor(message: string) {
+    super(`Baseline file validation error: ${message}`);
+    this.name = 'BaselineValidationError';
+  }
+}
+
+/**
+ * Validates that an unparsed or deserialized object strictly complies with the BaselineFile schema.
+ * Rejects malformed structures or missing required fields explicitly.
+ */
+export function validateBaselineSchema(parsed: unknown): BaselineFile {
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new BaselineValidationError('Root of baseline file must be a JSON object.');
+  }
+
+  const obj = parsed as Record<string, unknown>;
+
+  if (typeof obj.version !== 'number' || isNaN(obj.version) || obj.version < 1) {
+    throw new BaselineValidationError(`'version' must be a positive number (got ${obj.version}).`);
+  }
+
+  if (typeof obj.generatedAt !== 'string' || obj.generatedAt.trim().length === 0) {
+    throw new BaselineValidationError(`'generatedAt' must be a non-empty string.`);
+  }
+
+  if (!Array.isArray(obj.findings)) {
+    throw new BaselineValidationError(`'findings' must be an array.`);
+  }
+
+  for (let i = 0; i < obj.findings.length; i++) {
+    const item = obj.findings[i];
+    if (typeof item !== 'object' || item === null || Array.isArray(item)) {
+      throw new BaselineValidationError(`findings[${i}] must be an object.`);
+    }
+
+    if (typeof item.fingerprint !== 'string' || item.fingerprint.trim().length === 0) {
+      throw new BaselineValidationError(`findings[${i}].fingerprint must be a non-empty string.`);
+    }
+
+    if (typeof item.file !== 'string' || item.file.trim().length === 0) {
+      throw new BaselineValidationError(`findings[${i}].file must be a non-empty string.`);
+    }
+
+    if (typeof item.ruleId !== 'string') {
+      throw new BaselineValidationError(`findings[${i}].ruleId must be a string.`);
+    }
+
+    if (typeof item.line !== 'number' || isNaN(item.line)) {
+      throw new BaselineValidationError(`findings[${i}].line must be a number.`);
+    }
+  }
+
+  return parsed as BaselineFile;
+}
+
 export class BaselineEngine {
   private baselinePath: string;
 
@@ -26,14 +82,33 @@ export class BaselineEngine {
     return fs.existsSync(this.baselinePath);
   }
 
+  public getPath(): string {
+    return this.baselinePath;
+  }
+
+  /**
+   * Loads and schema-validates the baseline file.
+   * Returns null only if the baseline file does not exist.
+   * Throws BaselineValidationError if the file is malformed, invalid JSON, or fails schema validation.
+   */
   public loadBaseline(): BaselineFile | null {
+    if (!this.exists()) return null;
+
+    let data: string;
     try {
-      if (!this.exists()) return null;
-      const data = fs.readFileSync(this.baselinePath, 'utf8');
-      return JSON.parse(data) as BaselineFile;
-    } catch {
-      return null;
+      data = fs.readFileSync(this.baselinePath, 'utf8');
+    } catch (err: any) {
+      throw new BaselineValidationError(`Could not read baseline file at '${this.baselinePath}': ${err.message}`);
     }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(data);
+    } catch (err: any) {
+      throw new BaselineValidationError(`Malformed JSON in baseline file '${this.baselinePath}': ${err.message}`);
+    }
+
+    return validateBaselineSchema(parsed);
   }
 
   public saveBaseline(findings: SecretFinding[]): BaselineFile {
