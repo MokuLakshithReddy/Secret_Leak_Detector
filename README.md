@@ -152,7 +152,7 @@ Even if a secret is deleted from the current file, Secret Leak Detector traces G
 - Checks contaminated branch reachability (`git branch -a --contains`) and remote tracking status (`origin/*`).
 
 ```bash
-$ secret-leak-detector trace AKIA1234567890ABCDEF
+$ secret-leak-detector trace <CREDENTIAL_TO_INSPECT>
 
 ============================================================
 📊 GIT PROVENANCE & BLAST RADIUS TRACE
@@ -201,13 +201,13 @@ npx secret-leak-detector scan . --baseline .secretleak-baseline.json
 npx secret-leak-detector history --max 100
 
 # Trace provenance and blast radius of a credential
-npx secret-leak-detector trace AKIAIOSFODNN7ABCDEFG
+npx secret-leak-detector trace <CREDENTIAL_TO_INSPECT>
 
 # Output exposure DAG timeline with reachability & merge awareness
-npx secret-leak-detector timeline AKIAIOSFODNN7ABCDEFG
+npx secret-leak-detector timeline <CREDENTIAL_TO_INSPECT>
 
 # Export formal Git DAG Exposure Graph (nodes, edges, branch reachability)
-npx secret-leak-detector graph AKIAIOSFODNN7ABCDEFG --json
+npx secret-leak-detector graph <CREDENTIAL_TO_INSPECT> --json
 
 # Interactive controlled remediation (patch preview & .env extraction)
 npx secret-leak-detector fix src/config/aws.ts

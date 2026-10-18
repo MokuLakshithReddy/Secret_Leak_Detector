@@ -2,7 +2,7 @@
   "name": "secret-leak-detector",
   "displayName": "Secret Leak Detector",
   "description": "Developer-first credential protection. Detect, trace, block, and fix secret leaks before they leave your machine.",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "publisher": "MokuLakshithReddy",
   "icon": "media/icon.png",
   "license": "MIT",
