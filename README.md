@@ -103,11 +103,34 @@ A basic secret scanner answers:
 
 ### 1. DETECT — Multi-Signal Candidate Engine
 Never relies solely on regex patterns. Candidates pass through 5 discrete filters:
-1. **Provider Signature:** 12+ cloud and identity provider patterns (AWS, GitHub, Google Cloud, OpenAI, Anthropic, Stripe, Slack, Microsoft Azure, Database URIs, Cryptographic PEM Keys, JWT).
+1. **Provider Signature:** 14+ cloud, AI, and identity provider patterns with structural validation.
 2. **Shannon Entropy Engine:** Evaluates information entropy ($H = -\sum p_i \log_2 p_i$) and character set distribution (Base64, Hex, Alphanumeric).
 3. **Compiler-Backed AST Analysis (TypeScript/TSX):** Employs the official TypeScript compiler parser (`ts.createSourceFile`) to inspect binary expressions (`process.env.KEY || "..."`, `??`), nested object property assignments (`config.auth.stripeKey`), and call expressions (`logger.info()`). For Python, Go, Shell, and other languages, high-performance structural lexical regex analyzers are used as fallbacks.
 4. **File Environment Analysis:** Adjusts confidence based on file criticality (`.env`, `credentials.json` vs `docs/`, `tutorial.md`).
 5. **Adversarial De-Concatenation:** Resolves split strings (`"ghp_" + "12345..."`) and comment-interrupted assignments before evaluation.
+
+#### Supported Credential Formats & Verification Status
+
+| Provider / Type | Format & Prefixes | Structural Validator | Suggested Environment Target |
+| :--- | :--- | :---: | :--- |
+| **AWS Access Key ID** | `(AKIA\|ASIA\|ABIA\|ACCA)[0-9A-Z]{16}` | ✅ Verified | `AWS_ACCESS_KEY_ID` |
+| **AWS Secret Access Key** | 40-char Base64 in config, `.env`, or code assignments | ✅ Verified | `AWS_SECRET_ACCESS_KEY` |
+| **GitHub Token** | `ghp_` (Classic), `gho_` (OAuth), `github_pat_` (Fine-Grained 82-char) | ✅ Verified | `GITHUB_TOKEN` |
+| **OpenAI API Key** | `sk-proj-`, `sk-admin-`, `sk-svcacct-`, `sk-` | ✅ Verified | `OPENAI_API_KEY` |
+| **Anthropic API Key** | `sk-ant-[A-Za-z0-9_-]{40,}` | ✅ Verified | `ANTHROPIC_API_KEY` |
+| **Google Cloud / Gemini** | `AIza[0-9A-Za-z_-]{35}` | ✅ Verified | `GEMINI_API_KEY` |
+| **Hugging Face** | `hf_[A-Za-z0-9]{34}` | ✅ Verified | `HF_TOKEN` |
+| **Stripe Secret Key** | `sk_live_...`, `sk_test_...`, `rk_live_...` | ✅ Verified | `STRIPE_SECRET_KEY` |
+| **Slack OAuth & Bot** | `xoxb-`, `xoxp-`, `xoxa-` tokens (10–72 chars) | ✅ Verified | `SLACK_BOT_TOKEN` |
+| **Slack Incoming Webhook** | `https://hooks.slack.com/services/T.../B.../...` | ✅ Verified | `SLACK_WEBHOOK_URL` |
+| **Azure Storage Key** | 86–88 char Base64 with `==` padding | ✅ Verified | `AZURE_STORAGE_KEY` |
+| **Database Connection URI** | `postgres://`, `mysql://`, `mongodb://`, `redis://` with embedded auth | ✅ Verified | `DATABASE_URL` |
+| **Cryptographic Private Key** | OpenSSH, RSA, EC, PKCS#8 PEM blocks | ✅ Verified | Filesystem permission isolation |
+| **JSON Web Token (JWT)** | 3-part dot-separated payload with base64 header validation | ✅ Verified | Header algorithm inspection |
+
+#### Evaluation Scope & Known Boundaries
+* **Local & Non-Intrusive Validation**: Secret Leak Detector validates structure, prefix, and entropy **strictly locally**. It does not perform active outbound HTTP requests to provider APIs to verify live revocation status, avoiding unintended account lockouts, rate limit exhaustion, or secondary exposure.
+* **Unstructured Generic Token Heuristics**: Generic secrets lacking distinct provider prefixes rely on Shannon entropy thresholds ($H \ge 3.4$ bits/char) and AST variable naming heuristics (`API_KEY = "..."`). Without contextual clues, short low-entropy strings are filtered to minimize false-positive fatigue.
 
 ### 2. PROVE — Explainable Evidence Model
 Every finding produces transparent, auditable evidence rather than a black-box alert:

@@ -126,3 +126,63 @@ export function validateDatabaseUrl(url: string): ValidationResult {
 
   return { isValid: false, confidenceBonus: 0, reason: 'Invalid database connection URL structure' };
 }
+
+/**
+ * Validates OpenAI API keys (Project, Admin, Service Account, and Legacy keys).
+ */
+export function validateOpenAiKey(key: string): ValidationResult {
+  if (/^sk-proj-[A-Za-z0-9_-]{48,}$/.test(key)) {
+    return { isValid: true, confidenceBonus: 15, reason: 'Valid OpenAI Project API Key format' };
+  }
+  if (/^sk-admin-[A-Za-z0-9_-]{48,}$/.test(key)) {
+    return { isValid: true, confidenceBonus: 15, reason: 'Valid OpenAI Admin/Organization API Key format' };
+  }
+  if (/^sk-svcacct-[A-Za-z0-9_-]{48,}$/.test(key)) {
+    return { isValid: true, confidenceBonus: 15, reason: 'Valid OpenAI Service Account Key format' };
+  }
+  if (/^sk-[A-Za-z0-9]{32,48}$/.test(key)) {
+    return { isValid: true, confidenceBonus: 10, reason: 'Valid OpenAI Standard/Legacy API Key format' };
+  }
+  return { isValid: false, confidenceBonus: 0, reason: 'Invalid OpenAI API key structure' };
+}
+
+/**
+ * Validates Anthropic Claude API Key format.
+ */
+export function validateAnthropicKey(key: string): ValidationResult {
+  if (/^sk-ant-[A-Za-z0-9_-]{40,}$/.test(key)) {
+    return { isValid: true, confidenceBonus: 15, reason: 'Valid Anthropic Claude API Key format' };
+  }
+  return { isValid: false, confidenceBonus: 0, reason: 'Invalid Anthropic API key format' };
+}
+
+/**
+ * Validates Google Cloud / Gemini API key structure.
+ */
+export function validateGoogleApiKey(key: string): ValidationResult {
+  if (/^AIza[0-9A-Za-z_-]{35}$/.test(key)) {
+    return { isValid: true, confidenceBonus: 12, reason: 'Valid Google Cloud / Gemini AIza service key signature' };
+  }
+  return { isValid: false, confidenceBonus: 0, reason: 'Invalid Google Cloud API key format' };
+}
+
+/**
+ * Validates Slack OAuth tokens and Bot tokens.
+ */
+export function validateSlackToken(token: string): ValidationResult {
+  if (/^xox[baprs]-[0-9A-Za-z-]{10,72}$/.test(token)) {
+    const type = token.startsWith('xoxb') ? 'Bot Token' : token.startsWith('xoxp') ? 'User Token' : 'OAuth Token';
+    return { isValid: true, confidenceBonus: 12, reason: `Valid Slack ${type} signature` };
+  }
+  return { isValid: false, confidenceBonus: 0, reason: 'Invalid Slack token structure' };
+}
+
+/**
+ * Validates Hugging Face access token format.
+ */
+export function validateHuggingFaceToken(token: string): ValidationResult {
+  if (/^hf_[A-Za-z0-9]{34}$/.test(token)) {
+    return { isValid: true, confidenceBonus: 12, reason: 'Valid Hugging Face User Access Token format' };
+  }
+  return { isValid: false, confidenceBonus: 0, reason: 'Invalid Hugging Face token structure' };
+}

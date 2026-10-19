@@ -13,6 +13,11 @@ import {
   validateGitHubToken,
   validateJwtToken,
   validateDatabaseUrl,
+  validateOpenAiKey,
+  validateAnthropicKey,
+  validateGoogleApiKey,
+  validateSlackToken,
+  validateHuggingFaceToken,
 } from '../detectors/validators';
 
 export interface EvidenceCalculationResult {
@@ -148,6 +153,11 @@ export function buildEvidenceModel(
   else if (rule.id === 'github-pat') valRes = validateGitHubToken(rawSecret);
   else if (rule.id === 'jwt-token') valRes = validateJwtToken(rawSecret);
   else if (rule.id === 'database-url') valRes = validateDatabaseUrl(rawSecret);
+  else if (rule.id === 'openai-api-key') valRes = validateOpenAiKey(rawSecret);
+  else if (rule.id === 'anthropic-api-key') valRes = validateAnthropicKey(rawSecret);
+  else if (rule.id === 'google-api-key') valRes = validateGoogleApiKey(rawSecret);
+  else if (rule.id === 'slack-bot-token') valRes = validateSlackToken(rawSecret);
+  else if (rule.id === 'huggingface-token') valRes = validateHuggingFaceToken(rawSecret);
 
   if (valRes && valRes.isValid) {
     confidence = Math.min(100, confidence + valRes.confidenceBonus);
