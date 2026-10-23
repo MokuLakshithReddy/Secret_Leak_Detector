@@ -1,41 +1,59 @@
-# figma-make-app
+# Secret Leak Detector
 
-React + Vite + Tailwind CSS project running inside Figma Make.
+VS Code extension and CLI tool for detecting, tracing, and remediating credential leaks in Git repositories.
 
-## Development Server
+## Deliverables
 
-A Vite development server is **already running** on `$PORT` (default 8443). You don't need to start it manually.
-
-- Preview URL: The user can access the running app through the preview panel
-- Hot reload: Changes to source files are reflected immediately
+1. **VS Code Extension** — real-time in-editor secret scanning, diagnostics, sidebar tree, Git commit protection, and one-click remediation.
+2. **CLI** — terminal-based scanning, SARIF export, history tracing, and baseline management.
 
 ## Project Structure
 
-This is the canonical project structure. Start with task-relevant files below. Only follow imports or inspect other files when required, when a documented path is missing, or when the repository contradicts this guide.
+```
+src/
+  extension.ts          VS Code extension entry point
+  core/                 Scanner engine, detectors, entropy, risk, baseline, SARIF, remediation, verification
+  cli/                  CLI entry point (src/cli/index.ts)
+  diagnostics/          VS Code DiagnosticsCollection integration
+  git/                  GitService (staged-blob scan), pre-commit hook builder
+  sidebar/              Activity bar tree view provider
+  webview/              In-editor Security Dashboard (WebviewPanel, nonce-based CSP)
+  engine/               Re-export shims for core modules
+  types.ts              Re-export of core/types
+test/                   Comprehensive security engineering test suite (231 tests)
+evaluation/             Multi-scanner benchmarks and real-world corpus
+  benchmarks/           Reproducible benchmark runners
+  datasets/             Corpus generators and ground-truth labels
+scripts/                Development and diagnostic helper scripts
+docs/                   Threat model, benchmarks, and architecture documentation
+samples/                Example files for manual testing
+action.yml              GitHub Action composite action (pass inputs via env vars)
+esbuild.js              Build script — produces dist/cli.js and dist/extension.js
+package.json            Extension manifest, CLI bin, scripts, and devDependencies
+tsconfig.json           TypeScript compiler settings (strict, node target)
+.vscodeignore           Controls what is packaged in the .vsix
+.secretleak-baseline.json  Baseline of known findings in the repository itself
+```
 
-- `src/main.tsx` - React entrypoint; imports `src/index.css` and mounts `src/App.tsx` into the `#root` element
-- `src/App.tsx` - Primary application component and the usual starting point for UI work
-- `src/index.css` - Global CSS entrypoint and Tailwind CSS v4 import
-- `index.html` - Vite HTML shell containing the `#root` element and loading `src/main.tsx`
-- `package.json` - Project dependencies and the Vite build, development, preview, and formatting scripts
-- `vite.config.ts` - Vite configuration with React, Tailwind CSS v4, and Figma Make plugins plus the `@` alias for `src`
-- `.mise.toml` - Toolchain versions for Node.js and pnpm
+## Build
 
-## Dependencies
+```bash
+npm run build       # production build of cli + extension
+npm run watch       # watch mode for extension development
+npm test            # build + run all 231 unit/integration tests
+npm run package     # produce secret-leak-detector-x.y.z.vsix
+```
 
-- Runtime: React 19 and React DOM 19
-- Styling: Tailwind CSS v4 with the `@tailwindcss/vite` plugin
-- Build tooling: Vite 8, TypeScript 5.7, and `@vitejs/plugin-react`
-- Formatting: oxfmt
+## Technology
 
-## Styling
+- Language: TypeScript 5, compiled with esbuild (not tsc) for extension and CLI bundles
+- Extension host: VS Code API ^1.85.0 (CommonJS, external: vscode)
+- CLI: Node.js 18+, platform: node, no external runtime dependencies
+- Dev: `@vscode/vsce` for packaging, TypeScript for type checking
 
-This project uses **Tailwind CSS v4** through the `@tailwindcss/vite` plugin configured in `vite.config.ts`. `src/index.css` imports Tailwind with `@import 'tailwindcss';`. Use Tailwind utility classes directly in JSX and put global CSS or Tailwind v4 theme customization in `src/index.css`. This scaffold does not need a Tailwind config file or PostCSS config.
+## Coding Conventions
 
-`src/main.tsx` imports `src/index.css`, so global font wiring belongs in `src/index.css`. Keep CSS `@import` statements first, then add any `@font-face` rules and font-family defaults there.
-
-## Code quality
-
-- Use double quotes for strings containing apostrophes (`"We're here to help"`), or escape them in single-quoted strings. An unescaped apostrophe in a single-quoted string breaks the build.
-- Ensure JSX tags are closed and braces are balanced.
-- Export components as default exports.
+- All source lives under `src/` or `test/` or `evaluation/`.
+- The scanner engine is in `src/core/` — keep it free of VS Code imports so the CLI can use it directly.
+- Use `execFileSync`/`execFile` (argument arrays) for all child process invocations. Never interpolate user-controlled data into shell strings.
+- Test credentials in test files must be synthesised at runtime using the `synth(parts)` helper (array join), never written as plain literals, so the repository's own scanner does not flag them.

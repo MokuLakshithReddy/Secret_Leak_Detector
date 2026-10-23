@@ -173,13 +173,6 @@ async function buildAll() {
     await esbuild.build(extConfig);
     console.log('Build completed: dist/extension.js');
   }
-
-  // Ensure web showcase index.html is available in dist for hosting targets
-  if (fs.existsSync('public/index.html')) {
-    fs.mkdirSync('dist', { recursive: true });
-    fs.copyFileSync('public/index.html', 'dist/index.html');
-    console.log('Build completed: dist/index.html');
-  }
 }
 
 buildAll().catch((err) => {

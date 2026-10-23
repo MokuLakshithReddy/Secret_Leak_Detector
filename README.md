@@ -2,13 +2,42 @@
 
 [![Visual Studio Code](https://img.shields.io/badge/VS%20Code-v1.85+-blue.svg?logo=visualstudiocode)](https://code.visualstudio.com/)
 [![CI Status](https://img.shields.io/badge/CI-passing-brightgreen.svg)]()
-[![Tests](https://img.shields.io/badge/tests-99%20passed%20%7C%20100%25-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-231%20passed%20%7C%20100%25-brightgreen.svg)]()
 [![Benchmark F1](https://img.shields.io/badge/benchmark%20F1-100%25-brightgreen.svg)]()
 [![Corpus](https://img.shields.io/badge/corpus-1%2C000%20cases-blueviolet.svg)]()
 [![Precision](https://img.shields.io/badge/precision-100%25-00e5b0.svg)]()
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 > **Secret Leak Detector** is a dependable, context-aware credential exposure detection and remediation system for Git repositories and VS Code. It combines multi-signal pattern detection, Shannon entropy analysis, lexical & AST parsing, fail-closed Git commit protection, exposure graph analysis, and transactional remediation to prevent credentials from ever leaking to version control.
+
+---
+
+## 🚀 Installation
+
+### VS Code Extension
+
+Install from the **[VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=MokuLakshithReddy.secret-leak-detector)**, or download the `.vsix` directly from [GitHub Releases](https://github.com/MokuLakshithReddy/Secret_Leak_Detector/releases) and install it:
+
+```bash
+code --install-extension secret-leak-detector-1.0.2.vsix
+```
+
+### CLI
+
+```bash
+# One-off scan — no install required
+npx secret-leak-detector scan .
+
+# Or install globally
+npm install -g secret-leak-detector
+secret-leak-detector scan .
+```
+
+### Git pre-commit hook
+
+```bash
+npx secret-leak-detector hook install
+```
 
 ---
 
@@ -47,12 +76,6 @@
 > - **Safe Remediation:** Environment variable extractions check duplicate keys, escape quotes/newlines, and support rollback.
 
 ---
-
-### 🌐 Pipeline Separation: Web Showcase vs Extension Pipeline
-
-To ensure absolute engineering hygiene, the project maintains strict separation between web hosting and binary validation:
-- **Static Web Showcase (Vercel):** Hosts the static client-side playground and documentation from `public/`. It is intentionally decoupled from Node compilation steps to ensure edge CDN reliability without runtime build overhead. A green Vercel deployment confirms web showcase delivery, *not* extension functionality.
-- **VS Code Extension & CLI Verification (GitHub Actions CI):** The actual extension and CLI engine are authoritatively built and validated via `npm run build` (`node esbuild.js --production`), the 99-test security suite (`npm test`), regression gate (`npm run benchmark:gate`), and package verification (`npm run package` producing `secret-leak-detector-1.0.0.vsix` with both Extension and CLI bundles). CI is the sole source of truth for code correctness.
 
 ## 🎯 The Philosophy: Beyond Simple Regex Scanning
 

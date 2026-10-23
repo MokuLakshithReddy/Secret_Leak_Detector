@@ -7,16 +7,11 @@ evaluation/**
 tools/**
 scratch/**
 docs/**
-public/**
 .github/**
 tsconfig.json
 esbuild.js
-vercel.json
-vite.config.ts
-pnpm-lock.yaml
-index.html
 action.yml
-.mise.toml
+package-lock.json
 CLAUDE.md
 AGENTS.md
 .secretleak-baseline.json
