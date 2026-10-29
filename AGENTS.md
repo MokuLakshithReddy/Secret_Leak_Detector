@@ -20,14 +20,13 @@ src/
   webview/              In-editor Security Dashboard (WebviewPanel, nonce-based CSP)
   engine/               Re-export shims for core modules
   types.ts              Re-export of core/types
-test/                   Comprehensive security engineering test suite (231 tests)
+test/                   Comprehensive security engineering test suite (219 tests)
 evaluation/             Multi-scanner benchmarks and real-world corpus
   benchmarks/           Reproducible benchmark runners
   datasets/             Corpus generators and ground-truth labels
 scripts/                Development and diagnostic helper scripts
 docs/                   Threat model, benchmarks, and architecture documentation
 samples/                Example files for manual testing
-action.yml              GitHub Action composite action (pass inputs via env vars)
 esbuild.js              Build script — produces dist/cli.js and dist/extension.js
 package.json            Extension manifest, CLI bin, scripts, and devDependencies
 tsconfig.json           TypeScript compiler settings (strict, node target)
@@ -40,7 +39,7 @@ tsconfig.json           TypeScript compiler settings (strict, node target)
 ```bash
 npm run build       # production build of cli + extension
 npm run watch       # watch mode for extension development
-npm test            # build + run all 231 unit/integration tests
+npm test            # build + run all 219 unit/integration tests
 npm run package     # produce secret-leak-detector-x.y.z.vsix
 ```
 

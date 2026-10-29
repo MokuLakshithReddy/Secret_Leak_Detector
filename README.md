@@ -1,8 +1,8 @@
-# 🔐 Secret Leak Detector
+# ?? Secret Leak Detector
 
 [![Visual Studio Code](https://img.shields.io/badge/VS%20Code-v1.85+-blue.svg?logo=visualstudiocode)](https://code.visualstudio.com/)
 [![CI Status](https://img.shields.io/badge/CI-passing-brightgreen.svg)]()
-[![Tests](https://img.shields.io/badge/tests-231%20passed%20%7C%20100%25-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-218%20passed%20%7C%20100%25-brightgreen.svg)]()
 [![Benchmark F1](https://img.shields.io/badge/benchmark%20F1-100%25-brightgreen.svg)]()
 [![Corpus](https://img.shields.io/badge/corpus-1%2C000%20cases-blueviolet.svg)]()
 [![Precision](https://img.shields.io/badge/precision-100%25-00e5b0.svg)]()
@@ -12,7 +12,7 @@
 
 ---
 
-## 🚀 Installation
+## ?? Installation
 
 ### VS Code Extension
 
@@ -25,7 +25,7 @@ code --install-extension secret-leak-detector-1.0.2.vsix
 ### CLI
 
 ```bash
-# One-off scan — no install required
+# One-off scan � no install required
 npx secret-leak-detector scan .
 
 # Or install globally
@@ -41,7 +41,7 @@ npx secret-leak-detector hook install
 
 ---
 
-## 📊 Multi-Scanner Empirical Benchmarks (Author-Reported Internal Results)
+## ?? Multi-Scanner Empirical Benchmarks (Author-Reported Internal Results)
 
 *Notice on Verification Scope: All detection metrics and performance statistics reported below represent internal benchmark results conducted by the authors on our controlled generator and curated real-world corpus using seeded PRNG (`0x5eec73`) and standalone binaries. While full reproduction scripts are provided (`npm run benchmark:multi`, `npm run benchmark:realworld`), these figures must be treated as author-reported findings pending independent third-party replication.*
 
@@ -65,7 +65,7 @@ npx secret-leak-detector hook install
 | **TruffleHog v3.99.2** | 100.0% [91.6% - 100%] | 84.0% [71.5% - 91.7%] | 91.3% | 0.0% | 162,397 $\mu$s | 81.7 MB |
 | **detect-secrets v1.5.0** | 72.5% [57.2% - 83.9%] | 58.0% [44.2% - 70.6%] | 64.4% | 22.0% | 114,337 $\mu$s | 81.8 MB |
 
-> **🛡️ Engineering Improvements & Failure Analysis:**
+> **??? Engineering Improvements & Failure Analysis:**
 > In prior revisions, real-world recall was 78% due to unescaped `@` characters in database passwords disrupting URI boundaries, and unquoted `AccountKey=...` parameters inside compound Azure connection strings.
 > These patterns were systematically resolved in v1.0.0 with dedicated regression tests, bringing real-world recall to 100% while maintaining 0% false positives on localhost development configs.
 >
@@ -77,44 +77,44 @@ npx secret-leak-detector hook install
 
 ---
 
-## 🎯 The Philosophy: Beyond Simple Regex Scanning
+## ?? The Philosophy: Beyond Simple Regex Scanning
 
 A basic secret scanner answers:
-> *“Does this file contain something that matches an API key regex?”*
+> *�Does this file contain something that matches an API key regex?�*
 
 **Secret Leak Detector answers:**
-> *“Is this credential actually exposed, how confident are we, what is the explainable evidence, where did it come from in Git history, what is its blast radius, and has remediation proven that exposure is eliminated?”*
+> *�Is this credential actually exposed, how confident are we, what is the explainable evidence, where did it come from in Git history, what is its blast radius, and has remediation proven that exposure is eliminated?�*
 
 ```text
                   SECRET LEAK DETECTOR PIPELINE
-                                │
-          ┌─────────────────────┴─────────────────────┐
-          │                                           │
+                                �
+          +-------------------------------------------+
+          �                                           �
        DETECT                                       PROVE
-          │                                           │
+          �                                           �
    Pattern Engine                              Evidence Model
    Entropy Engine                              Multi-Signal Score
    Compiler AST / Lexical                      False-Positive Gate
-          │                                           │
-          └─────────────────────┬─────────────────────┘
-                                │
+          �                                           �
+          +-------------------------------------------+
+                                �
                               RISK
-                                │
+                                �
                     Dynamic 0-100 Score
                     Blast Radius Engine
-                                │
-          ┌─────────────────────┴─────────────────────┐
-          │                                           │
+                                �
+          +-------------------------------------------+
+          �                                           �
         TRACE                                        FIX
-          │                                           │
+          �                                           �
    Git Exposure Graph                          Controlled Patch Preview
    Author & Duration                           Approval Gate
    Branch Reachability                         .env & .gitignore Auto-Sync
-          │                                           │
-          └─────────────────────┬─────────────────────┘
-                                │
+          �                                           �
+          +-------------------------------------------+
+                                �
                              RESCAN
-                                │
+                                �
                     Working-Tree Verification
                     History Purge Verification
                     Delta Reporting (Before vs After)
@@ -122,9 +122,9 @@ A basic secret scanner answers:
 
 ---
 
-## ⚡ Core Capabilities
+## ? Core Capabilities
 
-### 1. DETECT — Multi-Signal Candidate Engine
+### 1. DETECT � Multi-Signal Candidate Engine
 Never relies solely on regex patterns. Candidates pass through 5 discrete filters:
 1. **Provider Signature:** 14+ cloud, AI, and identity provider patterns with structural validation.
 2. **Shannon Entropy Engine:** Evaluates information entropy ($H = -\sum p_i \log_2 p_i$) and character set distribution (Base64, Hex, Alphanumeric).
@@ -136,53 +136,53 @@ Never relies solely on regex patterns. Candidates pass through 5 discrete filter
 
 | Provider / Type | Format & Prefixes | Structural Validator | Suggested Environment Target |
 | :--- | :--- | :---: | :--- |
-| **AWS Access Key ID** | `(AKIA\|ASIA\|ABIA\|ACCA)[0-9A-Z]{16}` | ✅ Verified | `AWS_ACCESS_KEY_ID` |
-| **AWS Secret Access Key** | 40-char Base64 in config, `.env`, or code assignments | ✅ Verified | `AWS_SECRET_ACCESS_KEY` |
-| **GitHub Token** | `ghp_` (Classic), `gho_` (OAuth), `github_pat_` (Fine-Grained 82-char) | ✅ Verified | `GITHUB_TOKEN` |
-| **OpenAI API Key** | `sk-proj-`, `sk-admin-`, `sk-svcacct-`, `sk-` | ✅ Verified | `OPENAI_API_KEY` |
-| **Anthropic API Key** | `sk-ant-[A-Za-z0-9_-]{40,}` | ✅ Verified | `ANTHROPIC_API_KEY` |
-| **Google Cloud / Gemini** | `AIza[0-9A-Za-z_-]{35}` | ✅ Verified | `GEMINI_API_KEY` |
-| **Hugging Face** | `hf_[A-Za-z0-9]{34}` | ✅ Verified | `HF_TOKEN` |
-| **Stripe Secret Key** | `sk_live_...`, `sk_test_...`, `rk_live_...` | ✅ Verified | `STRIPE_SECRET_KEY` |
-| **Slack OAuth & Bot** | `xoxb-`, `xoxp-`, `xoxa-` tokens (10–72 chars) | ✅ Verified | `SLACK_BOT_TOKEN` |
-| **Slack Incoming Webhook** | `https://hooks.slack.com/services/T.../B.../...` | ✅ Verified | `SLACK_WEBHOOK_URL` |
-| **Azure Storage Key** | 86–88 char Base64 with `==` padding | ✅ Verified | `AZURE_STORAGE_KEY` |
-| **Database Connection URI** | `postgres://`, `mysql://`, `mongodb://`, `redis://` with embedded auth | ✅ Verified | `DATABASE_URL` |
-| **Cryptographic Private Key** | OpenSSH, RSA, EC, PKCS#8 PEM blocks | ✅ Verified | Filesystem permission isolation |
-| **JSON Web Token (JWT)** | 3-part dot-separated payload with base64 header validation | ✅ Verified | Header algorithm inspection |
+| **AWS Access Key ID** | `(AKIA\|ASIA\|ABIA\|ACCA)[0-9A-Z]{16}` | ? Verified | `AWS_ACCESS_KEY_ID` |
+| **AWS Secret Access Key** | 40-char Base64 in config, `.env`, or code assignments | ? Verified | `AWS_SECRET_ACCESS_KEY` |
+| **GitHub Token** | `ghp_` (Classic), `gho_` (OAuth), `github_pat_` (Fine-Grained 82-char) | ? Verified | `GITHUB_TOKEN` |
+| **OpenAI API Key** | `sk-proj-`, `sk-admin-`, `sk-svcacct-`, `sk-` | ? Verified | `OPENAI_API_KEY` |
+| **Anthropic API Key** | `sk-ant-[A-Za-z0-9_-]{40,}` | ? Verified | `ANTHROPIC_API_KEY` |
+| **Google Cloud / Gemini** | `AIza[0-9A-Za-z_-]{35}` | ? Verified | `GEMINI_API_KEY` |
+| **Hugging Face** | `hf_[A-Za-z0-9]{34}` | ? Verified | `HF_TOKEN` |
+| **Stripe Secret Key** | `sk_live_...`, `sk_test_...`, `rk_live_...` | ? Verified | `STRIPE_SECRET_KEY` |
+| **Slack OAuth & Bot** | `xoxb-`, `xoxp-`, `xoxa-` tokens (10�72 chars) | ? Verified | `SLACK_BOT_TOKEN` |
+| **Slack Incoming Webhook** | `https://hooks.slack.com/services/T.../B.../...` | ? Verified | `SLACK_WEBHOOK_URL` |
+| **Azure Storage Key** | 86�88 char Base64 with `==` padding | ? Verified | `AZURE_STORAGE_KEY` |
+| **Database Connection URI** | `postgres://`, `mysql://`, `mongodb://`, `redis://` with embedded auth | ? Verified | `DATABASE_URL` |
+| **Cryptographic Private Key** | OpenSSH, RSA, EC, PKCS#8 PEM blocks | ? Verified | Filesystem permission isolation |
+| **JSON Web Token (JWT)** | 3-part dot-separated payload with base64 header validation | ? Verified | Header algorithm inspection |
 
 #### Evaluation Scope & Known Boundaries
 * **Local & Non-Intrusive Validation**: Secret Leak Detector validates structure, prefix, and entropy **strictly locally**. It does not perform active outbound HTTP requests to provider APIs to verify live revocation status, avoiding unintended account lockouts, rate limit exhaustion, or secondary exposure.
 * **Unstructured Generic Token Heuristics**: Generic secrets lacking distinct provider prefixes rely on Shannon entropy thresholds ($H \ge 3.4$ bits/char) and AST variable naming heuristics (`API_KEY = "..."`). Without contextual clues, short low-entropy strings are filtered to minimize false-positive fatigue.
 
-### 2. PROVE — Explainable Evidence Model
+### 2. PROVE � Explainable Evidence Model
 Every finding produces transparent, auditable evidence rather than a black-box alert:
 
 ```text
 Finding #1: GitHub Personal Access Token (GitHub)
 File:        src/config/auth.ts:17:14
-Secret:      ghp_••••••••••••••••••••••••••••••••3a9b
+Secret:      ghp_��������������������������������3a9b
 Confidence:  99%
 Risk Score:  83/100 [CRITICAL]
 Blast Radius: SEVERE (Remote & history exposure)
 
 Evidence:
-  • [+0] Matched recognized credential signature for GitHub (GitHub Personal Access Token)
-  • [+5] Cryptographic entropy: 4.81 bits/char (BASE64 set), indicates non-human randomness
-  • [+10] Assigned to sensitive identifier: 'GITHUB_TOKEN'
-  • [+8] Located in configuration or secret storage file (.ts)
-  • [Passed] Not a documentation placeholder or test mock
+  � [+0] Matched recognized credential signature for GitHub (GitHub Personal Access Token)
+  � [+5] Cryptographic entropy: 4.81 bits/char (BASE64 set), indicates non-human randomness
+  � [+10] Assigned to sensitive identifier: 'GITHUB_TOKEN'
+  � [+8] Located in configuration or secret storage file (.ts)
+  � [Passed] Not a documentation placeholder or test mock
 ```
 
-### 3. RISK — Dynamic 0–100 Risk Engine & Model Consistency
+### 3. RISK � Dynamic 0�100 Risk Engine & Model Consistency
 Replaces static severity labels with a calibrated formula:
 
 $$\text{Risk Score} = \text{Credential Severity Base} + \text{Confidence Alignment} + \text{Storage Environment} + \text{Exposure Reach}$$
 
-- **0–25:** `LOW`
-- **26–50:** `MEDIUM`
-- **51–75:** `HIGH`
-- **76–100:** `CRITICAL`
+- **0�25:** `LOW`
+- **26�50:** `MEDIUM`
+- **51�75:** `HIGH`
+- **76�100:** `CRITICAL`
 
 **Risk Model Consistency & Boundary Validation:**
 Formally verified via automated test suite for mathematical calibration:
@@ -191,7 +191,7 @@ Formally verified via automated test suite for mathematical calibration:
 - Strict $[0, 100]$ boundary constraints across all 12 provider rules.
 *(Note: Validates mathematical and behavioral consistency of the scoring model, rather than claiming statistical prediction of real-world security breaches).*
 
-### 4. TRACE — Git Exposure Graph & Provenance Analysis
+### 4. TRACE � Git Exposure Graph & Provenance Analysis
 Even if a secret is deleted from the current file, Secret Leak Detector traces Git history to derive a **Git exposure graph** based on credential-related commits and reachable parent relationships:
 - Distinguishes direct commit DAG parents (`DIRECT_PARENT`) from chronological event transitions (`EVENT_SEQUENCE`).
 - Calculates exposure duration in days from introduction to removal.
@@ -201,11 +201,11 @@ Even if a secret is deleted from the current file, Secret Leak Detector traces G
 $ secret-leak-detector trace <CREDENTIAL_TO_INSPECT>
 
 ============================================================
-📊 GIT PROVENANCE & BLAST RADIUS TRACE
+?? GIT PROVENANCE & BLAST RADIUS TRACE
 ============================================================
 Status:             ACTIVE IN HEAD & COMMITTED
-In Active HEAD:     YES 🚨
-In Git History:     YES ⚠️ (Rotation mandatory)
+In Active HEAD:     YES ??
+In Git History:     YES ?? (Rotation mandatory)
 Exposure Duration:  18 days
 Exposed Branches:   main, origin/main, feature/auth
 Remote Pushed:      YES (External exposure risk!)
@@ -215,20 +215,20 @@ Commit Message:     "feat: implement auth credentials"
 ============================================================
 ```
 
-### 5. FIX — Controlled Remediation Engine
-- **Safe Masking:** Secrets are masked by default (`AKIA••••••••••••DEF`) with deterministic SHA-256 fingerprints to prevent secondary log leaks.
+### 5. FIX � Controlled Remediation Engine
+- **Safe Masking:** Secrets are masked by default (`AKIA������������DEF`) with deterministic SHA-256 fingerprints to prevent secondary log leaks.
 - **Controlled Patch Preview:** Unified diff preview before applying changes.
 - **Safe `.env` Migration:** Automatically updates `.env`, generates blank `.env.example` templates, and secures `.gitignore`.
 - **Git Purge Commands:** Generates exact `git-filter-repo` and BFG Repo-Cleaner commands for historical leaks.
 
-### 6. RESCAN & BASELINE — Enterprise CI/CD Integration
+### 6. RESCAN & BASELINE � Enterprise CI/CD Integration
 - **Verification Engine:** Rescans target files to ensure hardcoded secrets are gone, variables resolve correctly, and alerts developers if historical commits still contain the key.
 - **Baseline System (`.secretleak-baseline.json`):** Records existing known findings so legacy codebases can adopt security guardrails immediately. CI fails **only on newly introduced secrets**.
 - **OASIS SARIF v2.1.0 Export:** Directly integrates with GitHub Code Scanning alerts.
 
 ---
 
-## 💻 CLI Usage
+## ?? CLI Usage
 
 ```bash
 # Scan current repository or directory
@@ -267,40 +267,7 @@ npx secret-leak-detector hook install
 
 ---
 
-## 🤖 GitHub Action Integration
-
-Add Secret Leak Detector to `.github/workflows/security.yml`:
-
-```yaml
-name: Secret Security Gate
-on: [push, pull_request]
-
-jobs:
-  secret-scan:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Run Secret Leak Detector
-        uses: MokuLakshithReddy/Secret_Leak_Detector@main
-        with:
-          path: '.'
-          baseline: '.secretleak-baseline.json'
-          sarif-output: 'results.sarif'
-          fail-on-findings: 'true'
-
-      - name: Upload SARIF to GitHub Security Tab
-        uses: github/codeql-action/upload-sarif@v3
-        if: always()
-        with:
-          sarif_file: results.sarif
-```
-
----
-
-## 🖥️ VS Code Extension Usage
+## ??? VS Code Extension Usage
 
 1. Open any workspace in VS Code.
 2. In-editor real-time squiggly markers highlight credential exposures as you type or save.
@@ -315,7 +282,7 @@ jobs:
 
 ---
 
-## 🛡️ Threat Model
+## ??? Threat Model
 
 Secret Leak Detector is engineered against 6 primary security threats:
 - **T1: Accidental Working-Tree Commit:** Blocked via real-time editor underlines and pre-commit hook diff interception.
@@ -329,9 +296,9 @@ Secret Leak Detector is engineered against 6 primary security threats:
 
 ---
 
-## 🧪 Testing & Verification
+## ?? Testing & Verification
 
-Run the comprehensive security engineering test suite (77 unit, integration, AST, risk, and regression tests):
+Run the comprehensive security engineering test suite (218 unit, integration, AST, risk, and regression tests):
 
 ```bash
 npm test
@@ -369,6 +336,6 @@ npm run build
 
 ---
 
-## 📜 License
+## ?? License
 
 MIT License. Developed for developer-first security engineering.

@@ -8,9 +8,9 @@ tools/**
 scratch/**
 docs/**
 .github/**
+demo/**
 tsconfig.json
 esbuild.js
-action.yml
 package-lock.json
 CLAUDE.md
 AGENTS.md

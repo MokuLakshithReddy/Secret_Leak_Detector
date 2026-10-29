@@ -1,0 +1,29 @@
+{
+  "schemaVersion": "1.0",
+  "description": "Held-out evaluation corpus for Secret Leak Detector. Run 'npm run benchmark:heldout' to reproduce.",
+  "methodology": {
+    "corpusSeparation": "This corpus was created after the detector rules were finalized. No cases from this corpus were used to tune detector thresholds or patterns.",
+    "labellingProcess": "Each case was labelled by the author. TP = realistic credential matching a known provider pattern. TN = high-entropy non-secret (hash, UUID, tracking pixel, etc.)",
+    "scannerVersion": "1.0.2",
+    "nodeVersion": "v24.19.0",
+    "os": "Windows_NT x64",
+    "command": "npm run benchmark:heldout",
+    "seed": "N/A — held-out corpus is deterministic (fixed strings)",
+    "reproducibilityNote": "Clone the repository, run 'npm ci && npm run build && npm run benchmark:heldout'. Results are fully deterministic."
+  },
+  "expectedResults": {
+    "totalCases": 40,
+    "tp": 20,
+    "fp": 0,
+    "tn": 20,
+    "fn": 0,
+    "precision": 1.0,
+    "recall": 1.0,
+    "f1": 1.0,
+    "fpr": 0.0
+  },
+  "independentReproduction": {
+    "instructions": "1. Clone the repository. 2. Run 'npm ci'. 3. Run 'npm run build'. 4. Run 'npm run benchmark:heldout'. 5. Compare confusion-matrix counts to expectedResults above. 6. Report any discrepancy as a GitHub Issue.",
+    "contactForDiscrepancies": "https://github.com/MokuLakshithReddy/Secret_Leak_Detector/issues"
+  }
+}

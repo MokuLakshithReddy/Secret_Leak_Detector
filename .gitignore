@@ -24,3 +24,5 @@ logs/
 # beside it.
 /.plugins/
 /.opencode-skills/
+
+# Demo temp repos created at runtime — excluded from SLD scan\ndemo/tmp-fixture-repo/

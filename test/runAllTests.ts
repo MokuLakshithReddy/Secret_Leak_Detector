@@ -1,4 +1,4 @@
-import { scanContent, scanFile, buildScanResult } from '../src/core/scanner/scanner';
+﻿import { scanContent, scanFile, buildScanResult } from '../src/core/scanner/scanner';
 import { calculateShannonEntropy, calculateNormalizedEntropy } from '../src/core/entropy/entropy';
 import { redactSecret, generateFingerprint } from '../src/core/redactor/redactor';
 import { BaselineEngine, BaselineValidationError, validateBaselineSchema } from '../src/core/baseline/baselineEngine';
@@ -873,38 +873,6 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
     // temp path keeps the expected tier deterministic on every platform.
     const policyDir = path.join(os.tmpdir(), 'sld-policy-cli-fixture');
     fs.rmSync(policyDir, { recursive: true, force: true });
-
-    // --- 23. GitHub Action: Shell Injection Prevention & HIGH Threshold ---
-    console.log('\n--- 23. GitHub Action: Shell Injection Prevention & HIGH Threshold ---');
-    {
-      const actionYmlPath = path.join(__dirname, '..', 'action.yml');
-      assert(fs.existsSync(actionYmlPath), 'action.yml exists in repository root');
-      const actionContent = fs.readFileSync(actionYmlPath, 'utf8');
-
-      // Issue 4: Verify default threshold is HIGH
-      const failOnDefaultMatch = actionContent.match(/fail-on:[\s\S]*?default:\s*['"]?([A-Z]+)['"]?/);
-      assert(failOnDefaultMatch !== null && failOnDefaultMatch[1] === 'HIGH', 'action.yml defaults fail-on to HIGH (got ' + (failOnDefaultMatch ? failOnDefaultMatch[1] : 'none') + ')');
-
-      // Issue 1: Verify all inputs are passed through env: and never interpolated in run:
-      const runBlockMatch = actionContent.match(/run:\s*\|[\s\S]*?branding:/);
-      const runBlock = runBlockMatch ? runBlockMatch[0] : '';
-      assert(!runBlock.includes('${{ inputs.'), 'action.yml does not interpolate ${{ inputs.* }} inside the bash run: script');
-      assert(actionContent.includes('INPUT_PATH: ${{ inputs.path }}'), 'action.yml passes path via INPUT_PATH env variable');
-      assert(actionContent.includes('INPUT_FAIL_ON: ${{ inputs.fail-on }}'), 'action.yml passes fail-on via INPUT_FAIL_ON env variable');
-      assert(actionContent.includes('INPUT_BASELINE: ${{ inputs.baseline }}'), 'action.yml passes baseline via INPUT_BASELINE env variable');
-      assert(actionContent.includes('INPUT_SARIF_FILE: ${{ inputs.sarif-file }}'), 'action.yml passes sarif-file via INPUT_SARIF_FILE env variable');
-
-      // Adversarial inputs test: check flag/command injection detection patterns
-      const isOptionInjection = (s: string) => s.trim().startsWith('-');
-      assert(isOptionInjection('--help'), 'Leading dash detected as potential option injection (--help)');
-      assert(isOptionInjection('-rf'), 'Leading dash detected as potential option injection (-rf)');
-      assert(!isOptionInjection('src/components'), 'Valid target path is not flagged as option injection');
-
-      const validTiers = new Set(['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']);
-      assert(!validTiers.has('$(touch CANARY)'.toUpperCase()), 'Adversarial shell injection payload rejected as invalid tier');
-      assert(!validTiers.has('"; touch CANARY; #'.toUpperCase()), 'Adversarial command separator payload rejected as invalid tier');
-      assert(validTiers.has('HIGH'), 'Standard HIGH tier accepted by action validator');
-    }
 
     // --- 24. Dashboard Panel: Anti-Script-Injection & Redacted Model ---
     console.log('\n--- 24. Dashboard Panel: Anti-Script-Injection & Redacted Model ---');

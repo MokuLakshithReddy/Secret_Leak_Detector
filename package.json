@@ -177,7 +177,9 @@
     "benchmark:realworld:diagnose": "node esbuild.js --realworld-diagnose && node dist/realworld-diagnose.js",
     "profile": "node esbuild.js --profile && node dist/profile.js",
     "demo": "node esbuild.js --demo && node dist/demo-cli.js",
-    "package": "vsce package --no-git-tag-version --no-dependencies"
+    "package": "vsce package --no-git-tag-version --no-dependencies",
+    "benchmark:heldout": "npx ts-node --project tsconfig.json evaluation/datasets/heldOutCorpus.ts",
+    "test:git-hook": "npx ts-node --project tsconfig.json test/integration/gitHookScenarios.test.ts"
   },
   "devDependencies": {
     "@types/node": "^20.11.24",
