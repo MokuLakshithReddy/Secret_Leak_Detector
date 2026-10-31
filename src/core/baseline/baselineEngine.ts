@@ -148,11 +148,14 @@ export class BaselineEngine {
       };
     }
 
-    const baselineMap = new Map<string, BaselineFinding>();
+    const baselineByFileAndFp = new Map<string, BaselineFinding>();
+    const baselineByFileRuleLine = new Map<string, BaselineFinding>();
+
     for (const b of baseline.findings) {
-      // Key by fingerprint or file+rule (normalised so the key is portable).
-      baselineMap.set(b.fingerprint, b);
-      baselineMap.set(`${normalizeBaselinePath(b.file)}:${b.ruleId}:${b.line}`, b);
+      const normFile = normalizeBaselinePath(b.file);
+      // Key by file + fingerprint so a baselined secret copied to another file is NOT hidden
+      baselineByFileAndFp.set(`${normFile}:${b.fingerprint}`, b);
+      baselineByFileRuleLine.set(`${normFile}:${b.ruleId}:${b.line}`, b);
     }
 
     const newFindings: SecretFinding[] = [];
@@ -160,9 +163,10 @@ export class BaselineEngine {
     const matchedFingerprints = new Set<string>();
 
     for (const finding of currentFindings) {
+      const normFile = normalizeBaselinePath(finding.file);
       const match =
-        baselineMap.get(finding.fingerprint) ||
-        baselineMap.get(`${normalizeBaselinePath(finding.file)}:${finding.type}:${finding.line}`);
+        baselineByFileAndFp.get(`${normFile}:${finding.fingerprint}`) ||
+        baselineByFileRuleLine.get(`${normFile}:${finding.type}:${finding.line}`);
 
       if (match) {
         finding.status = 'BASELINE';

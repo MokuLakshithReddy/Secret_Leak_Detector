@@ -46,14 +46,8 @@ function createTempRepo(): string {
 
 /** Write and install the SLD pre-commit hook in the given repo. */
 function installHook(repoDir: string, cliPath: string): void {
-  const hookScript = buildPreCommitHook();
-  // Patch the hook to always use the local dist/cli.js from this repo
   const localCli = cliPath.replace(/\\/g, '/');
-  const patchedHook = hookScript
-    .replace(
-      'if [ -f "./dist/cli.js" ]; then\n  node ./dist/cli.js scan --staged --fail-on "$SLD_FAIL_ON"',
-      `if true; then\n  node "${localCli}" scan --staged --fail-on "$SLD_FAIL_ON"`
-    );
+  const patchedHook = buildPreCommitHook(undefined, localCli);
 
   const hooksDir = path.join(repoDir, '.git', 'hooks');
   fs.mkdirSync(hooksDir, { recursive: true });

@@ -9,6 +9,42 @@ import {
   ensureGitignoreProtectsEnv,
 } from '../core/remediation/remediationEngine';
 
+function getLanguageReplacement(filePath: string, varName: string): string {
+  const ext = path.extname(filePath).toLowerCase();
+  switch (ext) {
+    case '.py':
+      return `os.environ.get("${varName}")`;
+    case '.go':
+      return `os.Getenv("${varName}")`;
+    case '.rb':
+      return `ENV['${varName}']`;
+    case '.php':
+      return `getenv('${varName}')`;
+    case '.java':
+    case '.kt':
+      return `System.getenv("${varName}")`;
+    case '.rs':
+      return `std::env::var("${varName}").unwrap()`;
+    case '.sh':
+    case '.bash':
+    case '.zsh':
+      return `"\${${varName}}"`;
+    case '.yaml':
+    case '.yml':
+    case '.toml':
+    case '.env':
+      return `\${${varName}}`;
+    case '.js':
+    case '.jsx':
+    case '.ts':
+    case '.tsx':
+    case '.mjs':
+    case '.cjs':
+    default:
+      return `process.env.${varName}`;
+  }
+}
+
 export class SecretCodeActionProvider implements vscode.CodeActionProvider {
   public static readonly providedCodeActionKinds = [vscode.CodeActionKind.QuickFix];
   private diagnosticProvider: DiagnosticProvider;
@@ -36,14 +72,16 @@ export class SecretCodeActionProvider implements vscode.CodeActionProvider {
     const allFindings = this.diagnosticProvider.getAllFindings();
 
     for (const diagnostic of secretDiagnostics) {
-      // Find matching finding
-      const finding = allFindings.find(
-        (f) =>
-          f.fullPath === document.uri.fsPath &&
-          f.line === diagnostic.range.start.line + 1
-      );
+      const codeVal = typeof diagnostic.code === 'object' ? diagnostic.code?.value : diagnostic.code;
+      const finding = allFindings.find((f) => f.id === codeVal);
 
       if (!finding) continue;
+
+      // Ensure the diagnostic range still matches the detected rawSecret
+      const docTextAtRange = document.getText(diagnostic.range);
+      if (docTextAtRange !== finding.rawSecret) {
+        continue;
+      }
 
       // QuickFix 1: Move to .env
       const moveToEnvAction = this.createMoveToEnvAction(document, diagnostic.range, finding);
@@ -99,6 +137,12 @@ export class SecretCodeActionProvider implements vscode.CodeActionProvider {
       return;
     }
 
+    const document = await vscode.workspace.openTextDocument(documentUri);
+    if (document.getText(range) !== finding.rawSecret) {
+      vscode.window.showErrorMessage('The secret at the target location has changed or was already removed.');
+      return;
+    }
+
     const workspaceRoot = workspaceFolder.uri.fsPath;
     const envPath = path.join(workspaceRoot, '.env');
 
@@ -140,15 +184,28 @@ export class SecretCodeActionProvider implements vscode.CodeActionProvider {
     // 3. Ensure .gitignore protects .env BEFORE any credentials are saved to disk
     try {
       ensureGitignoreProtectsEnv(workspaceRoot);
-    } catch (err) {
-      vscode.window.showErrorMessage(`Failed to verify .gitignore security: ${err}`);
+    } catch (err: any) {
+      vscode.window.showErrorMessage(`Failed to verify .gitignore security: ${err.message || err}`);
       return;
     }
 
-    // 4. Apply WorkspaceEdit to replace the secret with process.env.<VAR_NAME>
-    const replacement = `process.env.${varName}`;
+    // 4. Check for enclosing quotes to replace quotes too (avoid producing "process.env.X" string literal)
+    let editRange = range;
+    let quoteWrapped = false;
+    if (range.start.character > 0) {
+      const beforePos = range.start.translate(0, -1);
+      const afterPos = range.end.translate(0, 1);
+      const charBefore = document.getText(new vscode.Range(beforePos, range.start));
+      const charAfter = document.getText(new vscode.Range(range.end, afterPos));
+      if ((charBefore === '"' && charAfter === '"') || (charBefore === "'" && charAfter === "'")) {
+        editRange = new vscode.Range(beforePos, afterPos);
+        quoteWrapped = true;
+      }
+    }
+
+    const replacement = getLanguageReplacement(documentUri.fsPath, varName);
     const edit = new vscode.WorkspaceEdit();
-    edit.replace(documentUri, range, replacement);
+    edit.replace(documentUri, editRange, replacement);
 
     const editSuccess = await vscode.workspace.applyEdit(edit);
     if (!editSuccess) {
@@ -158,14 +215,18 @@ export class SecretCodeActionProvider implements vscode.CodeActionProvider {
       return;
     }
 
-    // 5. If source file was successfully updated, write escaped value to .env
+    // 5. If source file was successfully updated, write escaped value to .env with restricted permissions (0600)
     const escapedSecret = escapeEnvValue(finding.rawSecret);
     const envLine = `${varName}="${escapedSecret}"\n`;
 
     try {
       if (!isReused) {
-        const prefix = existingEnvContent.endsWith('\n') || existingEnvContent.length === 0 ? '' : '\n';
-        fs.appendFileSync(envPath, `${prefix}${envLine}`, 'utf8');
+        if (!hadExistingEnv) {
+          fs.writeFileSync(envPath, envLine, { mode: 0o600, encoding: 'utf8' });
+        } else {
+          const prefix = existingEnvContent.endsWith('\n') || existingEnvContent.length === 0 ? '' : '\n';
+          fs.appendFileSync(envPath, `${prefix}${envLine}`, { mode: 0o600, encoding: 'utf8' });
+        }
       }
 
       // Update .env.example
@@ -177,9 +238,10 @@ export class SecretCodeActionProvider implements vscode.CodeActionProvider {
         fs.appendFileSync(envExamplePath, `${exPrefix}${exampleLine}`, 'utf8');
       }
     } catch (err) {
-      // Rollback source code change if writing .env fails
+      // Rollback source code change using the post-edit range
+      const after = new vscode.Range(editRange.start, editRange.start.translate(0, replacement.length));
       const rollbackEdit = new vscode.WorkspaceEdit();
-      rollbackEdit.replace(documentUri, range, finding.rawSecret);
+      rollbackEdit.replace(documentUri, after, quoteWrapped ? `"${finding.rawSecret}"` : finding.rawSecret);
       await vscode.workspace.applyEdit(rollbackEdit);
 
       vscode.window.showErrorMessage(

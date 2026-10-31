@@ -51,7 +51,15 @@ export function buildEvidenceModel(
   const normalizedEntropy = calculateNormalizedEntropy(rawSecret);
   const { setName } = detectCharacterSet(rawSecret);
 
-  if (shannonEntropy >= 4.5) {
+  if (rule.minEntropy && shannonEntropy < rule.minEntropy) {
+    confidence = Math.max(10, confidence - 30);
+    items.push({
+      signal: 'LOW_ENTROPY',
+      description: `Low entropy score: ${shannonEntropy} bits/char below minimum threshold of ${rule.minEntropy}`,
+      confidenceImpact: -30,
+      details: { shannonEntropy, minEntropy: rule.minEntropy },
+    });
+  } else if (shannonEntropy >= 4.5) {
     confidence = Math.min(100, confidence + 5);
     items.push({
       signal: 'HIGH_ENTROPY',
@@ -67,16 +75,13 @@ export function buildEvidenceModel(
       details: { shannonEntropy, normalizedEntropy, characterSet: setName },
     });
   } else {
-    // If entropy is low and the rule requires minEntropy
-    if (rule.minEntropy && shannonEntropy < rule.minEntropy) {
-      confidence = Math.max(10, confidence - 30);
-      items.push({
-        signal: 'LOW_ENTROPY',
-        description: `Low entropy score: ${shannonEntropy} bits/char below minimum threshold of ${rule.minEntropy}`,
-        confidenceImpact: -30,
-        details: { shannonEntropy, minEntropy: rule.minEntropy },
-      });
-    }
+    confidence = Math.max(10, confidence - 15);
+    items.push({
+      signal: 'LOW_ENTROPY',
+      description: `Low entropy score: ${shannonEntropy} bits/char (${setName} set)`,
+      confidenceImpact: -15,
+      details: { shannonEntropy, normalizedEntropy, characterSet: setName },
+    });
   }
 
   // 3. Variable Identifier & AST Context Signal

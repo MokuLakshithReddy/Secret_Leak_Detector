@@ -131,6 +131,30 @@ export function ensureGitignoreProtectsEnv(workspaceRoot: string): void {
   } else {
     fs.writeFileSync(gitignorePath, '# Credentials\n.env\n.env.*.local\n', 'utf8');
   }
+
+  // Check git tracking and ignore status
+  try {
+    const { execFileSync } = require('child_process');
+    try {
+      execFileSync('git', ['ls-files', '--error-unmatch', '.env'], { cwd: workspaceRoot, stdio: 'ignore' });
+      throw new Error('.env is already tracked in Git index. Run "git rm --cached .env" to untrack it before storing secrets.');
+    } catch (lsErr: any) {
+      if (lsErr.message && lsErr.message.includes('already tracked in Git index')) {
+        throw lsErr;
+      }
+    }
+
+    try {
+      execFileSync('git', ['check-ignore', '-q', '.env'], { cwd: workspaceRoot, stdio: 'ignore' });
+    } catch {
+      // If check-ignore returned non-zero, .env is not ignored
+      throw new Error('.env is not ignored by Git according to git check-ignore.');
+    }
+  } catch (err: any) {
+    if (err.message && (err.message.includes('already tracked') || err.message.includes('not ignored by Git'))) {
+      throw err;
+    }
+  }
 }
 
 /**

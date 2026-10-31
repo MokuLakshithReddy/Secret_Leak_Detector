@@ -66,7 +66,7 @@ export class VerificationEngine {
       historyCheckFailed = true;
     }
 
-    if (historyCheckFailed || !gitExposure) {
+    if (historyCheckFailed || !gitExposure || gitExposure.statusDescription.includes('Failed to query git log')) {
       return {
         isResolved: true,
         targetFileClean: true,

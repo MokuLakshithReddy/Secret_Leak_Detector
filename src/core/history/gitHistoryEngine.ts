@@ -246,8 +246,8 @@ export class GitHistoryEngine {
       }
 
       return findings;
-    } catch {
-      return [];
+    } catch (err: any) {
+      throw new Error(`Failed to scan Git history commits: ${err.message || String(err)}`);
     }
   }
 }

@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { scanContent } from '../core/scanner/scanner';
+import { scanContent, ScannerOptions } from '../core/scanner/scanner';
 import { SecretFinding } from '../core/types';
 
 export class DiagnosticProvider {
@@ -8,9 +8,14 @@ export class DiagnosticProvider {
   private ignoredFindings: Set<string> = new Set();
   private onFindingsChangedEmitter = new vscode.EventEmitter<SecretFinding[]>();
   public readonly onFindingsChanged = this.onFindingsChangedEmitter.event;
+  private minEntropy?: number;
 
   constructor() {
     this.diagnosticCollection = vscode.languages.createDiagnosticCollection('secret-leak-detector');
+  }
+
+  public setMinEntropy(minEntropy?: number): void {
+    this.minEntropy = minEntropy;
   }
 
   public getDiagnosticCollection(): vscode.DiagnosticCollection {
@@ -54,6 +59,14 @@ export class DiagnosticProvider {
     this.onFindingsChangedEmitter.fire(this.getAllFindings());
   }
 
+  public setIgnoredFindings(ignoredIds: string[]): void {
+    this.ignoredFindings = new Set(ignoredIds);
+  }
+
+  public getIgnoredFindings(): string[] {
+    return Array.from(this.ignoredFindings);
+  }
+
   public scanDocument(document: vscode.TextDocument): SecretFinding[] {
     // Skip virtual or output documents
     if (document.uri.scheme !== 'file') {
@@ -64,7 +77,12 @@ export class DiagnosticProvider {
     const workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri);
     const workspaceRoot = workspaceFolder ? workspaceFolder.uri.fsPath : undefined;
 
-    const allDetected = scanContent(text, document.uri.fsPath, workspaceRoot);
+    const scanOpts: ScannerOptions = {
+      workspaceRoot,
+      minEntropyThreshold: this.minEntropy,
+    };
+
+    const allDetected = scanContent(text, document.uri.fsPath, scanOpts);
     const findings = allDetected.filter((f) => !this.ignoredFindings.has(f.id));
     this.currentFindings.set(document.uri.fsPath, findings);
 
@@ -73,8 +91,11 @@ export class DiagnosticProvider {
     for (const finding of findings) {
       const line = Math.max(0, finding.line - 1);
       const startCol = Math.max(0, finding.column - 1);
-      const endCol = startCol + finding.length;
-      const range = new vscode.Range(line, startCol, line, endCol);
+      const startPos = new vscode.Position(line, startCol);
+      // Accurately compute end position across multiple lines (e.g. for PEM keys)
+      const startOffset = document.offsetAt(startPos);
+      const endPos = document.positionAt(startOffset + finding.length);
+      const range = new vscode.Range(startPos, endPos);
 
       let severity = vscode.DiagnosticSeverity.Warning;
       if (finding.risk === 'CRITICAL' || finding.risk === 'HIGH') {

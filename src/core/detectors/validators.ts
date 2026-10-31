@@ -34,8 +34,8 @@ export function validateAwsAccessKey(key: string): ValidationResult {
  * Validates Stripe API Keys (Prefix format, length, and character entropy).
  */
 export function validateStripeKey(key: string): ValidationResult {
-  const isLive = /^sk_live_[0-9a-zA-Z]{24,34}$/.test(key) || /^rk_live_[0-9a-zA-Z]{24,34}$/.test(key);
-  const isTest = /^sk_test_[0-9a-zA-Z]{24,34}$/.test(key) || /^rk_test_[0-9a-zA-Z]{24,34}$/.test(key);
+  const isLive = /^sk_live_[0-9a-zA-Z]{24,100}$/.test(key) || /^rk_live_[0-9a-zA-Z]{24,100}$/.test(key);
+  const isTest = /^sk_test_[0-9a-zA-Z]{24,100}$/.test(key) || /^rk_test_[0-9a-zA-Z]{24,100}$/.test(key);
 
   if (!isLive && !isTest) {
     return { isValid: false, confidenceBonus: 0, reason: 'Does not match official Stripe secret key format' };

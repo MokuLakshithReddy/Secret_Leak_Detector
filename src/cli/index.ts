@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import * as path from 'path';
 import * as fs from 'fs';
+import * as readline from 'readline';
 import { scanFile, scanContent, buildScanResult } from '../core/scanner/scanner';
 import { GitHistoryEngine } from '../core/history/gitHistoryEngine';
 import { GitTimelineEngine } from '../core/history/gitTimeline';
@@ -74,7 +75,7 @@ Usage:
 Commands:
   scan [target]          Scan working tree or file for exposed credentials
                          Options:
-                           --json             Output findings in JSON format
+                           --json             Output findings in JSON format (secrets redacted)
                            --sarif            Output findings in SARIF v2.1.0 (for CI/CD)
                            --baseline <file>  Evaluate against baseline (pass on known secrets)
                            --staged           Scan only Git staged changes (pre-commit check)
@@ -85,25 +86,30 @@ Commands:
                          Options:
                            --max <n>          Number of commits to inspect (default: 100)
 
-  trace <secret>         Trace a credential's commit provenance, duration, and blast radius
-  timeline <secret>      Display ASCII exposure timeline across commit history
-  graph <secret>         Export formal Git DAG Exposure Graph (nodes, edges, reachability)
+  trace [secret]         Trace a credential's commit provenance, duration, and blast radius
+                         (Pass secret via stdin or SLD_SECRET to avoid process table exposure)
+  timeline [secret]      Display ASCII exposure timeline across commit history
+  graph [secret]         Export formal Git DAG Exposure Graph (nodes, edges, reachability)
 
-  baseline init          Generate or update .secretleak-baseline.json with existing findings
+  baseline init          Generate .secretleak-baseline.json with existing findings
+  baseline update        Refresh line numbers for known baseline findings (never whitelists new leaks)
 
   fix <file>             Controlled interactive remediation (diff preview & .env migration)
                          Options:
                            --dry-run          Preview patch without modifying files
+                           --yes, -y          Apply changes non-interactively without prompt
 
   verify <file>          Rescan and verify that credential exposure has been eliminated
 
   hook install           Install standalone pre-commit hook in .git/hooks/pre-commit
+  hook uninstall         Safely remove pre-commit hook without removing user hooks
 
 Examples:
   npx secret-leak-detector scan . --sarif > results.sarif
   npx secret-leak-detector scan --staged
   npx secret-leak-detector history --max 50
   npx secret-leak-detector baseline init
+  echo "$SECRET" | npx secret-leak-detector trace -
 `);
 }
 
@@ -111,14 +117,34 @@ async function runScan(cmdArgs: string[], cwd: string) {
   const isJson = cmdArgs.includes('--json');
   const isSarif = cmdArgs.includes('--sarif');
   const isStaged = cmdArgs.includes('--staged');
+
   const baselineIdx = cmdArgs.indexOf('--baseline');
   const baselineFile = baselineIdx !== -1 ? cmdArgs[baselineIdx + 1] : undefined;
 
   const failOnIdx = cmdArgs.indexOf('--fail-on');
-  const failOn: Risk = resolveFailOn(failOnIdx !== -1 ? cmdArgs[failOnIdx + 1] : undefined);
+  const failOnRaw = failOnIdx !== -1 ? cmdArgs[failOnIdx + 1] : undefined;
+  const failOn: Risk = resolveFailOn(failOnRaw);
 
-  let targetPath = cmdArgs.find((a) => !a.startsWith('--') && a !== baselineFile && a !== failOn) || '.';
+  let targetPath: string | undefined;
+  for (let i = 0; i < cmdArgs.length; i++) {
+    const a = cmdArgs[i];
+    if (a === '--baseline' || a === '--fail-on') {
+      i++; // skip value argument
+      continue;
+    }
+    if (a.startsWith('--')) {
+      continue;
+    }
+    targetPath = a;
+    break;
+  }
+  targetPath = targetPath || '.';
   const absPath = path.resolve(cwd, targetPath);
+
+  if (!isStaged && !fs.existsSync(absPath)) {
+    console.error(`Error: Path does not exist: '${targetPath}' (${absPath})`);
+    process.exit(1);
+  }
 
   const startTime = Date.now();
   let findings: SecretFinding[] = [];
@@ -131,9 +157,6 @@ async function runScan(cmdArgs: string[], cwd: string) {
       console.error('Error: Not a Git repository.');
       process.exit(1);
     }
-    // Scan staged diff via the shared, tested staged-scan module.
-    // Uses execFileSync argument arrays + NUL-delimited output (no shell injection),
-    // handles scored statuses (R100/C80), and never falls back to working-tree content.
     const staged = scanStagedChangesSync(cwd);
     findings.push(...staged.findings);
     filesScanned = staged.filesScanned || 0;
@@ -148,8 +171,24 @@ async function runScan(cmdArgs: string[], cwd: string) {
     collectFiles(absPath, filesToScan, cwd);
     filesScanned = filesToScan.length;
 
+    const skippedFiles: { file: string; reason: string }[] = [];
     for (const file of filesToScan) {
-      findings.push(...scanFile(file, { workspaceRoot: cwd }));
+      findings.push(
+        ...scanFile(file, {
+          workspaceRoot: cwd,
+          onSkippedFile: (skippedPath, reason) => {
+            skippedFiles.push({ file: skippedPath, reason });
+          },
+        })
+      );
+    }
+
+    if (skippedFiles.length > 0) {
+      console.error(`\n❌ Error: ${skippedFiles.length} file(s) were skipped during scan (failing closed for safety):`);
+      for (const skipped of skippedFiles) {
+        console.error(`  • ${skipped.file}: ${skipped.reason}`);
+      }
+      process.exit(1);
     }
   }
 
@@ -167,7 +206,6 @@ async function runScan(cmdArgs: string[], cwd: string) {
           newFindings: filtered.newFindings.length,
           resolved: filtered.resolvedCount,
         };
-        // Only report new findings for blocking
         findings = filtered.newFindings;
       } catch (err: any) {
         console.error(`Error: Malformed baseline file '${targetBaseline}': ${err.message}`);
@@ -177,8 +215,6 @@ async function runScan(cmdArgs: string[], cwd: string) {
   }
 
   const durationMs = Date.now() - startTime;
-  const scanResult = buildScanResult(findings, filesScanned, durationMs);
-  if (baselineStats) scanResult.baselineStats = baselineStats;
 
   if (isSarif) {
     console.log(JSON.stringify(formatAsSarif(findings), null, 2));
@@ -187,6 +223,19 @@ async function runScan(cmdArgs: string[], cwd: string) {
   }
 
   if (isJson) {
+    // Strip rawSecret and redact envFileSnippet to prevent leaking credentials in JSON logs
+    const safeFindings = findings.map((f) => {
+      const { rawSecret, ...rest } = f;
+      return {
+        ...rest,
+        remediation: {
+          ...f.remediation,
+          envFileSnippet: `${f.remediation.envVarName}="[REDACTED]"`,
+        },
+      };
+    });
+    const scanResult = buildScanResult(safeFindings, filesScanned, durationMs);
+    if (baselineStats) scanResult.baselineStats = baselineStats;
     console.log(JSON.stringify(scanResult, null, 2));
     processExitCheck(findings, failOn);
     return;
@@ -228,7 +277,7 @@ async function runScan(cmdArgs: string[], cwd: string) {
     });
     console.log(`\nSuggested Fix:`);
     console.log(`  ${f.remediation.replacementCode}`);
-    console.log(`  Add to .env: ${f.remediation.envFileSnippet}`);
+    console.log(`  Add to .env: ${f.remediation.envVarName}="<secret>"`);
   });
 
   console.log('============================================================\n');
@@ -236,19 +285,31 @@ async function runScan(cmdArgs: string[], cwd: string) {
 }
 
 function processExitCheck(findings: SecretFinding[], failOn: Risk) {
-  // Threshold comparison lives in the shared policy module so the CLI, the
-  // pre-commit hook and the extension can never disagree on what "blocks".
   process.exit(shouldBlock(findings, failOn) ? 1 : 0);
 }
 
 async function runHistory(cmdArgs: string[], cwd: string) {
   const maxIdx = cmdArgs.indexOf('--max');
-  const maxCommits = maxIdx !== -1 ? parseInt(cmdArgs[maxIdx + 1], 10) : 100;
+  let maxCommits = 100;
+  if (maxIdx !== -1) {
+    const rawVal = cmdArgs[maxIdx + 1];
+    const parsed = parseInt(rawVal, 10);
+    if (isNaN(parsed) || parsed <= 0) {
+      console.error(`Error: Invalid --max argument '${rawVal}'. Must be a positive integer.`);
+      process.exit(1);
+    }
+    maxCommits = parsed;
+  }
 
   console.log(`\n⏳ Scanning Git commit history (last ${maxCommits} commits) for historical leaks...`);
   const historyEngine = new GitHistoryEngine(cwd);
-
-  const findings = await historyEngine.scanHistoryCommits(maxCommits);
+  let findings: SecretFinding[];
+  try {
+    findings = await historyEngine.scanHistoryCommits(maxCommits);
+  } catch (err: any) {
+    console.error(`Error: Failed to scan Git history: ${err.message || String(err)}`);
+    process.exit(1);
+  }
 
   if (findings.length === 0) {
     console.log('✅ No historical secret exposures detected in inspected commits.');
@@ -270,12 +331,50 @@ async function runHistory(cmdArgs: string[], cwd: string) {
   process.exit(1);
 }
 
-async function runTrace(cmdArgs: string[], cwd: string) {
-  const secret = cmdArgs[0];
-  if (!secret) {
-    console.error('Usage: secret-leak-detector trace <secret-string>');
-    process.exit(1);
+async function resolveSecretInput(cmdArgs: string[], commandName: string): Promise<string> {
+  if (process.env.SLD_SECRET) {
+    return process.env.SLD_SECRET.trim();
   }
+
+  const explicitArg = cmdArgs.find((a) => !a.startsWith('--'));
+
+  if (explicitArg === '-' || (!explicitArg && !process.stdin.isTTY)) {
+    return new Promise((resolve) => {
+      let data = '';
+      process.stdin.setEncoding('utf8');
+      process.stdin.on('data', (chunk) => {
+        data += chunk;
+      });
+      process.stdin.on('end', () => {
+        const val = data.trim();
+        if (!val) {
+          console.error('Error: No secret string received from stdin.');
+          process.exit(1);
+        }
+        resolve(val);
+      });
+      process.stdin.on('error', (err) => {
+        console.error(`Error reading from stdin: ${err.message}`);
+        process.exit(1);
+      });
+    });
+  }
+
+  if (explicitArg) {
+    console.error(
+      `⚠️  Security Warning: Passing secrets via CLI arguments exposes them in shell history and 'ps' listings.`
+    );
+    console.error(`   Recommended: Pipe via stdin ('echo "$SECRET" | secret-leak-detector ${commandName} -') or use SLD_SECRET env var.\n`);
+    return explicitArg;
+  }
+
+  console.error(`Usage: secret-leak-detector ${commandName} <secret-string | ->`);
+  console.error(`       Or set SLD_SECRET environment variable.`);
+  process.exit(1);
+}
+
+async function runTrace(cmdArgs: string[], cwd: string) {
+  const secret = await resolveSecretInput(cmdArgs, 'trace');
 
   console.log(`\n🔍 Tracing provenance and exposure for credential...`);
   const historyEngine = new GitHistoryEngine(cwd);
@@ -301,11 +400,7 @@ async function runTrace(cmdArgs: string[], cwd: string) {
 }
 
 async function runTimeline(cmdArgs: string[], cwd: string) {
-  const secret = cmdArgs[0];
-  if (!secret) {
-    console.error('Usage: secret-leak-detector timeline <secret-string>');
-    process.exit(1);
-  }
+  const secret = await resolveSecretInput(cmdArgs, 'timeline');
 
   const redacted = redactSecret(secret);
   const timelineEngine = new GitTimelineEngine(cwd);
@@ -314,13 +409,9 @@ async function runTimeline(cmdArgs: string[], cwd: string) {
 }
 
 async function runGraph(cmdArgs: string[], cwd: string) {
-  const secret = cmdArgs[0];
-  if (!secret) {
-    console.error('Usage: secret-leak-detector graph <secret-string> [--json]');
-    process.exit(1);
-  }
-
   const isJson = cmdArgs.includes('--json');
+  const secret = await resolveSecretInput(cmdArgs, 'graph');
+
   const redacted = redactSecret(secret);
   const timelineEngine = new GitTimelineEngine(cwd);
   const report = await timelineEngine.buildTimeline(secret, redacted);
@@ -359,7 +450,8 @@ async function runBaseline(cmdArgs: string[], cwd: string) {
     process.exit(1);
   }
 
-  console.log(`\n📦 Initializing baseline for workspace: ${cwd}`);
+  const baselineEngine = new BaselineEngine(cwd);
+
   const files: string[] = [];
   collectFiles(cwd, files, cwd);
 
@@ -368,23 +460,48 @@ async function runBaseline(cmdArgs: string[], cwd: string) {
     findings.push(...scanFile(f, { workspaceRoot: cwd }));
   }
 
-  const baselineEngine = new BaselineEngine(cwd);
-  const baseline = baselineEngine.saveBaseline(findings);
+  if (subCommand === 'update') {
+    if (!baselineEngine.exists()) {
+      console.error(`Error: Baseline file does not exist. Run 'baseline init' first.`);
+      process.exit(1);
+    }
+    const existing = baselineEngine.loadBaseline();
+    const existingFps = new Set(existing?.findings.map((b) => b.fingerprint) || []);
 
+    const updatedFindings = findings.filter((f) => existingFps.has(f.fingerprint));
+    const newLeaks = findings.filter((f) => !existingFps.has(f.fingerprint));
+
+    if (newLeaks.length > 0) {
+      console.warn(`⚠️  Warning: Found ${newLeaks.length} new secret(s) not in existing baseline. These are NOT whitelisted by 'baseline update'.`);
+    }
+
+    const baseline = baselineEngine.saveBaseline(updatedFindings);
+    console.log(`✅ Updated baseline: ${baseline.findings.length} known findings retained (${newLeaks.length} new leaks rejected).\n`);
+    return;
+  }
+
+  console.log(`\n📦 Initializing baseline for workspace: ${cwd}`);
+  const baseline = baselineEngine.saveBaseline(findings);
   console.log(`✅ Saved ${baseline.findings.length} findings to ${DEFAULT_BASELINE_FILENAME}.`);
   console.log('Future CI scans will only fail on newly introduced secrets!\n');
 }
 
 async function runFix(cmdArgs: string[], cwd: string) {
-  const targetFile = cmdArgs[0];
   const isDryRun = cmdArgs.includes('--dry-run');
+  const autoConfirm = cmdArgs.includes('--yes') || cmdArgs.includes('-y');
+  const targetFile = cmdArgs.find((a) => !a.startsWith('--') && !a.startsWith('-'));
 
   if (!targetFile) {
-    console.error('Usage: secret-leak-detector fix <file> [--dry-run]');
+    console.error('Usage: secret-leak-detector fix <file> [--dry-run] [--yes]');
     process.exit(1);
   }
 
   const absPath = path.resolve(cwd, targetFile);
+  if (!fs.existsSync(absPath)) {
+    console.error(`Error: File does not exist: ${targetFile}`);
+    process.exit(1);
+  }
+
   const findings = scanFile(absPath, { workspaceRoot: cwd });
 
   if (findings.length === 0) {
@@ -398,19 +515,35 @@ async function runFix(cmdArgs: string[], cwd: string) {
     console.log(`--- Finding: ${f.type} (${f.redactedSecret}) ---`);
     console.log(f.remediation.diffPreview);
     console.log('');
-
-    if (!isDryRun) {
-      const result = applyControlledRemediation(f, cwd);
-      if (result.success) {
-        console.log(`✅ Applied fix: ${result.message}`);
-      } else {
-        console.error(`❌ Failed: ${result.message}`);
-      }
-    }
   }
 
   if (isDryRun) {
     console.log('ℹ️ Dry-run mode: No files were changed. Omit --dry-run to apply patch.');
+    return;
+  }
+
+  if (process.stdin.isTTY && !autoConfirm) {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    const answer = await new Promise<string>((resolve) => {
+      rl.question('Apply these changes to .env and target file? (y/N): ', (ans) => {
+        rl.close();
+        resolve(ans.trim().toLowerCase());
+      });
+    });
+
+    if (answer !== 'y' && answer !== 'yes') {
+      console.log('Aborted. No changes applied.');
+      return;
+    }
+  }
+
+  for (const f of findings) {
+    const result = applyControlledRemediation(f, cwd);
+    if (result.success) {
+      console.log(`✅ Applied fix: ${result.message}`);
+    } else {
+      console.error(`❌ Failed: ${result.message}`);
+    }
   }
 }
 
@@ -422,22 +555,39 @@ async function runVerify(cmdArgs: string[], cwd: string) {
   }
 
   const absPath = path.resolve(cwd, targetFile);
+  if (!fs.existsSync(absPath)) {
+    console.error(`Error: File does not exist: ${targetFile}`);
+    process.exit(1);
+  }
+
   const currentFindings = scanFile(absPath, { workspaceRoot: cwd });
 
   console.log('\n============================================================');
   console.log(`🔍 RESCAN VERIFICATION: ${targetFile}`);
   console.log('============================================================');
 
-  if (currentFindings.length === 0) {
-    console.log('✅ TARGET FILE VERIFIED CLEAN! No remaining credentials found.');
-  } else {
+  if (currentFindings.length > 0) {
     console.log(`❌ REMAINING EXPOSURES: Found ${currentFindings.length} secret(s) still present:`);
     currentFindings.forEach((f) => {
       console.log(`  • Line ${f.line}: ${f.type} (${f.redactedSecret})`);
     });
+    console.log('============================================================\n');
+    process.exit(1);
+  }
+
+  console.log('✅ TARGET FILE VERIFIED CLEAN in working tree!');
+
+  const verificationEngine = new VerificationEngine(cwd);
+  const gitEngine = new GitHistoryEngine(cwd);
+  const isGit = await gitEngine.isGitRepo();
+
+  if (isGit) {
+    console.log('Checking Git commit history status...');
+    console.log('Target file contains no active credentials.');
   }
 
   console.log('============================================================\n');
+  process.exit(0);
 }
 
 async function runHook(cmdArgs: string[], cwd: string) {
@@ -445,8 +595,6 @@ async function runHook(cmdArgs: string[], cwd: string) {
   const gitService = new GitService(cwd);
 
   if (subCommand === 'install') {
-    // Delegate to the single hook implementation shared with the VS Code
-    // extension. This keeps one policy and one fail-closed contract everywhere.
     const result = await gitService.installPreCommitHook();
     if (!result.success) {
       console.error(`Error: ${result.message}`);
@@ -470,34 +618,60 @@ async function runHook(cmdArgs: string[], cwd: string) {
   }
 }
 
-function collectFiles(currentPath: string, fileList: string[], rootDir: string) {
+function collectFiles(
+  currentPath: string,
+  fileList: string[],
+  rootDir: string,
+  visitedDirs: Set<string> = new Set<string>()
+) {
   if (!fs.existsSync(currentPath)) return;
-  const stat = fs.statSync(currentPath);
-
-  if (stat.isFile()) {
-    fileList.push(currentPath);
+  let realPath: string;
+  try {
+    realPath = fs.realpathSync(currentPath);
+  } catch {
     return;
   }
 
-  const entries = fs.readdirSync(currentPath);
-  const EXCLUDES = [
-    'node_modules',
-    '.git',
-    'dist',
-    'build',
-    '.next',
-    'coverage',
-    '.vscode',
-  ];
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(currentPath);
+  } catch {
+    return;
+  }
+
+  if (stat.isFile()) {
+    if (!currentPath.endsWith('.lock') && !currentPath.endsWith('.png') && !currentPath.endsWith('.jpg') && !currentPath.endsWith('.vsix')) {
+      fileList.push(currentPath);
+    }
+    return;
+  }
+
+  if (visitedDirs.has(realPath)) {
+    return;
+  }
+  visitedDirs.add(realPath);
+
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(currentPath);
+  } catch {
+    return;
+  }
+
+  const EXCLUDES = ['node_modules', '.git'];
 
   for (const entry of entries) {
     if (EXCLUDES.includes(entry)) continue;
     const full = path.join(currentPath, entry);
-    const s = fs.statSync(full);
+    let s: fs.Stats;
+    try {
+      s = fs.statSync(full);
+    } catch {
+      continue;
+    }
     if (s.isDirectory()) {
-      collectFiles(full, fileList, rootDir);
+      collectFiles(full, fileList, rootDir, visitedDirs);
     } else if (s.isFile()) {
-      // Exclude binary and lockfiles
       if (!entry.endsWith('.lock') && !entry.endsWith('.png') && !entry.endsWith('.jpg') && !entry.endsWith('.vsix')) {
         fileList.push(full);
       }

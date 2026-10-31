@@ -4,19 +4,18 @@
  */
 
 const KNOWN_PLACEHOLDER_REGEXES = [
-  /example/i,
-  /placeholder/i,
-  /your[_-]?(?:api)?[_-]?key/i,
-  /your[_-]?secret/i,
-  /your[_-]?token/i,
-  /insert[_-]?here/i,
-  /replace[_-]?me/i,
-  /enter[_-]?your/i,
-  /change[_-]?me/i,
-  /dummy/i,
-  /fake[_-]?token/i,
+  /\bplaceholder\b/i,
+  /\byour[_-]?(?:api)?[_-]?key\b/i,
+  /\byour[_-]?secret\b/i,
+  /\byour[_-]?token\b/i,
+  /\binsert[_-]?here\b/i,
+  /\breplace[_-]?me\b/i,
+  /\benter[_-]?your\b/i,
+  /\bchange[_-]?me\b/i,
+  /\bdummy\b/i,
+  /\bfake[_-]?token\b/i,
   /xxxx+/i,
-  /test[_-]?value/i,
+  /\btest[_-]?value\b/i,
   /AKIAIOSFODNN7EXAMPLE/i,
   /wJalrXUtnFEMI\/K7MDENG\/bPxRfiCYEXAMPLEKEY/i,
   /^123456789[0-9]*$/,
@@ -24,13 +23,14 @@ const KNOWN_PLACEHOLDER_REGEXES = [
   /00000000[0-9]*/,
   /sk_live_example/i,
   /ghp_example/i,
-  /:\/\/[^:]+:(?:password|secret|changeme|pass|admin|test|postgres|root)@(?:localhost|127\.0\.0\.1)/i,
-  /:\/\/(?:postgres|root):(postgres|root)@/i,
-  /:password@/i,
+  /:\/\/[^:]+:(?:password|secret|changeme|pass|admin|test|postgres|root)@(?:localhost|127\.0\.0\.1)(?::\d+)?\b/i,
+  /:\/\/(?:postgres|root):(postgres|root)@(?:localhost|127\.0\.0\.1)(?::\d+)?\b/i,
 ];
 
 // Pure UUID v4 regex: e7b1a290-2c3d-4e5f-8a1b-9c8d7e6f5a4b
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const MOCK_VAR_REGEX = /^(?:mock|dummy|placeholder|fake|sample)_(?:key|token|secret|password|pwd|cred)$/i;
 
 export interface FalsePositiveCheck {
   isFalsePositive: boolean;
@@ -57,16 +57,14 @@ export function evaluateFalsePositive(
     }
   }
 
-  // Check if variable name indicates an example or placeholder
-  if (inferredVarName) {
-    for (const pattern of KNOWN_PLACEHOLDER_REGEXES) {
-      if (pattern.test(inferredVarName)) {
-        return {
-          isFalsePositive: true,
-          reason: `Variable identifier indicates placeholder: ${inferredVarName}`,
-          confidencePenalty: 100,
-        };
-      }
+  // Check if variable name indicates an explicit mock/dummy key (not generic words in identifiers)
+  if (inferredVarName && MOCK_VAR_REGEX.test(inferredVarName)) {
+    if (!secret.startsWith('AKIA') && !secret.startsWith('ghp_')) {
+      return {
+        isFalsePositive: true,
+        reason: `Variable identifier indicates placeholder: ${inferredVarName}`,
+        confidencePenalty: 100,
+      };
     }
   }
 

@@ -3,7 +3,7 @@ import { promisify } from 'util';
 import * as fs from 'fs';
 import * as path from 'path';
 import { SecretFinding } from '../core/types';
-import { scanStagedChangesSync } from './stagedScanner';
+import { scanStagedChangesAsync, scanStagedChangesSync } from './stagedScanner';
 import { buildPreCommitHook, SLD_HOOK_MARKER } from './preCommitHook';
 import { DEFAULT_FAIL_ON } from '../core/policy';
 
@@ -20,9 +20,20 @@ export interface StagedScanResult {
 
 export class GitService {
   private workspaceRoot: string;
+  private cliPath?: string;
 
-  constructor(workspaceRoot: string) {
+  constructor(workspaceRoot: string, cliPath?: string) {
     this.workspaceRoot = workspaceRoot;
+    if (cliPath && fs.existsSync(cliPath)) {
+      this.cliPath = cliPath;
+    } else {
+      const candidates = [
+        path.resolve(__dirname, 'cli.js'),
+        path.resolve(__dirname, '../../dist/cli.js'),
+        path.resolve(process.cwd(), 'dist/cli.js'),
+      ];
+      this.cliPath = candidates.find((c) => fs.existsSync(c));
+    }
   }
 
   /**
@@ -43,11 +54,16 @@ export class GitService {
    * Retrieves staged diff, extracts exact modified line coordinates,
    * scans the staged file version, and returns a fail-closed scan result.
    *
-   * Delegates to the shared staged-scan module (execFileSync argument arrays +
-   * NUL-delimited output), so the CLI and the extension use one tested parser.
-   * Handles scored statuses (R100/C80) and never falls back to working-tree content.
+   * Uses non-blocking async execution in the extension host.
    */
   public async scanStagedChanges(): Promise<StagedScanResult> {
+    return scanStagedChangesAsync(this.workspaceRoot);
+  }
+
+  /**
+   * Synchronous staged changes scanner for CLI scripts.
+   */
+  public scanStagedChangesSync(): StagedScanResult {
     return scanStagedChangesSync(this.workspaceRoot);
   }
 
@@ -118,12 +134,10 @@ After fixing:
         { cwd: this.workspaceRoot }
       );
       const resolved = stdout.trim();
-      // git rev-parse --git-path can return a relative path
       return path.isAbsolute(resolved)
         ? resolved
         : path.resolve(this.workspaceRoot, resolved);
     } catch {
-      // Fall back to the conventional location if git itself fails
       return path.join(this.workspaceRoot, '.git', 'hooks');
     }
   }
@@ -132,7 +146,7 @@ After fixing:
    * Installs pre-commit hook into the effective Git hooks directory.
    * If an existing hook exists, backs it up with a timestamped name and chains it.
    */
-  public async installPreCommitHook(): Promise<{ success: boolean; message: string }> {
+  public async installPreCommitHook(customCliPath?: string): Promise<{ success: boolean; message: string }> {
     if (!(await this.isGitRepo())) {
       return { success: false, message: 'Workspace is not a Git repository.' };
     }
@@ -147,10 +161,8 @@ After fixing:
     }
 
     const hookPath = path.join(hooksDir, 'pre-commit');
-    // Use a timestamped backup name so repeated installs never silently overwrite a prior backup.
     const timestamp = Date.now();
     const backupPath = path.join(hooksDir, `pre-commit.sld-backup.${timestamp}`);
-    // The latest backup symlink always points to the most recent one, used during uninstall.
     const latestBackupMarkerPath = path.join(hooksDir, 'pre-commit.sld-backup.latest');
     const marker = SLD_HOOK_MARKER;
 
@@ -160,7 +172,6 @@ After fixing:
         const existingContent = fs.readFileSync(hookPath, 'utf8');
         if (!existingContent.includes(marker)) {
           fs.writeFileSync(backupPath, existingContent, { mode: 0o755 });
-          // Record path of the most recent backup so uninstall can locate it
           fs.writeFileSync(latestBackupMarkerPath, backupPath, 'utf8');
         }
       } catch (err) {
@@ -168,9 +179,8 @@ After fixing:
       }
     }
 
-    // Hook body is built by the shared, fail-closed builder so the CLI and the
-    // VS Code extension install byte-identical hooks using the one project policy.
-    const hookContent = buildPreCommitHook(DEFAULT_FAIL_ON);
+    const targetCli = customCliPath || this.cliPath;
+    const hookContent = buildPreCommitHook(DEFAULT_FAIL_ON, targetCli);
 
     try {
       fs.writeFileSync(hookPath, hookContent, { mode: 0o755 });
@@ -182,7 +192,7 @@ After fixing:
 
   /**
    * Safely uninstalls pre-commit hook and restores any previous backup.
-   * Resolves the same hooks directory used during install.
+   * Verifies that the hook is managed by SLD before touching it to avoid deleting user hooks.
    */
   public async uninstallPreCommitHook(): Promise<{ success: boolean; message: string }> {
     const hooksDir = await this.resolveHooksDir();
@@ -194,6 +204,14 @@ After fixing:
     }
 
     try {
+      const existingContent = fs.readFileSync(hookPath, 'utf8');
+      if (!existingContent.includes(SLD_HOOK_MARKER)) {
+        return {
+          success: false,
+          message: 'Existing pre-commit hook is not managed by Secret Leak Detector; refusing to delete user hook.',
+        };
+      }
+
       // Locate the most recent backup via the marker file
       if (fs.existsSync(latestBackupMarkerPath)) {
         const backupPath = fs.readFileSync(latestBackupMarkerPath, 'utf8').trim();
@@ -204,7 +222,7 @@ After fixing:
           return { success: true, message: 'Uninstalled SLD hook and restored original pre-commit hook.' };
         }
       }
-      // No backup — simply remove the SLD hook
+      // No backup — safely remove the SLD hook
       fs.unlinkSync(hookPath);
       return { success: true, message: 'Removed Secret Leak Detector pre-commit hook.' };
     } catch (err: any) {

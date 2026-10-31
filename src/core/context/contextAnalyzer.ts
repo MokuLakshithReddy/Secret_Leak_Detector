@@ -41,7 +41,6 @@ const SENSITIVE_VAR_NAMES = [
 ];
 
 const BENIGN_VAR_NAMES = [
-  /example/i,
   /placeholder/i,
   /mock/i,
   /dummy/i,
@@ -57,15 +56,18 @@ export function analyzeFileContext(filePath: string): FileContext {
   const baseName = path.basename(filePath).toLowerCase();
   const ext = path.extname(filePath).toLowerCase();
 
-  const isTest = /(?:^|\/)(?:test|tests|spec|specs|__tests__|__mocks__|fixtures|mocks)\/|(?:test|spec)\.[a-z0-9]+$/i.test(
-    normalizedPath
-  );
+  // Robust test detection that avoids false matching on filenames like "latest.json"
+  const isTest =
+    /(?:^|\/)(?:tests?|specs?|__tests__|__mocks__|fixtures|mocks)\//i.test(normalizedPath) ||
+    /[._-](?:test|spec)\.[a-z0-9]+$/i.test(baseName) ||
+    /^(?:test|spec)\.[a-z0-9]+$/i.test(baseName);
 
   const isDoc = /(?:^|\/)(?:docs|doc|documentation|tutorials|guides)\/|readme\.md|contributing\.md|changelog\.md/i.test(
     normalizedPath
   );
 
-  const isExampleOrSample = /(?:example|sample|\.example|\.sample)/i.test(normalizedPath);
+  const isExampleOrSample = /(?:^|\/)(?:example|sample|\.example|\.sample)/i.test(normalizedPath) ||
+    /[._-](?:example|sample)\.[a-z0-9]+$/i.test(baseName);
 
   const isConfig =
     /^\.env(?:\.[a-z0-9]+)?$/.test(baseName) ||
@@ -101,36 +103,31 @@ export function analyzeLexicalContext(
   }
 
   const surroundingAfter: string[] = [];
-  for (
-    let i = lineIndexZeroBased + 1;
-    i <= Math.min(contentLines.length - 1, lineIndexZeroBased + 3);
-    i++
-  ) {
+  for (let i = lineIndexZeroBased + 1; i < Math.min(contentLines.length, lineIndexZeroBased + 4); i++) {
     surroundingAfter.push(contentLines[i]);
   }
 
-  // Detect variable name
-  const varMatch =
-    matchedLine.match(/(?:const|let|var|val|\$|string|final)\s+([a-zA-Z0-9_]+)/i) ||
-    matchedLine.match(/([a-zA-Z0-9_]+)\s*[:=]/i);
+  // Infer variable / key identifier
+  let inferredVariable: string | undefined;
+  const assignmentMatch = matchedLine.match(/(?:const|let|var)\s+([a-zA-Z0-9_$]+)\s*[:=]/);
+  const propertyMatch = matchedLine.match(/["']?([a-zA-Z0-9_$-]+)["']?\s*[:=]/);
 
-  const inferredVariable = varMatch ? varMatch[1] : undefined;
-
-  let isSensitiveIdentifier = false;
-  let isBenignIdentifier = false;
-
-  if (inferredVariable) {
-    isSensitiveIdentifier = SENSITIVE_VAR_NAMES.some((p) => p.test(inferredVariable));
-    isBenignIdentifier = BENIGN_VAR_NAMES.some((p) => p.test(inferredVariable));
-  } else {
-    // Check if whole line has sensitive assignment
-    isSensitiveIdentifier = SENSITIVE_VAR_NAMES.some((p) => p.test(matchedLine));
+  if (assignmentMatch) {
+    inferredVariable = assignmentMatch[1];
+  } else if (propertyMatch) {
+    inferredVariable = propertyMatch[1];
   }
 
+  const isSensitiveIdentifier = inferredVariable
+    ? SENSITIVE_VAR_NAMES.some((r) => r.test(inferredVariable!))
+    : false;
+
+  const isBenignIdentifier = inferredVariable
+    ? BENIGN_VAR_NAMES.some((r) => r.test(inferredVariable!))
+    : false;
+
   const isAssignment = /[:=]/.test(matchedLine);
-  const isEnvOrConfigAccess = /(?:process\.env|os\.getenv|os\.environ|dotenv|config\.get)/i.test(
-    matchedLine
-  );
+  const isEnvOrConfigAccess = /(?:process\.env|os\.environ|dotenv|config|getenv)/i.test(matchedLine);
   const isHeaderOrBearer = /(?:authorization|bearer|x-api-key)/i.test(matchedLine);
   const isInComment = /^\s*(?:\/\/|#|\/\*|\*|--)/.test(matchedLine);
 

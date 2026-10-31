@@ -86,7 +86,6 @@ export class DashboardPanel {
       command: 'updateData',
       findings: redacted,
     });
-    this._update();
   }
 
   public dispose() {
@@ -391,7 +390,7 @@ PROVE (Verification & Provider Match)
    ↓
 TRACE (Blast Radius across Files/Git)
    ↓
-BLOCK (Intercept git commit / git push)
+BLOCK (Intercept git commit via pre-commit hook)
    ↓
 FIX (One-click Extraction to .env)
    ↓
@@ -440,9 +439,18 @@ ALLOW (Commit Proceeds)
       document.getElementById('stat-total').textContent = String(totalCount);
       document.getElementById('stat-critical').textContent = String(criticalCount);
       document.getElementById('stat-high').textContent = String(highCount);
+      const blockingCount = findings.filter(f => f.risk === 'CRITICAL' || f.risk === 'HIGH').length;
       const guardEl = document.getElementById('stat-guard');
-      guardEl.textContent = totalCount > 0 ? 'BLOCKING' : 'READY';
-      guardEl.className = totalCount > 0 ? 'stat-value critical' : 'stat-value clean';
+      if (blockingCount > 0) {
+        guardEl.textContent = 'BLOCKING (' + blockingCount + ')';
+        guardEl.className = 'stat-value critical';
+      } else if (totalCount > 0) {
+        guardEl.textContent = 'WARNING (' + totalCount + ')';
+        guardEl.className = 'stat-value';
+      } else {
+        guardEl.textContent = 'READY';
+        guardEl.className = 'stat-value clean';
+      }
 
       // Clear existing rows safely
       while (tbody.firstChild) {

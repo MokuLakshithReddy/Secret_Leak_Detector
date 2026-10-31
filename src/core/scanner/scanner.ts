@@ -86,11 +86,12 @@ export function scanContent(
     let match: RegExpExecArray | null;
 
     while ((match = rule.pattern.exec(content)) !== null) {
-      const rawSecret = match[1] || match[0];
-      const matchIndex = match.index;
+      const rawSecret = match[1] !== undefined ? match[1] : match[0];
+      const secretOffset = match[1] !== undefined ? match[0].indexOf(match[1]) : 0;
+      const secretIndex = match.index + (secretOffset >= 0 ? secretOffset : 0);
 
       // Calculate line and column via binary search on line offsets (0 heap allocation)
-      const { line: lineNumber, column: columnNumber } = getPosition(matchIndex);
+      const { line: lineNumber, column: columnNumber } = getPosition(secretIndex);
 
       // Extract lexical context and AST assignment semantics with windowed lines
       const ctxWindow = getContextWindow(lineNumber);
@@ -115,8 +116,7 @@ export function scanContent(
       // Check minimum entropy constraint
       if (
         rule.minEntropy &&
-        evidenceResult.evidence.shannonEntropy < rule.minEntropy &&
-        rule.baseRiskWeight < 90
+        evidenceResult.evidence.shannonEntropy < rule.minEntropy
       ) {
         continue;
       }
@@ -143,7 +143,8 @@ export function scanContent(
         lexicalContext.inferredVariable
       );
 
-      const id = `sec_${generateFingerprint(rawSecret)}_${lineNumber}`;
+      const fileIdPart = Buffer.from(relativePath).toString('hex').slice(0, 8);
+      const id = `sec_${generateFingerprint(rawSecret)}_${fileIdPart}_${lineNumber}`;
       const fingerprint = generateFingerprint(rawSecret);
       const redacted = redactSecret(rawSecret);
 
@@ -212,8 +213,7 @@ export function scanContent(
 
         if (
           rule.minEntropy &&
-          evidenceResult.evidence.shannonEntropy < rule.minEntropy &&
-          rule.baseRiskWeight < 90
+          evidenceResult.evidence.shannonEntropy < rule.minEntropy
         ) {
           continue;
         }

@@ -7,7 +7,9 @@ build/
 tools/
 evaluation/corpus/
 .cache/
-.env*
+.env
+.env.*
+!.env.example
 .vite/
 vite.config.*.timestamp-*
 *.tsbuildinfo
@@ -25,4 +27,5 @@ logs/
 /.plugins/
 /.opencode-skills/
 
-# Demo temp repos created at runtime — excluded from SLD scan\ndemo/tmp-fixture-repo/
+# Demo temp repos created at runtime — excluded from SLD scan
+demo/tmp-fixture-repo/

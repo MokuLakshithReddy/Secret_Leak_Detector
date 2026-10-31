@@ -48,31 +48,67 @@ export function activate(context: vscode.ExtensionContext) {
     }
   });
 
-  // Real-time Scanning on open and save
-  const config = vscode.workspace.getConfiguration('secretLeakDetector');
-  if (config.get<boolean>('enableRealtimeScanning', true)) {
-    if (vscode.window.activeTextEditor) {
-      diagnosticProvider.scanDocument(vscode.window.activeTextEditor.document);
-    }
-
-    context.subscriptions.push(
-      vscode.workspace.onDidSaveTextDocument((doc) => {
-        diagnosticProvider.scanDocument(doc);
-      })
-    );
-
-    context.subscriptions.push(
-      vscode.workspace.onDidOpenTextDocument((doc) => {
-        diagnosticProvider.scanDocument(doc);
-      })
-    );
-
-    context.subscriptions.push(
-      vscode.workspace.onDidCloseTextDocument((doc) => {
-        diagnosticProvider.removeDocument(doc.uri);
-      })
-    );
+  // Apply and listen to configuration changes (minEntropy, persist ignores)
+  function applyConfiguration() {
+    const config = vscode.workspace.getConfiguration('secretLeakDetector');
+    const minEntropy = config.get<number>('minEntropy');
+    diagnosticProvider.setMinEntropy(typeof minEntropy === 'number' && minEntropy > 0 ? minEntropy : undefined);
+    const persistedIgnores = context.workspaceState.get<string[]>('ignoredFindings', []);
+    diagnosticProvider.setIgnoredFindings(persistedIgnores);
   }
+  applyConfiguration();
+
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration('secretLeakDetector')) {
+        applyConfiguration();
+        if (vscode.window.activeTextEditor) {
+          diagnosticProvider.scanDocument(vscode.window.activeTextEditor.document);
+        }
+      }
+    })
+  );
+
+  // Real-time Scanning on open, typing change (debounced), and save
+  if (vscode.window.activeTextEditor) {
+    diagnosticProvider.scanDocument(vscode.window.activeTextEditor.document);
+  }
+
+  context.subscriptions.push(
+    vscode.workspace.onDidSaveTextDocument((doc) => {
+      const config = vscode.workspace.getConfiguration('secretLeakDetector');
+      if (config.get<boolean>('enableRealtimeScanning', true)) {
+        diagnosticProvider.scanDocument(doc);
+      }
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.workspace.onDidOpenTextDocument((doc) => {
+      const config = vscode.workspace.getConfiguration('secretLeakDetector');
+      if (config.get<boolean>('enableRealtimeScanning', true)) {
+        diagnosticProvider.scanDocument(doc);
+      }
+    })
+  );
+
+  let changeTimeout: NodeJS.Timeout | undefined;
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeTextDocument((event) => {
+      const config = vscode.workspace.getConfiguration('secretLeakDetector');
+      if (!config.get<boolean>('enableRealtimeScanning', true)) return;
+      if (changeTimeout) clearTimeout(changeTimeout);
+      changeTimeout = setTimeout(() => {
+        diagnosticProvider.scanDocument(event.document);
+      }, 350);
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.workspace.onDidDeleteFiles((event) => {
+      event.files.forEach((f) => diagnosticProvider.removeDocument(f));
+    })
+  );
 
   // Command: Scan Entire Workspace
   context.subscriptions.push(
@@ -231,11 +267,30 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
-  // Command: Ignore Finding (False Positive suppression)
+  // Command: Ignore Finding (False Positive suppression with palette selection and persistence)
   context.subscriptions.push(
-    vscode.commands.registerCommand('secret-leak-detector.ignoreFinding', (findingId: string) => {
-      if (!findingId) return;
-      diagnosticProvider.ignoreFinding(findingId);
+    vscode.commands.registerCommand('secret-leak-detector.ignoreFinding', async (findingId?: string) => {
+      let targetId = findingId;
+      if (!targetId) {
+        const all = diagnosticProvider.getAllFindings();
+        if (all.length === 0) {
+          vscode.window.showInformationMessage('No active findings to ignore.');
+          return;
+        }
+        const picked = await vscode.window.showQuickPick(
+          all.map((f) => ({
+            label: `${f.type} (${f.file}:${f.line})`,
+            description: f.redactedSecret,
+            id: f.id,
+          })),
+          { placeHolder: 'Select a finding to ignore (suppress as false-positive)' }
+        );
+        if (!picked) return;
+        targetId = picked.id;
+      }
+      diagnosticProvider.ignoreFinding(targetId);
+      const currentIgnores = diagnosticProvider.getIgnoredFindings();
+      await context.workspaceState.update('ignoredFindings', currentIgnores);
       vscode.window.showInformationMessage(`🛡️ Finding marked as false-positive and suppressed.`);
     })
   );
