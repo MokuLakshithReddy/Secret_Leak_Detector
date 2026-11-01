@@ -8,7 +8,7 @@ const isBenchmark = process.argv.includes('--benchmark');
 const isCliOnly = process.argv.includes('--cli');
 const isDemo = process.argv.includes('--demo');
 
-const defaultExternals = ['vscode'];
+const defaultExternals = ['vscode', 'mocha'];
 
 async function buildAll() {
   if (isTest) {
@@ -138,6 +138,31 @@ async function buildAll() {
       sourcemap: true,
     });
     console.log('Build completed: dist/demo-cli.js');
+    return;
+  }
+
+  if (process.argv.includes('--vscode-test')) {
+    await esbuild.build({
+      entryPoints: ['test/vscode-integration/suite/extension.test.ts'],
+      bundle: true,
+      outfile: 'dist/test/vscode-integration/suite/extension.test.js',
+      external: defaultExternals,
+      format: 'cjs',
+      platform: 'node',
+      target: 'node18',
+      sourcemap: true,
+    });
+    await esbuild.build({
+      entryPoints: ['test/vscode-integration/suite/index.ts'],
+      bundle: true,
+      outfile: 'dist/test/vscode-integration/suite/index.js',
+      external: defaultExternals,
+      format: 'cjs',
+      platform: 'node',
+      target: 'node18',
+      sourcemap: true,
+    });
+    console.log('Build completed: dist/test/vscode-integration/suite/*.js');
     return;
   }
 

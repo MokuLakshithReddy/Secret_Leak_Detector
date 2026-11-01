@@ -90,6 +90,12 @@
         "title": "Clear All Findings",
         "category": "Secret Leak Detector",
         "icon": "$(clear-all)"
+      },
+      {
+        "command": "secret-leak-detector.installGitHookStrict",
+        "title": "Install Git Pre-Commit Hook (Strict / Enterprise Mode)",
+        "category": "Secret Leak Detector",
+        "icon": "$(shield)"
       }
     ],
     "viewsContainers": {
@@ -220,15 +226,19 @@
     "benchmark:heldout": "npx ts-node --project tsconfig.json evaluation/datasets/heldOutCorpus.ts",
     "test:git-hook": "npx ts-node --project tsconfig.json test/integration/gitHookScenarios.test.ts",
     "vscode:uninstall": "node ./dist/uninstall.js",
-    "test:vscode": "npx ts-node --project tsconfig.json test/integration/vscodeExtensionHost.test.ts"
+    "test:vscode": "node esbuild.js --vscode-test && npx ts-node --project tsconfig.json test/vscode-integration/runTest.ts",
+    "test:manifest": "npx ts-node --project tsconfig.json test/integration/vscodeExtensionHost.test.ts"
   },
   "devDependencies": {
+    "@types/mocha": "^10.0.10",
     "@types/node": "^20.11.24",
     "@types/vscode": "^1.85.0",
+    "@vscode/test-electron": "^3.1.0",
     "@vscode/vsce": "^4.0.0",
     "esbuild": "^0.20.1",
-    "typescript": "^5.3.3",
-    "ts-node": "^10.9.2"
+    "mocha": "^12.0.3",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3"
   },
   "bugs": {
     "url": "https://github.com/MokuLakshithReddy/Secret_Leak_Detector/issues"

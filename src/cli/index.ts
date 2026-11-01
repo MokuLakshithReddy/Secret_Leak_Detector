@@ -20,6 +20,7 @@ import {
   loadIgnorePatterns,
   DEFAULT_IGNORE_PATTERNS,
   BINARY_EXTENSIONS,
+  NON_TEXT_EXTENSIONS,
 } from '../core/ignore/ignoreEngine';
 
 import { getPackageVersion } from '../core/version';
@@ -124,6 +125,10 @@ Commands:
   verify <file>          Rescan and verify that credential exposure has been eliminated
 
   hook install           Install standalone pre-commit hook in .git/hooks/pre-commit
+                         Options:
+                           --strict           Enforce strict enterprise security: block on skipped files & disallow inline ignore
+                           --fail-on <tier>   Set blocking tier threshold (default: HIGH)
+                           --no-inline-ignore Disallow inline // sld-ignore suppression comments
   hook uninstall         Safely remove pre-commit hook without removing user hooks
 
 Exit Codes:
@@ -137,7 +142,30 @@ async function runScan(cmdArgs: string[], cwd: string) {
   const isJson = cmdArgs.includes('--json');
   const isSarif = cmdArgs.includes('--sarif');
   const isStaged = cmdArgs.includes('--staged');
-  const failOnSkipped = cmdArgs.includes('--no-ignore-skipped') || cmdArgs.includes('--fail-on-skipped');
+  let failOnSkipped =
+    cmdArgs.includes('--no-ignore-skipped') ||
+    cmdArgs.includes('--fail-on-skipped') ||
+    cmdArgs.includes('--strict') ||
+    process.env.SLD_STRICT === '1' ||
+    process.env.SLD_FAIL_ON_SKIPPED === '1';
+
+  if (!failOnSkipped) {
+    try {
+      const gitStrict = execFileSync('git', ['config', '--bool', 'secret-leak-detector.strict'], {
+        cwd,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim();
+      const gitFailOnSkipped = execFileSync('git', ['config', '--bool', 'secret-leak-detector.fail-on-skipped'], {
+        cwd,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim();
+      if (gitStrict === 'true' || gitFailOnSkipped === 'true') {
+        failOnSkipped = true;
+      }
+    } catch {}
+  }
   let ignoreSkipped =
     !failOnSkipped &&
     (cmdArgs.includes('--ignore-skipped') ||
@@ -753,7 +781,7 @@ async function runHook(cmdArgs: string[], cwd: string) {
 
   if (subCommand === 'install') {
     const strict = cmdArgs.includes('--strict') || cmdArgs.includes('--fail-on-skipped');
-    const noInline = cmdArgs.includes('--no-inline-ignore') || cmdArgs.includes('--disallow-inline-ignore');
+    const noInline = strict || cmdArgs.includes('--no-inline-ignore') || cmdArgs.includes('--disallow-inline-ignore');
     const failOnIdx = cmdArgs.indexOf('--fail-on');
     const failOn = failOnIdx !== -1 && isRiskTier(cmdArgs[failOnIdx + 1]) ? resolveFailOn(cmdArgs[failOnIdx + 1]) : DEFAULT_FAIL_ON;
 
@@ -816,7 +844,7 @@ function collectFiles(
   }
 
   if (stat.isFile()) {
-    if (!BINARY_EXTENSIONS.has(ext)) {
+    if (!NON_TEXT_EXTENSIONS.has(ext)) {
       fileList.push(currentPath);
     }
     return;
@@ -855,7 +883,7 @@ function collectFiles(
         excludedFiles.push({ file: entryRel, pattern: entryMatched });
         continue;
       }
-      if (!BINARY_EXTENSIONS.has(entryExt)) {
+      if (!NON_TEXT_EXTENSIONS.has(entryExt)) {
         fileList.push(full);
       }
     }

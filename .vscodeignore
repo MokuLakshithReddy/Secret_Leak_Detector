@@ -16,7 +16,7 @@ CLAUDE.md
 AGENTS.md
 .secretleak-baseline.json
 
-dist/*
+dist/**
 !dist/extension.js
 !dist/cli.js
 !dist/uninstall.js

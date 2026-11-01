@@ -38,6 +38,7 @@ const requiredCommands = [
   'secret-leak-detector.scanStaged',
   'secret-leak-detector.openDashboard',
   'secret-leak-detector.installGitHook',
+  'secret-leak-detector.installGitHookStrict',
   'secret-leak-detector.uninstallGitHook',
   'secret-leak-detector.ignoreFinding',
   'secret-leak-detector.unignoreFinding',

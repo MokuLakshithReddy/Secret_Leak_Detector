@@ -10,7 +10,8 @@ import { SkippedFile } from './git/stagedScanner';
 import { SecretFinding, Risk } from './core/types';
 import { DEFAULT_FAIL_ON, meetsThreshold, resolveFailOn } from './core/policy';
 import { scanContent, ScannerOptions } from './core/scanner/scanner';
-import { BINARY_EXTENSIONS } from './core/ignore/ignoreEngine';
+import { BINARY_EXTENSIONS, NON_TEXT_EXTENSIONS } from './core/ignore/ignoreEngine';
+import { decodeTextBuffer } from './core/encoding/textDecoder';
 
 let outputChannel: vscode.OutputChannel;
 const changeDebounceTimers = new Map<string, NodeJS.Timeout>();
@@ -224,19 +225,23 @@ export function activate(context: vscode.ExtensionContext) {
 
             const file = files[i];
             const ext = path.extname(file.fsPath).toLowerCase();
-            if (BINARY_EXTENSIONS.has(ext)) {
+            if (NON_TEXT_EXTENSIONS.has(ext)) {
               skippedCount++;
               continue;
             }
 
             try {
               const stat = await vscode.workspace.fs.stat(file);
-              if (stat.size > 5 * 1024 * 1024) {
+              if (stat.size > 50 * 1024 * 1024) {
                 skippedCount++;
                 continue;
               }
               const bytes = await vscode.workspace.fs.readFile(file);
-              const text = Buffer.from(bytes).toString('utf8');
+              const text = decodeTextBuffer(Buffer.from(bytes));
+              if (text === null) {
+                skippedCount++;
+                continue;
+              }
               const workspaceFolder = vscode.workspace.getWorkspaceFolder(file);
               const scanOpts: ScannerOptions = {
                 workspaceRoot: workspaceFolder ? workspaceFolder.uri.fsPath : undefined,
@@ -422,6 +427,40 @@ export function activate(context: vscode.ExtensionContext) {
           }
         } catch {}
         vscode.window.showInformationMessage(`🛡️ ${result.message}`);
+      } else {
+        vscode.window.showErrorMessage(`Failed to install hook: ${result.message}`);
+      }
+    })
+  );
+
+  // Command: Install Git Pre-Commit Hook (Strict)
+  context.subscriptions.push(
+    vscode.commands.registerCommand('secret-leak-detector.installGitHookStrict', async () => {
+      const blockCommits = getConfig().get<boolean>('blockGitCommits', true);
+      const configuredFailOn = resolveFailOn(getConfig().get<string>('failOn', DEFAULT_FAIL_ON));
+      const result = await gitService.installPreCommitHook(
+        activeCliPath,
+        process.execPath,
+        blockCommits,
+        configuredFailOn,
+        true,
+        true
+      );
+      if (result.success) {
+        try {
+          const hooksRecordPath = path.join(context.globalStorageUri.fsPath, 'installed-hooks.json');
+          const hookFile = await gitService.getHookPath();
+          let existingHooks: string[] = [];
+          if (fs.existsSync(hooksRecordPath)) {
+            const parsed = JSON.parse(fs.readFileSync(hooksRecordPath, 'utf8'));
+            if (Array.isArray(parsed)) existingHooks = parsed.filter((p) => typeof p === 'string');
+          }
+          if (!existingHooks.includes(hookFile)) {
+            existingHooks.push(hookFile);
+            fs.writeFileSync(hooksRecordPath, JSON.stringify(existingHooks, null, 2), 'utf8');
+          }
+        } catch {}
+        vscode.window.showInformationMessage(`🛡️ ${result.message} (Strict Mode: Fail on Skipped & No Inline Ignore)`);
       } else {
         vscode.window.showErrorMessage(`Failed to install hook: ${result.message}`);
       }

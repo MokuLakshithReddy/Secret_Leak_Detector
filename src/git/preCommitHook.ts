@@ -79,13 +79,18 @@ elif command -v secret-leak-detector >/dev/null 2>&1; then
   SCAN_STATUS=$?
 else
   HOOK_PATH="$(git rev-parse --git-path hooks/pre-commit 2>/dev/null || echo "$0")"
+  HOOK_DIR="$(dirname "$HOOK_PATH")"
+  LATEST_BACKUP="$HOOK_DIR/pre-commit.sld-backup.latest"
   echo ""
   echo "❌ COMMIT BLOCKED (fail-closed): Secret Leak Detector scanner is unavailable."
   echo "   Pinned CLI ($PINNED_CLI) not found and no global CLI available."
   echo "   Recovery instructions:"
-  echo "     - Re-pin hook: open the project in VS Code with Secret Leak Detector installed"
-  echo "     - Install CLI globally: npm install -g secret-leak-detector"
-  echo "     - Remove hook: rm \"$HOOK_PATH\""
+  echo "     - Remove stranded hook: rm \"$HOOK_PATH\""
+  if [ -f "$LATEST_BACKUP" ]; then
+    echo "     - Or restore backup: cp \"$LATEST_BACKUP\" \"$HOOK_PATH\""
+  fi
+  echo "     - Or install CLI globally: npm install -g secret-leak-detector"
+  echo "     - Or re-pin hook: open the project in VS Code with Secret Leak Detector installed"
   exit 2
 fi`
     : `# Scanner determined from environment or global binary (never ./dist/cli.js relative to repo)
@@ -109,13 +114,18 @@ elif command -v secret-leak-detector >/dev/null 2>&1; then
   SCAN_STATUS=$?
 else
   HOOK_PATH="$(git rev-parse --git-path hooks/pre-commit 2>/dev/null || echo "$0")"
+  HOOK_DIR="$(dirname "$HOOK_PATH")"
+  LATEST_BACKUP="$HOOK_DIR/pre-commit.sld-backup.latest"
   echo ""
   echo "❌ COMMIT BLOCKED (fail-closed): Secret Leak Detector scanner is unavailable."
   echo "   Pinned CLI not found and no global CLI available."
   echo "   Recovery instructions:"
-  echo "     - Re-pin hook: open the project in VS Code with Secret Leak Detector installed"
-  echo "     - Install CLI globally: npm install -g secret-leak-detector"
-  echo "     - Remove hook: rm \"$HOOK_PATH\""
+  echo "     - Remove stranded hook: rm \"$HOOK_PATH\""
+  if [ -f "$LATEST_BACKUP" ]; then
+    echo "     - Or restore backup: cp \"$LATEST_BACKUP\" \"$HOOK_PATH\""
+  fi
+  echo "     - Or install CLI globally: npm install -g secret-leak-detector"
+  echo "     - Or re-pin hook: open the project in VS Code with Secret Leak Detector installed"
   exit 2
 fi`;
 
@@ -147,7 +157,7 @@ if [ "$SLD_IGNORE_SKIPPED" = "1" ] || [ "$(git config --bool secret-leak-detecto
 fi
 
 FAIL_ON_SKIPPED=""
-if [ "$SLD_FAIL_ON_SKIPPED" = "1" ] || [ "$SLD_FAIL_ON_SKIPPED_DEFAULT" = "1" ] || [ "$(git config --bool secret-leak-detector.fail-on-skipped 2>/dev/null)" = "true" ]; then
+if [ "$SLD_FAIL_ON_SKIPPED" = "1" ] || [ "$SLD_FAIL_ON_SKIPPED_DEFAULT" = "1" ] || [ "$SLD_STRICT" = "1" ] || [ "$(git config --bool secret-leak-detector.fail-on-skipped 2>/dev/null)" = "true" ] || [ "$(git config --bool secret-leak-detector.strict 2>/dev/null)" = "true" ]; then
   FAIL_ON_SKIPPED="--fail-on-skipped"
 fi
 

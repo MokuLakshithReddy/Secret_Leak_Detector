@@ -1,6 +1,25 @@
 import * as crypto from 'crypto';
+import * as fs from 'fs';
+import * as path from 'path';
 
 const FINGERPRINT_DOMAIN_SALT = 'sld_fingerprint_salt_v1_d8e9f2a1b4c3e7f0';
+
+/**
+ * Resolves HMAC salt using hierarchy: explicit salt > SLD_SALT env > .sld/salt file > default domain salt.
+ */
+export function resolveSalt(customSalt?: string, workspaceRoot?: string): string {
+  if (customSalt) return customSalt;
+  if (process.env.SLD_SALT) return process.env.SLD_SALT;
+  const root = workspaceRoot || process.cwd();
+  try {
+    const saltFile = path.join(root, '.sld', 'salt');
+    if (fs.existsSync(saltFile)) {
+      const readSalt = fs.readFileSync(saltFile, 'utf8').trim();
+      if (readSalt) return readSalt;
+    }
+  } catch {}
+  return FINGERPRINT_DOMAIN_SALT;
+}
 
 /**
  * Masks a secret string to prevent secondary leakage in logs, terminals, or dashboards.
@@ -42,8 +61,8 @@ export function redactSecret(secret: string): string {
  * For high-security environments requiring non-guessable private tracking, configure an optional
  * per-repository private salt via the `SLD_SALT` environment variable.
  */
-export function generateFingerprint(secret: string, customSalt?: string): string {
-  const salt = customSalt || process.env.SLD_SALT || FINGERPRINT_DOMAIN_SALT;
+export function generateFingerprint(secret: string, customSalt?: string, workspaceRoot?: string): string {
+  const salt = resolveSalt(customSalt, workspaceRoot);
   return crypto
     .createHmac('sha256', salt)
     .update(secret)

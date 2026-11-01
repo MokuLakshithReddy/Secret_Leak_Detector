@@ -1618,6 +1618,43 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
       try { fs.rmSync(subParentScratch, { recursive: true, force: true }); } catch {}
       try { fs.rmSync(subChildScratch, { recursive: true, force: true }); } catch {}
     }
+
+    // --- 34. Private Salt (.sld/salt), Auto-Recovery Hook Cleanup & NON_TEXT_EXTENSIONS ---
+    console.log('\n--- 34. Private Salt (.sld/salt), Auto-Recovery Hook Cleanup & NON_TEXT_EXTENSIONS ---');
+    {
+      const { resolveSalt, generateFingerprint } = require('../src/core/redactor/redactor');
+      const { NON_TEXT_EXTENSIONS } = require('../src/core/ignore/ignoreEngine');
+      const { buildPreCommitHook } = require('../src/git/preCommitHook');
+
+      // 1. NON_TEXT_EXTENSIONS does not contain .png, .bin, .pkl, .sqlite
+      assert(!NON_TEXT_EXTENSIONS.has('.png'), 'NON_TEXT_EXTENSIONS does not skip .png');
+      assert(!NON_TEXT_EXTENSIONS.has('.bin'), 'NON_TEXT_EXTENSIONS does not skip .bin');
+      assert(!NON_TEXT_EXTENSIONS.has('.pkl'), 'NON_TEXT_EXTENSIONS does not skip .pkl');
+      assert(!NON_TEXT_EXTENSIONS.has('.sqlite'), 'NON_TEXT_EXTENSIONS does not skip .sqlite');
+      assert(NON_TEXT_EXTENSIONS.has('.exe'), 'NON_TEXT_EXTENSIONS skips .exe');
+      assert(NON_TEXT_EXTENSIONS.has('.so'), 'NON_TEXT_EXTENSIONS skips .so');
+
+      // 2. resolveSalt with .sld/salt file
+      const saltScratch = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-salt-test-'));
+      const sldDir = path.join(saltScratch, '.sld');
+      fs.mkdirSync(sldDir, { recursive: true });
+      fs.writeFileSync(path.join(sldDir, 'salt'), 'custom_repo_secret_salt_123', 'utf8');
+
+      const resolved = resolveSalt(undefined, saltScratch);
+      assert(resolved === 'custom_repo_secret_salt_123', 'resolveSalt correctly reads .sld/salt');
+
+      const fpCustom = generateFingerprint('secret123', undefined, saltScratch);
+      const fpDefault = generateFingerprint('secret123');
+      assert(fpCustom !== fpDefault, 'Private salt yields distinct HMAC fingerprint from default');
+      try { fs.rmSync(saltScratch, { recursive: true, force: true }); } catch {}
+
+      // 3. Hook fail-closed recovery guidance
+      const dummyMissingCli = path.join(os.tmpdir(), 'deleted-extension-cli.js');
+      const uninstalledHook = buildPreCommitHook(undefined, dummyMissingCli);
+      assert(uninstalledHook.includes('COMMIT BLOCKED (fail-closed)'), 'Hook enforces fail-closed when CLI is missing');
+      assert(uninstalledHook.includes('Remove stranded hook: rm'), 'Hook provides actionable removal guidance');
+      assert(uninstalledHook.includes('pre-commit.sld-backup.latest'), 'Hook checks for backup restoration');
+    }
   }
 
   console.log('\n============================================================');

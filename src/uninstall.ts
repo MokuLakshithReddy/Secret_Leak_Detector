@@ -91,20 +91,51 @@ function cleanWorkspacesFromStorageJson(appData: string, app: string): void {
   } catch {}
 }
 
+function recursivelyCleanGitHooks(dir: string, depth = 0, maxDepth = 2): void {
+  if (depth > maxDepth || !fs.existsSync(dir)) return;
+  try {
+    const gitHook = path.join(dir, '.git', 'hooks', 'pre-commit');
+    if (fs.existsSync(gitHook)) {
+      cleanHook(gitHook);
+    }
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const e of entries) {
+      if (e.isDirectory() && e.name !== '.git' && e.name !== 'node_modules' && e.name !== 'AppData') {
+        recursivelyCleanGitHooks(path.join(dir, e.name), depth + 1, maxDepth);
+      }
+    }
+  } catch {}
+}
+
 function cleanCommonDevDirs(home: string): void {
-  const common = ['Projects', 'Documents', 'Desktop', 'workspace', 'repos', 'src', 'dev', 'code'];
+  const common = ['Projects', 'Documents', 'Desktop', 'workspace', 'repos', 'src', 'dev', 'code', 'git'];
   for (const c of common) {
     const parentDir = path.join(home, c);
-    if (!fs.existsSync(parentDir)) continue;
-    try {
-      const entries = fs.readdirSync(parentDir, { withFileTypes: true });
-      for (const e of entries) {
-        if (e.isDirectory()) {
-          cleanHook(path.join(parentDir, e.name, '.git', 'hooks', 'pre-commit'));
+    recursivelyCleanGitHooks(parentDir, 0, 2);
+  }
+
+  // Discover sister user profiles if HOME was switched or executed under another profile
+  try {
+    const userHomesParent = path.dirname(home);
+    if (fs.existsSync(userHomesParent)) {
+      const users = fs.readdirSync(userHomesParent, { withFileTypes: true });
+      for (const u of users) {
+        if (u.isDirectory() && path.join(userHomesParent, u.name) !== home) {
+          const sisterHome = path.join(userHomesParent, u.name);
+          const sldRec = path.join(sisterHome, '.sld', 'installed-hooks.json');
+          if (fs.existsSync(sldRec)) {
+            try {
+              const hooks: string[] = JSON.parse(fs.readFileSync(sldRec, 'utf8'));
+              if (Array.isArray(hooks)) {
+                for (const h of hooks) cleanHook(h);
+              }
+              fs.unlinkSync(sldRec);
+            } catch {}
+          }
         }
       }
-    } catch {}
-  }
+    }
+  } catch {}
 }
 
 export function runUninstall(): void {

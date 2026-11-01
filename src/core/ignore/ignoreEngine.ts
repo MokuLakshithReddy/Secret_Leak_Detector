@@ -2,16 +2,24 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 /**
- * Extensions for pure non-text binary formats that cannot hold readable text.
- * Files with ambiguous extensions (e.g. .png, .bin, .pkl, .sqlite) are NOT skipped
- * by extension; their actual contents are inspected so text disguised as binary is caught.
+ * Strict set of compiled executable / pure media formats that cannot hold readable text.
+ * Only these formats are skipped by extension alone without inspecting content.
+ * Ambiguous formats (.png, .bin, .pkl, .sqlite, .wasm, .parquet) are inspected by content.
  */
-export const BINARY_EXTENSIONS = new Set([
+export const NON_TEXT_EXTENSIONS = new Set([
   '.exe', '.dll', '.so', '.dylib', '.iso', '.dmg',
   '.woff', '.woff2', '.ttf', '.eot', '.otf',
   '.mp3', '.mp4', '.avi', '.mov', '.wmv', '.flv', '.mkv', '.wav',
   '.pyc', '.pyo', '.class',
   '.o', '.obj', '.lib', '.a',
+]);
+
+/**
+ * Extensions for pure non-text binary formats that cannot hold readable text.
+ * Maintained for backward compatibility with external integrations.
+ */
+export const BINARY_EXTENSIONS = new Set([
+  ...NON_TEXT_EXTENSIONS,
   '.wasm', '.pkl', '.npy', '.parquet', '.onnx', '.safetensors',
 ]);
 
