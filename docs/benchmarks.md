@@ -31,14 +31,14 @@ To eliminate guesswork and marketing claims, we constructed a standardized corpu
 ## 2. Empirical Benchmark Results (Controlled 1,000-File Corpus)
 
 Each tool was executed locally on Node.js v24 / Windows x64 against the same directory generated with deterministic PRNG (Seed: `0x5eec73`):
-- **Secret Leak Detector (Ours)**: Internal scanner engine (`1.0.0`)
+- **Secret Leak Detector (Ours)**: Internal scanner engine (`1.0.3`)
 - **Gitleaks**: `v8.30.1` standalone Go binary (`gitleaks dir`)
 - **TruffleHog**: `v3.99.2` standalone Go binary (`trufflehog filesystem --json --no-verification`)
 - **detect-secrets**: `v1.5.0` Python CLI (`detect-secrets scan --all-files`)
 
 | Scanner Tool | Precision (95% CI) | Recall (95% CI) | F1 Score | FP Rate | Adversarial | Latency / File | Memory (RSS) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Secret Leak Detector (Ours) 1.0.0** | **100.0%** [99.4% - 100%] | **100.0%** [99.4% - 100%] | **100.0%** | **0.0%** | **100.0%** | **271 $\mu$s** | **84.1 MB** |
+| **Secret Leak Detector (Ours) 1.0.3** | **100.0%** [99.4% - 100%] | **100.0%** [99.4% - 100%] | **100.0%** | **0.0%** | **100.0%** | **271 $\mu$s** | **84.1 MB** |
 | **Gitleaks v8.30.1** | **100.0%** [99.1% - 100%] | 72.8% [69.1% - 76.2%] | 84.3% | **0.0%** | 37.0% | 1,028 $\mu$s | 84.7 MB |
 | **TruffleHog v3.99.2** | **100.0%** [98.8% - 100%] | 54.2% [50.2% - 58.1%] | 70.3% | **0.0%** | 25.0% | 4,947 $\mu$s | 85.2 MB |
 | **detect-secrets v1.5.0** | 68.7% [65.0% - 72.2%] | 73.2% [69.5% - 76.6%] | 70.9% | 50.0% | 92.0% | 88,987 $\mu$s | 85.2 MB |
@@ -59,7 +59,7 @@ To validate performance beyond controlled synthetic tests, we constructed a **10
 
 | Scanner Tool | Precision (95% CI) | Recall (95% CI) | F1 Score | FP Rate | Latency / File | Memory (RSS) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Secret Leak Detector (Ours) 1.0.0** | **97.5%** [87.1% - 99.6%] | **78.0%** [64.8% - 87.2%] | **86.7%** | **2.0%** | **310 $\mu$s** | **79.8 MB** |
+| **Secret Leak Detector (Ours) 1.0.3** | **97.5%** [87.1% - 99.6%] | **78.0%** [64.8% - 87.2%] | **86.7%** | **2.0%** | **310 $\mu$s** | **79.8 MB** |
 | **Gitleaks v8.30.1** | 95.6% [85.2% - 98.8%] | 86.0% [73.8% - 93.0%] | 90.5% | 4.0% | 5,162 $\mu$s | 80.0 MB |
 | **TruffleHog v3.99.2** | 100.0% [91.6% - 100%] | 84.0% [71.5% - 91.7%] | 91.3% | 0.0% | 29,387 $\mu$s | 80.4 MB |
 | **detect-secrets v1.5.0** | 72.5% [57.2% - 83.9%] | 58.0% [44.2% - 70.6%] | 64.4% | 22.0% | 76,538 $\mu$s | 80.7 MB |

@@ -124,3 +124,4 @@ export function decodeTextBuffer(buf: Buffer): string | null {
 
   return null;
 }
+

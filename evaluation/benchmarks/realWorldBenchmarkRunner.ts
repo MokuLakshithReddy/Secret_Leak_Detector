@@ -75,7 +75,7 @@ export function runRealWorldBenchmark(): RealWorldMetrics[] {
   }
   const sldEnd = process.hrtime.bigint();
   const sldMs = Number(sldEnd - sldStart) / 1e6;
-  results.push(evaluateScanner('Secret Leak Detector (Ours)', '1.0.0', corpus, sldDetected, sldMs));
+  results.push(evaluateScanner('Secret Leak Detector (Ours)', '1.0.3', corpus, sldDetected, sldMs));
 
   // 2. Gitleaks
   console.log('[2/4] Running Gitleaks...');

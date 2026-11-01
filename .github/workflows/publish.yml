@@ -28,6 +28,12 @@ jobs:
       - name: Install Dependencies
         run: npm ci
 
+      - name: Build Scanner & CLI
+        run: npm run build
+
+      - name: Verify dist/ matches src/
+        run: git diff --exit-code dist/
+
       - name: Lint and Test Gate
         run: |
           set -eo pipefail

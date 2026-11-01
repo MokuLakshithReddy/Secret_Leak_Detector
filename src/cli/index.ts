@@ -781,7 +781,7 @@ async function runHook(cmdArgs: string[], cwd: string) {
 
   if (subCommand === 'install') {
     const strict = cmdArgs.includes('--strict') || cmdArgs.includes('--fail-on-skipped');
-    const noInline = strict || cmdArgs.includes('--no-inline-ignore') || cmdArgs.includes('--disallow-inline-ignore');
+    const noInline = !cmdArgs.includes('--allow-inline-ignore');
     const failOnIdx = cmdArgs.indexOf('--fail-on');
     const failOn = failOnIdx !== -1 && isRiskTier(cmdArgs[failOnIdx + 1]) ? resolveFailOn(cmdArgs[failOnIdx + 1]) : DEFAULT_FAIL_ON;
 

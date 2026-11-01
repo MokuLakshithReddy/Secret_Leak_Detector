@@ -12,7 +12,13 @@ export function cleanHook(hookPath: string): boolean {
   if (!fs.existsSync(hookPath)) return false;
   try {
     const content = fs.readFileSync(hookPath, 'utf8');
-    if (!content.includes(SLD_HOOK_MARKER)) return false;
+    const isSldHook =
+      content.includes(SLD_HOOK_MARKER) ||
+      content.includes('Secret Leak Detector') ||
+      content.includes('secret-leak-detector') ||
+      content.includes('SLD_HOOK_MANAGED') ||
+      content.includes('SLD_FAIL_ON');
+    if (!isSldHook) return false;
 
     const dir = path.dirname(hookPath);
     const latestBackupMarker = path.join(dir, 'pre-commit.sld-backup.latest');
@@ -39,6 +45,32 @@ export function cleanHook(hookPath: string): boolean {
   }
 }
 
+function cleanWorkspacesFromWorkspaceStorage(appData: string, app: string): void {
+  try {
+    const wsStorageDir = path.join(appData, app, 'User', 'workspaceStorage');
+    if (!fs.existsSync(wsStorageDir)) return;
+    const entries = fs.readdirSync(wsStorageDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const wsJson = path.join(wsStorageDir, entry.name, 'workspace.json');
+      if (fs.existsSync(wsJson)) {
+        try {
+          const raw = fs.readFileSync(wsJson, 'utf8');
+          const data = JSON.parse(raw);
+          const uri = data.folder || data.workspace;
+          if (uri && typeof uri === 'string' && uri.startsWith('file://')) {
+            let diskPath = decodeURIComponent(uri.replace(/^file:\/\/\/?/, '/'));
+            if (process.platform === 'win32' && /^\/[a-zA-Z]:/.test(diskPath)) {
+              diskPath = diskPath.slice(1);
+            }
+            cleanHook(path.join(diskPath, '.git', 'hooks', 'pre-commit'));
+          }
+        } catch {}
+      }
+    }
+  } catch {}
+}
+
 function getGlobalStorageCandidates(): string[] {
   const home = process.env.HOME || process.env.USERPROFILE || '';
   const appData =
@@ -52,6 +84,18 @@ function getGlobalStorageCandidates(): string[] {
   const dirs: string[] = [];
 
   for (const app of appNames) {
+    const baseGlobalStorage = path.join(appData, app, 'User', 'globalStorage');
+    if (fs.existsSync(baseGlobalStorage)) {
+      try {
+        const subdirs = fs.readdirSync(baseGlobalStorage, { withFileTypes: true });
+        for (const s of subdirs) {
+          if (s.isDirectory() && s.name.toLowerCase().includes('secret-leak-detector')) {
+            dirs.push(path.join(baseGlobalStorage, s.name));
+          }
+        }
+      } catch {}
+    }
+
     for (const ext of extNames) {
       dirs.push(path.join(appData, app, 'User', 'globalStorage', ext));
       if (process.platform === 'win32') {
@@ -59,8 +103,9 @@ function getGlobalStorageCandidates(): string[] {
         dirs.push(path.join(home, 'AppData', 'Local', app, 'User', 'globalStorage', ext));
       }
     }
-    // Also discover workspaces from the editor's global storage.json
+    // Discover workspaces from storage.json and workspaceStorage
     cleanWorkspacesFromStorageJson(appData, app);
+    cleanWorkspacesFromWorkspaceStorage(appData, app);
   }
 
   // Also check standard Linux/macOS ~/.config paths

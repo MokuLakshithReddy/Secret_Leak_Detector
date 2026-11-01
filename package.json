@@ -189,8 +189,8 @@
         },
         "secretLeakDetector.disallowInlineIgnore": {
           "type": "boolean",
-          "default": false,
-          "description": "Disallow inline comments (// sld-ignore) from suppressing secret findings."
+          "default": true,
+          "description": "Disallow inline comments (// sld-ignore) from suppressing secret findings in Git commits and scans (matches CI guardrail)."
         },
         "secretLeakDetector.failOn": {
           "type": "string",

@@ -1,7 +1,9 @@
 /**
- * VS Code Extension Host Integration Tests
+ * VS Code Extension Manifest & Mock Integration Tests
  * Validates extension commands, diagnostic multi-line ranges, unignore quickpick metadata,
  * hook lifecycle management, and uninstall cleanup.
+ *
+ * (For full VS Code Extension Host integration tests via @vscode/test-electron, see test/vscode-integration/runTest.ts)
  *
  * Run with:
  *   npx ts-node --project tsconfig.json test/integration/vscodeExtensionHost.test.ts
@@ -25,7 +27,7 @@ function assert(condition: boolean, msg: string): void {
 }
 
 console.log('\n══════════════════════════════════════════════════════════════');
-console.log('  VS Code Extension Host & UI Integration Tests');
+console.log('  VS Code Extension Manifest & Mock Integration Tests');
 console.log('══════════════════════════════════════════════════════════════\n');
 
 // ── Test 1: Command IDs ─────────────────────────────────────────

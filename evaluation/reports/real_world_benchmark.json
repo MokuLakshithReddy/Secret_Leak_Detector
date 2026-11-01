@@ -4,7 +4,7 @@
   "results": [
     {
       "name": "Secret Leak Detector (Ours)",
-      "version": "1.0.0",
+      "version": "1.0.3",
       "tp": 50,
       "fp": 0,
       "tn": 50,

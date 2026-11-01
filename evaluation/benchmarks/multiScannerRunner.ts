@@ -83,7 +83,7 @@ export function runMultiScannerBenchmark(options: { sldOnly?: boolean } = {}): S
   }
   const sldEnd = process.hrtime.bigint();
   const sldWallClockMs = Number(sldEnd - sldStart) / 1e6;
-  results.push(evaluateScanner('Secret Leak Detector (Ours)', '1.0.0', corpus, sldDetectedFiles, sldWallClockMs));
+  results.push(evaluateScanner('Secret Leak Detector (Ours)', '1.0.3', corpus, sldDetectedFiles, sldWallClockMs));
 
   if (options.sldOnly) {
     try {

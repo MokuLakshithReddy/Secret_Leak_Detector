@@ -212,7 +212,7 @@ After fixing:
     customNodePath?: string,
     blockCommits = true,
     failOn: Risk = DEFAULT_FAIL_ON,
-    disallowInline = false,
+    disallowInline = true,
     failOnSkipped = false
   ): Promise<{ success: boolean; message: string }> {
     if (!(await this.isGitRepo())) {
@@ -283,7 +283,7 @@ After fixing:
     customNodePath?: string,
     blockCommits = true,
     failOn: Risk = DEFAULT_FAIL_ON,
-    disallowInline = false,
+    disallowInline = true,
     failOnSkipped = false
   ): Promise<boolean> {
     if (!currentCliPath || !fs.existsSync(currentCliPath)) return false;
