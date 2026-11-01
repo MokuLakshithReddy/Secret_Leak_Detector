@@ -1,4 +1,6 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
+import * as fs from 'fs';
 import { DiagnosticProvider } from './diagnostics/diagnosticProvider';
 import { SecretCodeActionProvider } from './diagnostics/codeActionProvider';
 import { FindingsTreeProvider, OverviewTreeProvider } from './sidebar/findingsTreeProvider';
@@ -48,15 +50,24 @@ export function activate(context: vscode.ExtensionContext) {
     }
   });
 
+  // Configuration accessor helper
+  const getConfig = () => vscode.workspace.getConfiguration('secretLeakDetector');
+
   // Apply and listen to configuration changes (minEntropy, persist ignores)
   function applyConfiguration() {
-    const config = vscode.workspace.getConfiguration('secretLeakDetector');
+    const config = getConfig();
     const minEntropy = config.get<number>('minEntropy');
     diagnosticProvider.setMinEntropy(typeof minEntropy === 'number' && minEntropy > 0 ? minEntropy : undefined);
     const persistedIgnores = context.workspaceState.get<string[]>('ignoredFindings', []);
     diagnosticProvider.setIgnoredFindings(persistedIgnores);
   }
   applyConfiguration();
+
+  // Re-pin pre-commit hook if the bundled CLI path changed due to extension update
+  const bundledCli = path.join(context.extensionPath, 'dist', 'cli.js');
+  if (fs.existsSync(bundledCli)) {
+    gitService.ensureHookIsPinned(bundledCli).catch(() => {});
+  }
 
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
@@ -69,15 +80,14 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
-  // Real-time Scanning on open, typing change (debounced), and save
+  // Real-time Scanning on open, per-document debounced change, and save
   if (vscode.window.activeTextEditor) {
     diagnosticProvider.scanDocument(vscode.window.activeTextEditor.document);
   }
 
   context.subscriptions.push(
     vscode.workspace.onDidSaveTextDocument((doc) => {
-      const config = vscode.workspace.getConfiguration('secretLeakDetector');
-      if (config.get<boolean>('enableRealtimeScanning', true)) {
+      if (getConfig().get<boolean>('enableRealtimeScanning', true)) {
         diagnosticProvider.scanDocument(doc);
       }
     })
@@ -85,22 +95,24 @@ export function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(
     vscode.workspace.onDidOpenTextDocument((doc) => {
-      const config = vscode.workspace.getConfiguration('secretLeakDetector');
-      if (config.get<boolean>('enableRealtimeScanning', true)) {
+      if (getConfig().get<boolean>('enableRealtimeScanning', true)) {
         diagnosticProvider.scanDocument(doc);
       }
     })
   );
 
-  let changeTimeout: NodeJS.Timeout | undefined;
+  const changeDebounceTimers = new Map<string, NodeJS.Timeout>();
   context.subscriptions.push(
     vscode.workspace.onDidChangeTextDocument((event) => {
-      const config = vscode.workspace.getConfiguration('secretLeakDetector');
-      if (!config.get<boolean>('enableRealtimeScanning', true)) return;
-      if (changeTimeout) clearTimeout(changeTimeout);
-      changeTimeout = setTimeout(() => {
+      if (!getConfig().get<boolean>('enableRealtimeScanning', true)) return;
+      const docUri = event.document.uri.toString();
+      const existing = changeDebounceTimers.get(docUri);
+      if (existing) clearTimeout(existing);
+      const timer = setTimeout(() => {
         diagnosticProvider.scanDocument(event.document);
+        changeDebounceTimers.delete(docUri);
       }, 350);
+      changeDebounceTimers.set(docUri, timer);
     })
   );
 
@@ -120,7 +132,7 @@ export function activate(context: vscode.ExtensionContext) {
           cancellable: false,
         },
         async (progress) => {
-          const excludeGlobs = config.get<string[]>('excludeGlobs', []);
+          const excludeGlobs = getConfig().get<string[]>('excludeGlobs', []);
           const excludePattern = `{${excludeGlobs.join(',')}}`;
 
           const MAX_SCAN_FILES = 1000;
@@ -187,7 +199,7 @@ export function activate(context: vscode.ExtensionContext) {
       outputChannel.appendLine('🔐 [Secret Leak Detector] Scanning Git staged changes...');
       outputChannel.show(true);
 
-      const blockCommits = config.get<boolean>('blockGitCommits', true);
+      const blockCommits = getConfig().get<boolean>('blockGitCommits', true);
       const scanResult = await gitService.scanStagedChanges();
 
       if (scanResult.status === 'ERROR') {

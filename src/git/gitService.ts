@@ -26,11 +26,13 @@ export class GitService {
     this.workspaceRoot = workspaceRoot;
     if (cliPath && fs.existsSync(cliPath)) {
       this.cliPath = cliPath;
+    } else if (process.env.SLD_CLI_PATH && fs.existsSync(process.env.SLD_CLI_PATH)) {
+      this.cliPath = process.env.SLD_CLI_PATH;
     } else {
       const candidates = [
         path.resolve(__dirname, 'cli.js'),
+        path.resolve(__dirname, '../cli/index.js'),
         path.resolve(__dirname, '../../dist/cli.js'),
-        path.resolve(process.cwd(), 'dist/cli.js'),
       ];
       this.cliPath = candidates.find((c) => fs.existsSync(c));
     }
@@ -180,6 +182,12 @@ After fixing:
     }
 
     const targetCli = customCliPath || this.cliPath;
+    if (!targetCli || !fs.existsSync(targetCli)) {
+      return {
+        success: false,
+        message: `Cannot install pre-commit hook: bundled CLI binary not found at '${targetCli || 'undefined'}'. Installation aborted.`,
+      };
+    }
     const hookContent = buildPreCommitHook(DEFAULT_FAIL_ON, targetCli);
 
     try {
@@ -188,6 +196,31 @@ After fixing:
     } catch (err) {
       return { success: false, message: `Failed to write hook file: ${err}` };
     }
+  }
+
+  /**
+   * Re-pins the pre-commit hook if an extension upgrade has changed the versioned installation path.
+   */
+  public async ensureHookIsPinned(currentCliPath: string): Promise<boolean> {
+    if (!currentCliPath || !fs.existsSync(currentCliPath)) return false;
+    if (!(await this.isGitRepo())) return false;
+    const hooksDir = await this.resolveHooksDir();
+    const hookPath = path.join(hooksDir, 'pre-commit');
+    if (!fs.existsSync(hookPath)) return false;
+
+    try {
+      const content = fs.readFileSync(hookPath, 'utf8');
+      if (!content.includes(SLD_HOOK_MARKER)) return false;
+
+      const normCurrent = currentCliPath.replace(/\\/g, '/');
+      if (!content.includes(normCurrent)) {
+        const res = await this.installPreCommitHook(currentCliPath);
+        return res.success;
+      }
+    } catch {
+      return false;
+    }
+    return true;
   }
 
   /**

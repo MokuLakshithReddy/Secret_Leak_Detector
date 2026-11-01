@@ -23,11 +23,13 @@ export function buildPreCommitHook(
 ): string {
   const threshold = (RISK_LEVELS as readonly string[]).includes(failOn) ? failOn : DEFAULT_FAIL_ON;
   const pinnedCli = cliPath ? cliPath.replace(/\\/g, '/') : '';
+  const escapedCli = pinnedCli ? pinnedCli.replace(/'/g, `'\\''`) : '';
 
   const scannerInvocation = pinnedCli
     ? `# Scanner pinned to bundled CLI path
-if [ -f "${pinnedCli}" ]; then
-  node "${pinnedCli}" scan --staged --fail-on "$SLD_FAIL_ON"
+PINNED_CLI='${escapedCli}'
+if [ -n "$PINNED_CLI" ] && [ -f "$PINNED_CLI" ]; then
+  node "$PINNED_CLI" scan --staged --fail-on "$SLD_FAIL_ON"
   SCAN_STATUS=$?
 elif command -v secret-leak-detector >/dev/null 2>&1; then
   secret-leak-detector scan --staged --fail-on "$SLD_FAIL_ON"
@@ -35,9 +37,9 @@ elif command -v secret-leak-detector >/dev/null 2>&1; then
 else
   echo ""
   echo "❌ COMMIT BLOCKED (fail-closed): Secret Leak Detector scanner is unavailable."
-  echo "   Pinned CLI (${pinnedCli}) not found and no global CLI available."
+  echo "   Pinned CLI ($PINNED_CLI) not found and no global CLI available."
   echo "   Staged changes could not be verified secret-free, so the commit was refused."
-  exit 1
+  exit 2
 fi`
     : `# Scanner determined from environment or global binary (never ./dist/cli.js relative to repo)
 if [ -n "$SLD_CLI_PATH" ] && [ -f "$SLD_CLI_PATH" ]; then
@@ -51,7 +53,7 @@ else
   echo "❌ COMMIT BLOCKED (fail-closed): Secret Leak Detector scanner is unavailable."
   echo "   Staged changes could not be verified secret-free, so the commit was refused."
   echo "   Install Node.js (>=18) or the 'secret-leak-detector' CLI, then retry."
-  exit 1
+  exit 2
 fi`;
 
   return `#!/bin/sh
@@ -78,7 +80,7 @@ if [ "$SCAN_STATUS" -eq 1 ]; then
 elif [ "$SCAN_STATUS" -ne 0 ]; then
   echo ""
   echo "❌ COMMIT BLOCKED (fail-closed): Scanner exited with error ($SCAN_STATUS)."
-  exit 1
+  exit 2
 fi
 
 # Chain an existing user hook if it was previously backed up.

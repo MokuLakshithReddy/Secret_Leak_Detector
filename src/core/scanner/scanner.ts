@@ -1,4 +1,6 @@
 import * as fs from 'fs';
+import * as path from 'path';
+import * as crypto from 'crypto';
 import { CORE_RULES } from '../detectors/rules';
 import { analyzeFileContext, analyzeLexicalContext } from '../context/contextAnalyzer';
 import { analyzeAstContext } from '../context/astAnalyzer';
@@ -15,6 +17,10 @@ export interface ScannerOptions {
   onSkippedFile?: (filePath: string, reason: string) => void;
 }
 
+function getFileIdPart(relativePath: string): string {
+  return crypto.createHash('sha256').update(relativePath.replace(/\\/g, '/')).digest('hex').slice(0, 8);
+}
+
 export function scanContent(
   content: string,
   filePath: string,
@@ -23,7 +29,7 @@ export function scanContent(
   const opts: ScannerOptions = typeof options === 'string' ? { workspaceRoot: options } : options;
   const rules = opts.rules || CORE_RULES;
   const workspaceRoot = opts.workspaceRoot;
-  const fileContext = analyzeFileContext(filePath);
+  const fileContext = analyzeFileContext(filePath, workspaceRoot);
   const findings: SecretFinding[] = [];
 
   // Zero-allocation line & column offset index (instantiated lazily on first match)
@@ -114,17 +120,21 @@ export function scanContent(
       }
 
       // Check minimum entropy constraint
+      const effectiveMinEntropy = opts.minEntropyThreshold ?? rule.minEntropy;
       if (
-        rule.minEntropy &&
-        evidenceResult.evidence.shannonEntropy < rule.minEntropy
+        effectiveMinEntropy &&
+        evidenceResult.evidence.shannonEntropy < effectiveMinEntropy
       ) {
         continue;
       }
 
       // Calculate relative path
       let relativePath = filePath;
-      if (workspaceRoot && filePath.startsWith(workspaceRoot)) {
-        relativePath = filePath.substring(workspaceRoot.length).replace(/^[\\/]+/, '');
+      if (workspaceRoot) {
+        const rel = path.relative(workspaceRoot, filePath);
+        if (!rel.startsWith('..') && !path.isAbsolute(rel)) {
+          relativePath = rel;
+        }
       }
 
       // Calculate dynamic Risk Assessment (0 - 100)
@@ -143,9 +153,9 @@ export function scanContent(
         lexicalContext.inferredVariable
       );
 
-      const fileIdPart = Buffer.from(relativePath).toString('hex').slice(0, 8);
-      const id = `sec_${generateFingerprint(rawSecret)}_${fileIdPart}_${lineNumber}`;
+      const fileIdPart = getFileIdPart(relativePath);
       const fingerprint = generateFingerprint(rawSecret);
+      const id = `sec_${fingerprint}_${fileIdPart}_${lineNumber}`;
       const redacted = redactSecret(rawSecret);
 
       const finding: SecretFinding = {
@@ -211,16 +221,20 @@ export function scanContent(
 
         if (evidenceResult.isSuppressed) continue;
 
+        const effectiveMinEntropy = opts.minEntropyThreshold ?? rule.minEntropy;
         if (
-          rule.minEntropy &&
-          evidenceResult.evidence.shannonEntropy < rule.minEntropy
+          effectiveMinEntropy &&
+          evidenceResult.evidence.shannonEntropy < effectiveMinEntropy
         ) {
           continue;
         }
 
         let relativePath = filePath;
-        if (workspaceRoot && filePath.startsWith(workspaceRoot)) {
-          relativePath = filePath.substring(workspaceRoot.length).replace(/^[\\/]+/, '');
+        if (workspaceRoot) {
+          const rel = path.relative(workspaceRoot, filePath);
+          if (!rel.startsWith('..') && !path.isAbsolute(rel)) {
+            relativePath = rel;
+          }
         }
 
         const riskAssessment = calculateRiskAssessment(
@@ -239,12 +253,13 @@ export function scanContent(
 
         evidenceResult.evidence.items.unshift({
           signal: 'ADVERSARIAL_DEOBFUSCATION_RESOLVED',
-          description: `Resolved split string concatenation: '${concatMatch[0]}'`,
+          description: 'Resolved split string concatenation',
           confidenceImpact: +10,
         });
 
-        const id = `sec_${generateFingerprint(rawSecret)}_${lineNumber}`;
+        const fileIdPart = getFileIdPart(relativePath);
         const fingerprint = generateFingerprint(rawSecret);
+        const id = `sec_${fingerprint}_${fileIdPart}_${lineNumber}`;
         const redacted = redactSecret(rawSecret);
 
         findings.push({

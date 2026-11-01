@@ -8,12 +8,15 @@ const isBenchmark = process.argv.includes('--benchmark');
 const isCliOnly = process.argv.includes('--cli');
 const isDemo = process.argv.includes('--demo');
 
+const defaultExternals = ['typescript', 'vscode'];
+
 async function buildAll() {
   if (isTest) {
     await esbuild.build({
       entryPoints: ['test/runAllTests.ts'],
       bundle: true,
       outfile: 'dist/test-suite.js',
+      external: defaultExternals,
       format: 'cjs',
       platform: 'node',
       target: 'node18',
@@ -28,6 +31,7 @@ async function buildAll() {
       entryPoints: ['evaluation/benchmarks/reproducibleBenchmark.ts'],
       bundle: true,
       outfile: 'dist/benchmark.js',
+      external: defaultExternals,
       format: 'cjs',
       platform: 'node',
       target: 'node18',
@@ -42,6 +46,7 @@ async function buildAll() {
       entryPoints: ['evaluation/benchmarks/multiScannerRunner.ts'],
       bundle: true,
       outfile: 'dist/multi-benchmark.js',
+      external: defaultExternals,
       format: 'cjs',
       platform: 'node',
       target: 'node18',
@@ -56,6 +61,7 @@ async function buildAll() {
       entryPoints: ['evaluation/benchmarks/ciRegressionGate.ts'],
       bundle: true,
       outfile: 'dist/regression-gate.js',
+      external: defaultExternals,
       format: 'cjs',
       platform: 'node',
       target: 'node18',

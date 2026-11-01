@@ -47,6 +47,22 @@ export function evaluateFalsePositive(
   filePath?: string
 ): FalsePositiveCheck {
   // Check exact placeholders in secret value
+  if (/(?:process\.env|import\.meta\.env|os\.environ|ENV[\[\.])/.test(secret)) {
+    return {
+      isFalsePositive: true,
+      reason: 'Environment variable lookup expression, not a hard-coded credential literal',
+      confidencePenalty: 100,
+    };
+  }
+
+  if (/^(?:passwordRequired|required_field|required|optional|placeholder|changeme|default|test|dummy|example|string|undefined|null)$/i.test(secret)) {
+    return {
+      isFalsePositive: true,
+      reason: 'Common non-secret schema or form attribute value',
+      confidencePenalty: 100,
+    };
+  }
+
   for (const pattern of KNOWN_PLACEHOLDER_REGEXES) {
     if (pattern.test(secret)) {
       return {

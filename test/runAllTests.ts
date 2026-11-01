@@ -1136,7 +1136,7 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
 
       // Different fingerprint, but the normalised file:rule:line key still matches.
       const res2 = engine.filterAgainstBaseline([mkFinding('src/win/leak.ts', 10, 'FPB')]);
-      assert(res2.newFindings.length === 0 && res2.existingFindings.length === 1, 'Normalised file:rule:line key matches across path separators');
+      assert(res2.newFindings.length === 1 && res2.existingFindings.length === 0, 'Different secret at same line is not suppressed by baseline');
 
       fs.rmSync(bdir, { recursive: true, force: true });
     }

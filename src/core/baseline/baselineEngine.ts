@@ -111,6 +111,27 @@ export class BaselineEngine {
     return validateBaselineSchema(parsed);
   }
 
+  /**
+   * In CI or Git environments, loads baseline from a specific Git ref (e.g. HEAD or origin/main)
+   * to ensure PRs cannot modify the baseline in their working tree to bypass CI checks.
+   */
+  public loadBaselineFromGit(gitRef = 'HEAD'): BaselineFile | null {
+    try {
+      const { execFileSync } = require('child_process');
+      const gitPath = path.isAbsolute(this.baselinePath)
+        ? path.basename(this.baselinePath)
+        : this.baselinePath;
+      const data = execFileSync('git', ['show', `${gitRef}:${gitPath}`], {
+        encoding: 'utf8',
+        stdio: ['pipe', 'pipe', 'ignore'],
+      });
+      const parsed = JSON.parse(data);
+      return validateBaselineSchema(parsed);
+    } catch {
+      return null;
+    }
+  }
+
   public saveBaseline(findings: SecretFinding[]): BaselineFile {
     const baselineFindings: BaselineFinding[] = findings.map((f) => ({
       id: f.id,
@@ -149,13 +170,11 @@ export class BaselineEngine {
     }
 
     const baselineByFileAndFp = new Map<string, BaselineFinding>();
-    const baselineByFileRuleLine = new Map<string, BaselineFinding>();
 
     for (const b of baseline.findings) {
       const normFile = normalizeBaselinePath(b.file);
-      // Key by file + fingerprint so a baselined secret copied to another file is NOT hidden
+      // Key strictly by file + fingerprint so a different real secret at that line is NOT hidden
       baselineByFileAndFp.set(`${normFile}:${b.fingerprint}`, b);
-      baselineByFileRuleLine.set(`${normFile}:${b.ruleId}:${b.line}`, b);
     }
 
     const newFindings: SecretFinding[] = [];
@@ -164,9 +183,7 @@ export class BaselineEngine {
 
     for (const finding of currentFindings) {
       const normFile = normalizeBaselinePath(finding.file);
-      const match =
-        baselineByFileAndFp.get(`${normFile}:${finding.fingerprint}`) ||
-        baselineByFileRuleLine.get(`${normFile}:${finding.type}:${finding.line}`);
+      const match = baselineByFileAndFp.get(`${normFile}:${finding.fingerprint}`);
 
       if (match) {
         finding.status = 'BASELINE';

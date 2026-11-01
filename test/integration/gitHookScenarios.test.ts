@@ -12,7 +12,8 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { execFileSync, spawnSync } from 'child_process';
-import { buildPreCommitHook } from '../../src/git/preCommitHook';
+import { buildPreCommitHook, SLD_HOOK_MARKER } from '../../src/git/preCommitHook';
+import { GitService } from '../../src/git/gitService';
 
 // ── Synth helper — prevents scanner from flagging this source file ────────────
 function synth(parts: string[]): string {
@@ -190,6 +191,113 @@ export async function runGitHookIntegrationTests(): Promise<void> {
     const blockResult2 = tryCommit(repoDir, 'add secrets');
     assert(blockResult2.status !== 0, 'Second credential commit is rejected (non-zero exit)');
     assert(countCommits(repoDir) === 1, 'Repository still has exactly 1 commit after second block');
+    console.log('');
+
+    // ── Test 6: Backup Chaining — user hook executes alongside SLD ──────────
+    console.log('── Test group 6: Hook backup chaining ──────────────────────');
+    const chainRepo = createTempRepo();
+    const hooksDir = path.join(chainRepo, '.git', 'hooks');
+    fs.mkdirSync(hooksDir, { recursive: true });
+    const userHookPath = path.join(hooksDir, 'pre-commit');
+    const canaryPath = path.join(chainRepo, 'canary.txt');
+    // Pre-existing user hook
+    fs.writeFileSync(
+      userHookPath,
+      `#!/bin/sh\necho "user hook ran" > "${canaryPath.replace(/\\/g, '/')}"\nexit 0\n`,
+      { mode: 0o755 }
+    );
+
+    const gitServiceChain = new GitService(chainRepo, cliPath);
+    const installRes = await gitServiceChain.installPreCommitHook();
+    assert(installRes.success, 'SLD hook installed over existing user hook');
+
+    // Add safe file and commit
+    fs.writeFileSync(path.join(chainRepo, 'safe.txt'), 'clean content\n', 'utf8');
+    execFileSync('git', ['add', 'safe.txt'], { cwd: chainRepo, stdio: 'pipe' });
+    const chainCommit = tryCommit(chainRepo, 'commit with chained hook');
+    assert(chainCommit.status === 0, 'Clean commit allowed with chained hook');
+    assert(fs.existsSync(canaryPath), 'Chained user hook was executed and canary file was created');
+    console.log('');
+
+    // ── Test 7: Safe Uninstall — restores user hook and refuses non-SLD hooks ───
+    console.log('── Test group 7: Safe hook uninstallation ──────────────────');
+    const uninstallRes = await gitServiceChain.uninstallPreCommitHook();
+    assert(uninstallRes.success, 'SLD hook uninstalled successfully');
+    const restoredContent = fs.readFileSync(userHookPath, 'utf8');
+    assert(restoredContent.includes('user hook ran'), 'Original user hook restored on uninstall');
+
+    // Attempting to uninstall again should refuse to delete the restored user hook
+    const secondUninstall = await gitServiceChain.uninstallPreCommitHook();
+    assert(!secondUninstall.success, 'Uninstall refuses to delete user pre-commit hook without SLD marker');
+    assert(fs.existsSync(userHookPath), 'User pre-commit hook is preserved');
+    try { fs.rmSync(chainRepo, { recursive: true, force: true }); } catch {}
+    console.log('');
+
+    // ── Test 8: Subdirectory Monorepo Staged Commit ────────────────────────────
+    console.log('── Test group 8: Subdirectory monorepo commit ───────────────');
+    const subRepo = createTempRepo();
+    installHook(subRepo, cliPath);
+    const subPkgDir = path.join(subRepo, 'packages', 'core', 'src');
+    fs.mkdirSync(subPkgDir, { recursive: true });
+    const subSecretFile = path.join(subPkgDir, 'secret.ts');
+    const fakeSubKey = synth(['AKIA', '5M9Q', '2N4V', '7P1X', '8R3Z']);
+    fs.writeFileSync(subSecretFile, `export const k = "${fakeSubKey}";\n`, 'utf8');
+
+    // Stage from inside subdirectory
+    execFileSync('git', ['add', path.relative(subRepo, subSecretFile)], { cwd: subRepo, stdio: 'pipe' });
+    const subCommit = spawnSync('git', ['commit', '-m', 'subpkg commit'], {
+      cwd: subPkgDir,
+      stdio: 'pipe',
+      encoding: 'utf8',
+    });
+    assert(subCommit.status !== 0, 'Subdirectory commit with secret was rejected');
+    assert(countCommits(subRepo) === 0, 'Subdirectory commit blocked before committing to repo');
+    try { fs.rmSync(subRepo, { recursive: true, force: true }); } catch {}
+    console.log('');
+
+    // ── Test 9: Rename Staged Changes ─────────────────────────────────────────
+    console.log('── Test group 9: Rename commit with secret ──────────────────');
+    const renameRepo = createTempRepo();
+    installHook(renameRepo, cliPath);
+    const origFile = path.join(renameRepo, 'clean.ts');
+    fs.writeFileSync(origFile, 'export const val = 1;\n', 'utf8');
+    execFileSync('git', ['add', 'clean.ts'], { cwd: renameRepo, stdio: 'pipe' });
+    execFileSync('git', ['commit', '-m', 'initial clean'], { cwd: renameRepo, stdio: 'pipe' });
+
+    // Rename file and introduce secret
+    const newFile = path.join(renameRepo, 'renamed.ts');
+    const fakeRenameKey = synth(['AKIA', '8W1Y', '3K6M', '9P2T', '4V7X']);
+    fs.renameSync(origFile, newFile);
+    fs.writeFileSync(newFile, `export const key = "${fakeRenameKey}";\n`, 'utf8');
+    execFileSync('git', ['add', '-A'], { cwd: renameRepo, stdio: 'pipe' });
+
+    const renameCommit = tryCommit(renameRepo, 'rename with secret');
+    assert(renameCommit.status !== 0, 'Commit renaming clean file and adding secret was rejected');
+    assert(countCommits(renameRepo) === 1, 'Repository still has only initial commit');
+    try { fs.rmSync(renameRepo, { recursive: true, force: true }); } catch {}
+    console.log('');
+
+    // ── Test 10: Stale CLI Pinning & Fail-Closed Branch ───────────────────────
+    console.log('── Test group 10: Stale pin & fail-closed behavior ──────────');
+    const staleRepo = createTempRepo();
+    const staleHook = buildPreCommitHook(undefined, '/nonexistent/path/to/cli.js');
+    const staleHookPath = path.join(staleRepo, '.git', 'hooks', 'pre-commit');
+    fs.mkdirSync(path.dirname(staleHookPath), { recursive: true });
+    fs.writeFileSync(staleHookPath, staleHook, { mode: 0o755 });
+
+    fs.writeFileSync(path.join(staleRepo, 'file.txt'), 'some content\n', 'utf8');
+    execFileSync('git', ['add', 'file.txt'], { cwd: staleRepo, stdio: 'pipe' });
+    const staleCommit = tryCommit(staleRepo, 'stale pin commit');
+    assert(staleCommit.status !== 0, 'Commit blocked when pinned CLI is missing (fail-closed contract)');
+    assert(staleCommit.stdout.includes('FAIL-CLOSED') || staleCommit.stdout.includes('fail-closed') || staleCommit.stderr.includes('fail-closed'), 'Fail-closed warning output printed');
+
+    // Test automatic re-pinning via GitService.ensureHookIsPinned
+    const staleService = new GitService(staleRepo);
+    const repinSuccess = await staleService.ensureHookIsPinned(cliPath);
+    assert(repinSuccess, 'ensureHookIsPinned detected stale path and successfully re-pinned hook');
+    const repinnedCommit = tryCommit(staleRepo, 'repinned clean commit');
+    assert(repinnedCommit.status === 0, 'Clean commit allowed after automatic re-pinning');
+    try { fs.rmSync(staleRepo, { recursive: true, force: true }); } catch {}
     console.log('');
   }
 

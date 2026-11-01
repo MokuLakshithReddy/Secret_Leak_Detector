@@ -51,29 +51,42 @@ const BENIGN_VAR_NAMES = [
   /insert[_-]?here/i,
 ];
 
-export function analyzeFileContext(filePath: string): FileContext {
-  const normalizedPath = filePath.replace(/\\/g, '/').toLowerCase();
+export function getRelativeRepoPath(filePath: string, workspaceRoot?: string): string {
+  if (workspaceRoot) {
+    const rel = path.relative(workspaceRoot, filePath);
+    if (!rel.startsWith('..') && !path.isAbsolute(rel)) {
+      return rel.replace(/\\/g, '/');
+    }
+  }
+  if (path.isAbsolute(filePath)) {
+    return path.basename(filePath);
+  }
+  return filePath.replace(/\\/g, '/');
+}
+
+export function analyzeFileContext(filePath: string, workspaceRoot?: string): FileContext {
+  const relPath = getRelativeRepoPath(filePath, workspaceRoot).toLowerCase();
   const baseName = path.basename(filePath).toLowerCase();
   const ext = path.extname(filePath).toLowerCase();
 
   // Robust test detection that avoids false matching on filenames like "latest.json"
+  // Scoped strictly to repository-relative paths to avoid matching parent directories (e.g. /home/user/tests/repo)
   const isTest =
-    /(?:^|\/)(?:tests?|specs?|__tests__|__mocks__|fixtures|mocks)\//i.test(normalizedPath) ||
+    /(?:^|\/)(?:tests?|specs?|__tests__|__mocks__|fixtures|mocks)\//i.test(relPath) ||
     /[._-](?:test|spec)\.[a-z0-9]+$/i.test(baseName) ||
     /^(?:test|spec)\.[a-z0-9]+$/i.test(baseName);
 
   const isDoc = /(?:^|\/)(?:docs|doc|documentation|tutorials|guides)\/|readme\.md|contributing\.md|changelog\.md/i.test(
-    normalizedPath
+    relPath
   );
 
-  const isExampleOrSample = /(?:^|\/)(?:example|sample|\.example|\.sample)/i.test(normalizedPath) ||
+  const isExampleOrSample = /(?:^|\/)(?:example|sample|\.example|\.sample)/i.test(relPath) ||
     /[._-](?:example|sample)\.[a-z0-9]+$/i.test(baseName);
 
   const isConfig =
     /^\.env(?:\.[a-z0-9]+)?$/.test(baseName) ||
-    /(?:config|settings|secret|credential|database|deploy|production|staging|k8s|helm|tfvars)/i.test(
-      normalizedPath
-    ) ||
+    /(?:^|\/)(?:config|settings|k8s|helm|deploy|tfvars)\//i.test(relPath) ||
+    /(?:^|[._-])(?:config|settings|secret|credential|database|deploy)\.[a-z0-9]+$/i.test(baseName) ||
     ['.env', '.yaml', '.yml', '.json', '.toml', '.ini', '.tf'].includes(ext);
 
   const isSensitiveName =
