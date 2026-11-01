@@ -12,6 +12,45 @@ export function escapeEnvValue(val: string): string {
     .replace(/\r/g, '\\r');
 }
 
+/**
+ * Returns language-appropriate environment variable accessor syntax.
+ */
+export function getLanguageReplacement(filePath: string, varName: string): string {
+  const ext = path.extname(filePath).toLowerCase();
+  switch (ext) {
+    case '.py':
+      return `os.environ.get("${varName}")`;
+    case '.go':
+      return `os.Getenv("${varName}")`;
+    case '.rb':
+      return `ENV['${varName}']`;
+    case '.php':
+      return `getenv('${varName}')`;
+    case '.java':
+    case '.kt':
+      return `System.getenv("${varName}")`;
+    case '.rs':
+      return `std::env::var("${varName}").unwrap()`;
+    case '.sh':
+    case '.bash':
+    case '.zsh':
+      return `"\${${varName}}"`;
+    case '.yaml':
+    case '.yml':
+    case '.toml':
+    case '.env':
+      return `\${${varName}}`;
+    case '.js':
+    case '.jsx':
+    case '.ts':
+    case '.tsx':
+    case '.mjs':
+    case '.cjs':
+    default:
+      return `process.env.${varName}`;
+  }
+}
+
 export function buildRemediationPlan(
   rule: RuleDefinition,
   rawSecret: string,
@@ -20,7 +59,7 @@ export function buildRemediationPlan(
   inferredVarName?: string
 ): RemediationPlan {
   const envVarName = rule.suggestedEnvName(inferredVarName);
-  const replacementCode = `process.env.${envVarName}`;
+  const replacementCode = getLanguageReplacement(filePath, envVarName);
   const redacted = redactSecret(rawSecret);
   const escapedSecret = escapeEnvValue(rawSecret);
 
@@ -136,6 +175,13 @@ export function ensureGitignoreProtectsEnv(workspaceRoot: string): void {
   try {
     const { execFileSync } = require('child_process');
     try {
+      execFileSync('git', ['rev-parse', '--is-inside-work-tree'], { cwd: workspaceRoot, stdio: 'ignore' });
+    } catch {
+      // In a non-git directory, skip Git repository index and ignore validation cleanly
+      return;
+    }
+
+    try {
       execFileSync('git', ['ls-files', '--error-unmatch', '.env'], { cwd: workspaceRoot, stdio: 'ignore' });
       throw new Error('.env is already tracked in Git index. Run "git rm --cached .env" to untrack it before storing secrets.');
     } catch (lsErr: any) {
@@ -204,6 +250,9 @@ export function applyControlledRemediation(
       envContent = originalEnvContent;
     } else {
       envWasNewlyCreated = true;
+      try {
+        fsModule.writeFileSync(envPath, '', { mode: 0o600, encoding: 'utf8' });
+      } catch {}
     }
 
     // Snapshot .gitignore state before mutation
@@ -215,17 +264,20 @@ export function applyControlledRemediation(
 
     const suggestedName = finding.remediation?.envVarName || 'API_KEY';
     const { varName, isReused } = resolveUniqueEnvVarName(envContent, suggestedName, finding.rawSecret);
-    const replacementCode = `process.env.${varName}`;
+    const replacementCode = getLanguageReplacement(targetFile, varName);
     const escapedValue = escapeEnvValue(finding.rawSecret);
     const envLine = `${varName}="${escapedValue}"\n`;
 
     // 2. Ensure .gitignore protects .env BEFORE writing credentials to disk
     ensureGitignoreProtectsEnv(workspaceRoot);
 
-    // 3. Write to .env
+    // 3. Write to .env and enforce 0600 mode
     if (!isReused) {
       const prefix = envContent.endsWith('\n') || envContent.length === 0 ? '' : '\n';
       fsModule.appendFileSync(envPath, `${prefix}${envLine}`, 'utf8');
+      try {
+        fsModule.chmodSync(envPath, 0o600);
+      } catch {}
     }
 
     // 4. Update .env.example
@@ -243,11 +295,22 @@ export function applyControlledRemediation(
       fsModule.appendFileSync(envExamplePath, `${exPrefix}${exampleLine}`, 'utf8');
     }
 
-    // 5. Replace secret literal in source file
-    const newContent = originalFileContent.replace(
-      new RegExp(escapeRegExp(finding.rawSecret), 'g'),
-      replacementCode
-    );
+    // 5. Replace secret literal in source file, stripping enclosing quotes so replacementCode is evaluated
+    let newContent = originalFileContent;
+    const doubleQuoted = `"${finding.rawSecret}"`;
+    const singleQuoted = `'${finding.rawSecret}'`;
+    const backtickQuoted = `\`${finding.rawSecret}\``;
+
+    if (newContent.includes(doubleQuoted)) {
+      newContent = newContent.replace(new RegExp(escapeRegExp(doubleQuoted), 'g'), replacementCode);
+    } else if (newContent.includes(singleQuoted)) {
+      newContent = newContent.replace(new RegExp(escapeRegExp(singleQuoted), 'g'), replacementCode);
+    } else if (newContent.includes(backtickQuoted)) {
+      newContent = newContent.replace(new RegExp(escapeRegExp(backtickQuoted), 'g'), replacementCode);
+    } else {
+      newContent = newContent.replace(new RegExp(escapeRegExp(finding.rawSecret), 'g'), replacementCode);
+    }
+
     fsModule.writeFileSync(targetFile, newContent, 'utf8');
 
     return {
@@ -258,12 +321,9 @@ export function applyControlledRemediation(
     };
   } catch (err: any) {
     // Transactional Rollback: restore all mutated files to their pre-call state.
-    // Each rollback step is verified and failures are accumulated so callers receive
-    // a precise report of the workspace state rather than a silent partial restoration.
     const rollbackFailures: string[] = [];
 
     // Helper: atomic write-via-temp-file to avoid leaving a partially-written file
-    // if the process is interrupted mid-write.
     const atomicWrite = (filePath: string, content: string): void => {
       const tmp = `${filePath}.sld-tmp-${Date.now()}`;
       fsModule.writeFileSync(tmp, content, 'utf8');
@@ -274,7 +334,6 @@ export function applyControlledRemediation(
     if (originalFileContent !== null) {
       try {
         atomicWrite(targetFile, originalFileContent);
-        // Verify the file actually contains the original content
         const restored = fsModule.readFileSync(targetFile, 'utf8');
         if (restored !== originalFileContent) {
           rollbackFailures.push(`source file restored with mismatched content (${targetFile})`);

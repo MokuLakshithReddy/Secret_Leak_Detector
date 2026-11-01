@@ -31,6 +31,12 @@
   "bin": {
     "secret-leak-detector": "./dist/cli.js"
   },
+  "files": [
+    "dist",
+    "media",
+    "README.md",
+    "LICENSE"
+  ],
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": false,

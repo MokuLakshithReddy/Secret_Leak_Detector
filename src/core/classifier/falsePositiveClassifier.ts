@@ -1,3 +1,5 @@
+import { calculateShannonEntropy } from '../entropy/entropy';
+
 /**
  * False-Positive & Placeholder Suppression Engine
  * Filters out benign documentation examples, test mocks, repetitive filler, and UUIDs.
@@ -73,9 +75,40 @@ export function evaluateFalsePositive(
     }
   }
 
-  // Check if variable name indicates an explicit mock/dummy key (not generic words in identifiers)
+  // Check if variable name indicates an explicit mock/dummy key (not generic words in identifiers).
+  // CRITICAL SECURITY FIX: Never suppress live-format tokens (Stripe, Slack, GitHub, AWS, etc.)
+  // or high-entropy credentials just because a developer or adversary named the variable "mock_*" or "fake_*".
   if (inferredVarName && MOCK_VAR_REGEX.test(inferredVarName)) {
-    if (!secret.startsWith('AKIA') && !secret.startsWith('ghp_')) {
+    const isRealTokenFormat =
+      secret.startsWith('AKIA') ||
+      secret.startsWith('ASIA') ||
+      secret.startsWith('ghp_') ||
+      secret.startsWith('gho_') ||
+      secret.startsWith('ghu_') ||
+      secret.startsWith('ghs_') ||
+      secret.startsWith('ghr_') ||
+      secret.startsWith('github_pat_') ||
+      secret.startsWith('glpat-') ||
+      secret.startsWith('sk_live_') ||
+      secret.startsWith('rk_live_') ||
+      secret.startsWith('xoxb-') ||
+      secret.startsWith('xoxp-') ||
+      secret.startsWith('xoxa-') ||
+      secret.startsWith('xoxr-') ||
+      secret.startsWith('pypi-') ||
+      secret.startsWith('dop_v1_') ||
+      secret.startsWith('shpat_') ||
+      secret.startsWith('shpca_') ||
+      secret.startsWith('shppa_') ||
+      secret.startsWith('ya29.') ||
+      secret.startsWith('key-') ||
+      secret.startsWith('sq0atp-') ||
+      secret.startsWith('sq0csp-') ||
+      /^SK[0-9a-fA-F]{32}$/.test(secret) ||
+      secret.includes('-----BEGIN') ||
+      (secret.length >= 14 && calculateShannonEntropy(secret) >= 3.6);
+
+    if (!isRealTokenFormat) {
       return {
         isFalsePositive: true,
         reason: `Variable identifier indicates placeholder: ${inferredVarName}`,

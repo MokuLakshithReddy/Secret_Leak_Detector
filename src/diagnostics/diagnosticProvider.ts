@@ -74,6 +74,10 @@ export class DiagnosticProvider {
     }
 
     const text = document.getText();
+    // Cap real-time document scanning at 2MB to preserve editor responsiveness
+    if (text.length > 2 * 1024 * 1024) {
+      return [];
+    }
     const workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri);
     const workspaceRoot = workspaceFolder ? workspaceFolder.uri.fsPath : undefined;
 

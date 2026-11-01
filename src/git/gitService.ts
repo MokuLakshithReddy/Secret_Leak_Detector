@@ -188,6 +188,11 @@ After fixing:
         message: `Cannot install pre-commit hook: bundled CLI binary not found at '${targetCli || 'undefined'}'. Installation aborted.`,
       };
     }
+
+    if (/[\/\\](?:_npx|Temp|tmp)[\/\\]/i.test(targetCli)) {
+      console.warn(`⚠️ Warning: Pre-commit hook is pinning a temporary/npx CLI path: '${targetCli}'. This path may be deleted automatically by your system. Consider installing secret-leak-detector globally or locally.`);
+    }
+
     const hookContent = buildPreCommitHook(DEFAULT_FAIL_ON, targetCli);
 
     try {
@@ -226,6 +231,7 @@ After fixing:
   /**
    * Safely uninstalls pre-commit hook and restores any previous backup.
    * Verifies that the hook is managed by SLD before touching it to avoid deleting user hooks.
+   * Strictly validates backup path to prevent arbitrary file deletion.
    */
   public async uninstallPreCommitHook(): Promise<{ success: boolean; message: string }> {
     const hooksDir = await this.resolveHooksDir();
@@ -245,14 +251,27 @@ After fixing:
         };
       }
 
-      // Locate the most recent backup via the marker file
+      // Locate the most recent backup via the marker file with strict path validation
       if (fs.existsSync(latestBackupMarkerPath)) {
         const backupPath = fs.readFileSync(latestBackupMarkerPath, 'utf8').trim();
-        if (backupPath && fs.existsSync(backupPath)) {
-          fs.copyFileSync(backupPath, hookPath);
-          fs.unlinkSync(backupPath);
+        const resolvedBackup = path.resolve(backupPath);
+        const expectedDir = path.resolve(hooksDir);
+        const backupFilename = path.basename(resolvedBackup);
+
+        if (
+          path.dirname(resolvedBackup) === expectedDir &&
+          /^pre-commit\.sld-backup\.\d+$/.test(backupFilename) &&
+          fs.existsSync(resolvedBackup)
+        ) {
+          fs.copyFileSync(resolvedBackup, hookPath);
+          fs.unlinkSync(resolvedBackup);
           fs.unlinkSync(latestBackupMarkerPath);
           return { success: true, message: 'Uninstalled SLD hook and restored original pre-commit hook.' };
+        } else {
+          // Untrusted or missing backup reference; safely remove marker
+          try {
+            fs.unlinkSync(latestBackupMarkerPath);
+          } catch {}
         }
       }
       // No backup — safely remove the SLD hook

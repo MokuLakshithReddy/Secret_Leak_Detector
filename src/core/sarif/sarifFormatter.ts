@@ -79,7 +79,7 @@ export function formatAsSarif(findings: SecretFinding[]): object {
         tool: {
           driver: {
             name: 'Secret Leak Detector',
-            semanticVersion: '1.0.0',
+            semanticVersion: '1.0.2',
             informationUri: 'https://github.com/MokuLakshithReddy/Secret_Leak_Detector',
             rules: Array.from(rulesMap.values()),
           },

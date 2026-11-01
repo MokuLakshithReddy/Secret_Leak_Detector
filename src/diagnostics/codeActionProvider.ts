@@ -7,43 +7,8 @@ import {
   escapeEnvValue,
   resolveUniqueEnvVarName,
   ensureGitignoreProtectsEnv,
+  getLanguageReplacement,
 } from '../core/remediation/remediationEngine';
-
-function getLanguageReplacement(filePath: string, varName: string): string {
-  const ext = path.extname(filePath).toLowerCase();
-  switch (ext) {
-    case '.py':
-      return `os.environ.get("${varName}")`;
-    case '.go':
-      return `os.Getenv("${varName}")`;
-    case '.rb':
-      return `ENV['${varName}']`;
-    case '.php':
-      return `getenv('${varName}')`;
-    case '.java':
-    case '.kt':
-      return `System.getenv("${varName}")`;
-    case '.rs':
-      return `std::env::var("${varName}").unwrap()`;
-    case '.sh':
-    case '.bash':
-    case '.zsh':
-      return `"\${${varName}}"`;
-    case '.yaml':
-    case '.yml':
-    case '.toml':
-    case '.env':
-      return `\${${varName}}`;
-    case '.js':
-    case '.jsx':
-    case '.ts':
-    case '.tsx':
-    case '.mjs':
-    case '.cjs':
-    default:
-      return `process.env.${varName}`;
-  }
-}
 
 export class SecretCodeActionProvider implements vscode.CodeActionProvider {
   public static readonly providedCodeActionKinds = [vscode.CodeActionKind.QuickFix];

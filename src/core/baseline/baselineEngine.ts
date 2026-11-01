@@ -145,7 +145,7 @@ export class BaselineEngine {
     const file: BaselineFile = {
       version: 1,
       generatedAt: new Date().toISOString(),
-      generator: 'Secret Leak Detector v1.0.0',
+      generator: 'Secret Leak Detector v1.0.2',
       findings: baselineFindings,
     };
 
@@ -159,7 +159,14 @@ export class BaselineEngine {
     resolvedCount: number;
     totalBaseline: number;
   } {
-    const baseline = this.loadBaseline();
+    let baseline: BaselineFile | null = null;
+    if (process.env.CI) {
+      const gitRef = process.env.GITHUB_BASE_REF || process.env.CI_MERGE_REQUEST_TARGET_BRANCH_NAME || 'HEAD';
+      baseline = this.loadBaselineFromGit(gitRef);
+    }
+    if (!baseline) {
+      baseline = this.loadBaseline();
+    }
     if (!baseline) {
       return {
         newFindings: currentFindings,

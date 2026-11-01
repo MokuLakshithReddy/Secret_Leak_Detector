@@ -13,7 +13,7 @@ import { formatAsSarif } from '../core/sarif/sarifFormatter';
 import { SecretFinding, Risk } from '../core/types';
 import { scanStagedChangesSync } from '../git/stagedScanner';
 import { GitService } from '../git/gitService';
-import { DEFAULT_FAIL_ON, resolveFailOn, shouldBlock } from '../core/policy';
+import { DEFAULT_FAIL_ON, resolveFailOn, shouldBlock, isRiskTier } from '../core/policy';
 
 const args = process.argv.slice(2);
 const command = args[0] || 'help';
@@ -130,6 +130,11 @@ async function runScan(cmdArgs: string[], cwd: string) {
 
   const failOnIdx = cmdArgs.indexOf('--fail-on');
   const failOnRaw = failOnIdx !== -1 ? cmdArgs[failOnIdx + 1] : undefined;
+  if (failOnIdx !== -1) {
+    if (!failOnRaw || !isRiskTier(failOnRaw)) {
+      fail(`Error: Invalid --fail-on argument '${failOnRaw || ''}'. Must be one of: LOW, MEDIUM, HIGH, CRITICAL.`);
+    }
+  }
   const failOn: Risk = resolveFailOn(failOnRaw);
 
   const excludeIdx = cmdArgs.indexOf('--exclude');
@@ -177,15 +182,21 @@ async function runScan(cmdArgs: string[], cwd: string) {
   } else {
     // Scan directory or single file
     const filesToScan: string[] = [];
-    collectFiles(absPath, filesToScan, cwd, userExcludes);
+    const excludedFiles: { file: string; pattern: string }[] = [];
+    collectFiles(absPath, filesToScan, cwd, userExcludes, new Set(), excludedFiles);
     filesScanned = filesToScan.length;
+
+    if (excludedFiles.length > 0 && !isJson && !isSarif) {
+      const distinctPatterns = Array.from(new Set(excludedFiles.map((e) => e.pattern)));
+      console.log(`ℹ️  Excluded ${excludedFiles.length} file(s) matching patterns: ${distinctPatterns.join(', ')}`);
+    }
 
     const skippedFiles: { file: string; reason: string }[] = [];
     for (const file of filesToScan) {
       findings.push(
         ...scanFile(file, {
           workspaceRoot: cwd,
-          onSkippedFile: (skippedPath, reason) => {
+          onSkippedFile: (skippedPath: string, reason: string) => {
             skippedFiles.push({ file: skippedPath, reason });
           },
         })
@@ -211,19 +222,21 @@ async function runScan(cmdArgs: string[], cwd: string) {
 
   // Baseline filtering if enabled
   let baselineStats: any;
-  if (baselineFile || fs.existsSync(path.join(cwd, DEFAULT_BASELINE_FILENAME))) {
+  if (baselineFile || fs.existsSync(path.join(cwd, DEFAULT_BASELINE_FILENAME)) || process.env.CI) {
     const targetBaseline = baselineFile || DEFAULT_BASELINE_FILENAME;
     const baselineEngine = new BaselineEngine(cwd, targetBaseline);
-    if (baselineEngine.exists()) {
+    if (baselineEngine.exists() || process.env.CI) {
       try {
         const filtered = baselineEngine.filterAgainstBaseline(findings);
-        baselineStats = {
-          total: findings.length,
-          existing: filtered.existingFindings.length,
-          newFindings: filtered.newFindings.length,
-          resolved: filtered.resolvedCount,
-        };
-        findings = filtered.newFindings;
+        if (filtered.totalBaseline > 0) {
+          baselineStats = {
+            total: findings.length,
+            existing: filtered.existingFindings.length,
+            newFindings: filtered.newFindings.length,
+            resolved: filtered.resolvedCount,
+          };
+          findings = filtered.newFindings;
+        }
       } catch (err: any) {
         fail(`Error: Malformed baseline file '${targetBaseline}': ${err.message}`);
       }
@@ -460,9 +473,10 @@ async function runGraph(cmdArgs: string[], cwd: string) {
 }
 
 async function runBaseline(cmdArgs: string[], cwd: string) {
-  const subCommand = cmdArgs[0] || 'init';
+  const isForce = cmdArgs.includes('--force') || cmdArgs.includes('-f');
+  const subCommand = cmdArgs.find((a) => a === 'init' || a === 'update') || 'init';
   if (subCommand !== 'init' && subCommand !== 'update') {
-    fail('Usage: secret-leak-detector baseline [init|update]');
+    fail('Usage: secret-leak-detector baseline [init|update] [--force]');
   }
 
   const baselineEngine = new BaselineEngine(cwd);
@@ -492,6 +506,28 @@ async function runBaseline(cmdArgs: string[], cwd: string) {
     const baseline = baselineEngine.saveBaseline(updatedFindings);
     console.log(`✅ Updated baseline: ${baseline.findings.length} known findings retained (${newLeaks.length} new leaks rejected).\n`);
     return;
+  }
+
+  // subCommand === 'init'
+  if (baselineEngine.exists() && !isForce) {
+    fail(`Error: Baseline file '${DEFAULT_BASELINE_FILENAME}' already exists. Use 'baseline update' to refresh line numbers, or pass --force to reinitialize.`);
+  }
+
+  if (findings.length > 0 && !isForce && process.stdin.isTTY) {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    const answer = await new Promise<string>((resolve) => {
+      rl.question(
+        `⚠️  Found ${findings.length} secret(s) in workspace. Whitelist all detected findings into ${DEFAULT_BASELINE_FILENAME}? (y/N): `,
+        (ans: string) => {
+          rl.close();
+          resolve(ans.trim().toLowerCase());
+        }
+      );
+    });
+    if (answer !== 'y' && answer !== 'yes') {
+      console.log('Aborted. Baseline not initialized.');
+      return;
+    }
   }
 
   console.log(`\n📦 Initializing baseline for workspace: ${cwd}`);
@@ -653,6 +689,22 @@ const BINARY_EXTENSIONS = new Set([
 ]);
 
 function loadIgnorePatterns(cwd: string): string[] {
+  if (process.env.CI) {
+    try {
+      const { execFileSync } = require('child_process');
+      const baseRef = process.env.GITHUB_BASE_REF || process.env.CI_MERGE_REQUEST_TARGET_BRANCH_NAME || 'HEAD';
+      const gitIgnoreData = execFileSync('git', ['show', `${baseRef}:.sldignore`], {
+        cwd,
+        encoding: 'utf8',
+        stdio: ['pipe', 'pipe', 'ignore'],
+      });
+      return gitIgnoreData
+        .split(/\r?\n/)
+        .map((l: string) => l.trim())
+        .filter((l: string) => l && !l.startsWith('#'));
+    } catch {}
+  }
+
   const ignoreFile = path.join(cwd, '.sldignore');
   if (fs.existsSync(ignoreFile)) {
     try {
@@ -666,12 +718,58 @@ function loadIgnorePatterns(cwd: string): string[] {
   return [];
 }
 
+function matchesIgnorePattern(relPath: string, pattern: string): boolean {
+  const normRel = relPath.replace(/\\/g, '/').replace(/^\/+/, '');
+  let normPat = pattern.trim().replace(/\\/g, '/');
+  if (!normPat || normPat.startsWith('#')) return false;
+
+  const isDirOnly = normPat.endsWith('/');
+  if (isDirOnly) {
+    normPat = normPat.slice(0, -1);
+  }
+
+  // Exact relative path match
+  if (normRel === normPat) return true;
+
+  // Directory prefix match: e.g. "dist" matches "dist/bundle.js"
+  if (normRel.startsWith(normPat + '/')) return true;
+
+  // Wildcard glob match: *.ts, test/**, etc.
+  if (normPat.includes('*') || normPat.includes('?')) {
+    if (!normPat.includes('/')) {
+      const filename = path.basename(normRel);
+      const regexStr = '^' + normPat
+        .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+        .replace(/\*/g, '.*')
+        .replace(/\?/g, '.') + '$';
+      return new RegExp(regexStr).test(filename);
+    } else {
+      const regexStr = '^' + normPat
+        .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+        .replace(/\*\*/g, '.*')
+        .replace(/\*/g, '[^/]*')
+        .replace(/\?/g, '[^/]') + '$';
+      return new RegExp(regexStr).test(normRel);
+    }
+  }
+
+  // Exact segment match: e.g. "env" matches segment "env" in "config/env/file"
+  // but does NOT match substring "prod.env" or "app.ts"!
+  const segments = normRel.split('/');
+  if (!normPat.includes('/')) {
+    return segments.includes(normPat);
+  }
+
+  return false;
+}
+
 function collectFiles(
   currentPath: string,
   fileList: string[],
   rootDir: string,
   userExcludes: string[] = [],
-  visitedDirs: Set<string> = new Set<string>()
+  visitedDirs: Set<string> = new Set<string>(),
+  excludedFiles: { file: string; pattern: string }[] = []
 ) {
   if (!fs.existsSync(currentPath)) return;
   let realPath: string;
@@ -694,7 +792,9 @@ function collectFiles(
   const ext = path.extname(currentPath).toLowerCase();
   const rel = path.relative(rootDir, currentPath).replace(/\\/g, '/');
 
-  if (allExcludes.some((pattern) => rel === pattern || rel.startsWith(pattern + '/') || rel.endsWith(pattern))) {
+  const matchedPattern = allExcludes.find((pattern) => matchesIgnorePattern(rel, pattern));
+  if (matchedPattern) {
+    excludedFiles.push({ file: rel, pattern: matchedPattern });
     return;
   }
 
@@ -729,11 +829,13 @@ function collectFiles(
       continue;
     }
     if (s.isDirectory()) {
-      collectFiles(full, fileList, rootDir, userExcludes, visitedDirs);
+      collectFiles(full, fileList, rootDir, userExcludes, visitedDirs, excludedFiles);
     } else if (s.isFile()) {
       const entryExt = path.extname(entry).toLowerCase();
       const entryRel = path.relative(rootDir, full).replace(/\\/g, '/');
-      if (allExcludes.some((p) => entryRel === p || entryRel.startsWith(p + '/') || entryRel.endsWith(p))) {
+      const entryMatched = allExcludes.find((p) => matchesIgnorePattern(entryRel, p));
+      if (entryMatched) {
+        excludedFiles.push({ file: entryRel, pattern: entryMatched });
         continue;
       }
       if (!BINARY_EXTENSIONS.has(entryExt)) {

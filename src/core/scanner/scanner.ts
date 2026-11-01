@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
+import { SecretFinding, ScanResult, RuleDefinition } from '../types';
 import { CORE_RULES } from '../detectors/rules';
 import { analyzeFileContext, analyzeLexicalContext } from '../context/contextAnalyzer';
 import { analyzeAstContext } from '../context/astAnalyzer';
@@ -8,7 +9,6 @@ import { buildEvidenceModel } from '../evidence/evidenceEngine';
 import { calculateRiskAssessment } from '../risk/riskEngine';
 import { buildRemediationPlan } from '../remediation/remediationEngine';
 import { redactSecret, generateFingerprint } from '../redactor/redactor';
-import { SecretFinding, ScanResult, RuleDefinition } from '../types';
 
 export interface ScannerOptions {
   rules?: RuleDefinition[];
@@ -21,12 +21,53 @@ function getFileIdPart(relativePath: string): string {
   return crypto.createHash('sha256').update(relativePath.replace(/\\/g, '/')).digest('hex').slice(0, 8);
 }
 
+/**
+ * Bounds line length to prevent ReDoS on minified or adversarial single-line files.
+ */
+function normalizeLongLines(raw: string, maxLineLen = 4000): string {
+  if (raw.length < maxLineLen) return raw;
+  let hasOverlongLine = false;
+  let lastNewline = -1;
+  for (let i = 0; i < raw.length; i++) {
+    if (raw.charCodeAt(i) === 10) {
+      if (i - lastNewline > maxLineLen) {
+        hasOverlongLine = true;
+        break;
+      }
+      lastNewline = i;
+    }
+  }
+  if (!hasOverlongLine && raw.length - lastNewline <= maxLineLen) {
+    return raw;
+  }
+  const lines = raw.split(/\r?\n/);
+  const normalized: string[] = [];
+  for (const line of lines) {
+    if (line.length <= maxLineLen) {
+      normalized.push(line);
+    } else {
+      for (let pos = 0; pos < line.length; pos += maxLineLen - 100) {
+        normalized.push(line.substring(pos, pos + maxLineLen));
+      }
+    }
+  }
+  return normalized.join('\n');
+}
+
+interface DeobfuscationCandidate {
+  combined: string;
+  matchOffset: number;
+  matchLength: number;
+  description: string;
+}
+
 export function scanContent(
-  content: string,
+  rawContent: string,
   filePath: string,
   options: ScannerOptions | string = {}
 ): SecretFinding[] {
   const opts: ScannerOptions = typeof options === 'string' ? { workspaceRoot: options } : options;
+  const content = normalizeLongLines(rawContent);
   const rules = opts.rules || CORE_RULES;
   const workspaceRoot = opts.workspaceRoot;
   const fileContext = analyzeFileContext(filePath, workspaceRoot);
@@ -119,10 +160,17 @@ export function scanContent(
         continue;
       }
 
-      // Check minimum entropy constraint
-      const effectiveMinEntropy = opts.minEntropyThreshold ?? rule.minEntropy;
+      // Check minimum entropy constraint:
+      // Structured rules without an entropy requirement are never filtered by global minEntropy.
+      // If a rule defines its own minEntropy, apply max(rule.minEntropy, threshold).
+      let effectiveMinEntropy: number | undefined;
+      if (rule.minEntropy !== undefined) {
+        effectiveMinEntropy = opts.minEntropyThreshold !== undefined
+          ? Math.max(rule.minEntropy, opts.minEntropyThreshold)
+          : rule.minEntropy;
+      }
       if (
-        effectiveMinEntropy &&
+        effectiveMinEntropy !== undefined &&
         evidenceResult.evidence.shannonEntropy < effectiveMinEntropy
       ) {
         continue;
@@ -188,23 +236,72 @@ export function scanContent(
     }
   }
 
-  // 2. Adversarial normalization: resolve split string concatenations (e.g. "ghp_" + "123...")
-  // Maps match coordinates directly back to the original concatenation token's source location in content
+  // 2. Adversarial normalization & evasion detection:
+  // Handles: split string concatenation ("a" + "b"), array .join(''), template literals `a${'b'}`, and base64 payloads
+  const candidates: DeobfuscationCandidate[] = [];
+
+  // A. Split string concatenation: "ghp_" + "12345..."
   const concatRegex = /["']([^"'\r\n]{2,80})["']\s*\+\s*["']([^"'\r\n]{8,120})["']/g;
   let concatMatch: RegExpExecArray | null;
   while ((concatMatch = concatRegex.exec(content)) !== null) {
-    const combined = concatMatch[1] + concatMatch[2];
-    const matchOffset = concatMatch.index;
+    candidates.push({
+      combined: concatMatch[1] + concatMatch[2],
+      matchOffset: concatMatch.index,
+      matchLength: concatMatch[0].length,
+      description: 'Resolved split string concatenation',
+    });
+  }
 
+  // B. Array .join(''): ['sk_live_', '12345...'].join('')
+  const arrayJoinRegex = /\[\s*["']([^"'\r\n]{2,80})["']\s*,\s*["']([^"'\r\n]{8,120})["'](?:\s*,\s*["']([^"'\r\n]{2,120})["'])*\s*\]\s*\.\s*join\s*\(\s*["']\s*["']\s*\)/g;
+  let arrayJoinMatch: RegExpExecArray | null;
+  while ((arrayJoinMatch = arrayJoinRegex.exec(content)) !== null) {
+    const parts = [arrayJoinMatch[1], arrayJoinMatch[2], arrayJoinMatch[3]].filter(Boolean);
+    candidates.push({
+      combined: parts.join(''),
+      matchOffset: arrayJoinMatch.index,
+      matchLength: arrayJoinMatch[0].length,
+      description: 'Resolved split array join expression',
+    });
+  }
+
+  // C. Template literals: `sk_live_${'12345...'}`
+  const templateRegex = /`([^`\r\n]{2,80})\$\{\s*["']([^"'\r\n]{8,120})["']\s*\}([^`\r\n]*?)`/g;
+  let templateMatch: RegExpExecArray | null;
+  while ((templateMatch = templateRegex.exec(content)) !== null) {
+    candidates.push({
+      combined: templateMatch[1] + templateMatch[2] + (templateMatch[3] || ''),
+      matchOffset: templateMatch.index,
+      matchLength: templateMatch[0].length,
+      description: 'Resolved template literal interpolation',
+    });
+  }
+
+  // D. Base64 encoded payload: Buffer.from("c2tfbGl2ZV8...", "base64") or atob("...")
+  const b64Regex = /(?:Buffer\.from|atob|b64decode)\s*\(\s*(?:b)?["']([A-Za-z0-9+/=]{24,200})["']/g;
+  let b64Match: RegExpExecArray | null;
+  while ((b64Match = b64Regex.exec(content)) !== null) {
+    try {
+      const decoded = Buffer.from(b64Match[1], 'base64').toString('utf8');
+      if (decoded.length >= 10 && /^[\x20-\x7E\r\n]+$/.test(decoded)) {
+        candidates.push({
+          combined: decoded,
+          matchOffset: b64Match.index,
+          matchLength: b64Match[0].length,
+          description: 'Resolved base64-encoded credential payload',
+        });
+      }
+    } catch {}
+  }
+
+  for (const candidate of candidates) {
     for (const rule of rules) {
       rule.pattern.lastIndex = 0;
       let ruleMatch: RegExpExecArray | null;
 
-      while ((ruleMatch = rule.pattern.exec(combined)) !== null) {
+      while ((ruleMatch = rule.pattern.exec(candidate.combined)) !== null) {
         const rawSecret = ruleMatch[1] || ruleMatch[0];
-
-        // Map directly to original source coordinates of concatenation expression
-        const { line: lineNumber, column: columnNumber } = getPosition(matchOffset);
+        const { line: lineNumber, column: columnNumber } = getPosition(candidate.matchOffset);
 
         const ctxWindow = getContextWindow(lineNumber);
         const lexicalContext = analyzeLexicalContext(ctxWindow.lines, ctxWindow.relativeTargetIdx);
@@ -221,9 +318,14 @@ export function scanContent(
 
         if (evidenceResult.isSuppressed) continue;
 
-        const effectiveMinEntropy = opts.minEntropyThreshold ?? rule.minEntropy;
+        let effectiveMinEntropy: number | undefined;
+        if (rule.minEntropy !== undefined) {
+          effectiveMinEntropy = opts.minEntropyThreshold !== undefined
+            ? Math.max(rule.minEntropy, opts.minEntropyThreshold)
+            : rule.minEntropy;
+        }
         if (
-          effectiveMinEntropy &&
+          effectiveMinEntropy !== undefined &&
           evidenceResult.evidence.shannonEntropy < effectiveMinEntropy
         ) {
           continue;
@@ -253,7 +355,7 @@ export function scanContent(
 
         evidenceResult.evidence.items.unshift({
           signal: 'ADVERSARIAL_DEOBFUSCATION_RESOLVED',
-          description: 'Resolved split string concatenation',
+          description: candidate.description,
           confidenceImpact: +10,
         });
 
@@ -271,7 +373,7 @@ export function scanContent(
           fullPath: filePath,
           line: lineNumber,
           column: columnNumber,
-          length: concatMatch[0].length,
+          length: candidate.matchLength,
           rawSecret,
           redactedSecret: redacted,
           confidence: Math.min(100, evidenceResult.confidence + 5),

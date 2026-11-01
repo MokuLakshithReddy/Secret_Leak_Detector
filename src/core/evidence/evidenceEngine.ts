@@ -18,6 +18,10 @@ import {
   validateGoogleApiKey,
   validateSlackToken,
   validateHuggingFaceToken,
+  validateAwsSecretKey,
+  validateSlackWebhook,
+  validateAzureStorageKey,
+  validatePrivateKeyPem,
 } from '../detectors/validators';
 
 export interface EvidenceCalculationResult {
@@ -154,6 +158,7 @@ export function buildEvidenceModel(
   // 5. Provider-Specific Structural Validation
   let valRes;
   if (rule.id === 'aws-access-key') valRes = validateAwsAccessKey(rawSecret);
+  else if (rule.id === 'aws-secret-key') valRes = validateAwsSecretKey(rawSecret);
   else if (rule.id === 'stripe-secret-key') valRes = validateStripeKey(rawSecret);
   else if (rule.id === 'github-pat') valRes = validateGitHubToken(rawSecret);
   else if (rule.id === 'jwt-token') valRes = validateJwtToken(rawSecret);
@@ -162,7 +167,10 @@ export function buildEvidenceModel(
   else if (rule.id === 'anthropic-api-key') valRes = validateAnthropicKey(rawSecret);
   else if (rule.id === 'google-api-key') valRes = validateGoogleApiKey(rawSecret);
   else if (rule.id === 'slack-bot-token') valRes = validateSlackToken(rawSecret);
+  else if (rule.id === 'slack-webhook') valRes = validateSlackWebhook(rawSecret);
+  else if (rule.id === 'azure-storage-key') valRes = validateAzureStorageKey(rawSecret);
   else if (rule.id === 'huggingface-token') valRes = validateHuggingFaceToken(rawSecret);
+  else if (rule.id === 'private-key') valRes = validatePrivateKeyPem(rawSecret);
 
   if (valRes && valRes.isValid) {
     confidence = Math.min(100, confidence + valRes.confidenceBonus);

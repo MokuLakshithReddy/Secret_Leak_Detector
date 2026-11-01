@@ -74,8 +74,9 @@ const synth = (parts: string[]) => parts.join('');
 // --- 2. Masking & Cryptographic Fingerprinting ---
 console.log('\n--- 2. Masking & Cryptographic Fingerprinting ---');
 const maskedAws = redactSecret(synth(['AK', 'IA', '1234567890ABCDEF']));
-assert(maskedAws.startsWith('AKIA'), 'Redaction preserves cloud prefix');
-assert(maskedAws.endsWith('DEF'), 'Redaction preserves suffix');
+assert(maskedAws.startsWith('AK'), 'Redaction preserves cloud prefix');
+assert(maskedAws.endsWith('EF'), 'Redaction preserves suffix');
+assert(redactSecret('123456789012') === '••••••••', 'Secrets <= 12 characters are completely masked');
 assert(maskedAws.includes('•'), 'Redaction masks intermediate sensitive characters');
 const fp1 = generateFingerprint('secret-12345');
 const fp2 = generateFingerprint('secret-12345');
@@ -961,7 +962,7 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
         assert(!fs.existsSync(targetFile), 'Target file removed from disk');
 
         const delResult = await verifier.verifyFindingFix(fakeFinding);
-        assert(delResult.isResolved === true, 'Deleted file marked isResolved in working tree');
+        assert(delResult.isResolved === false, 'Deleted file with secret still in commit history is NOT marked resolved');
         assert(delResult.targetFileClean === true, 'Deleted file marked targetFileClean');
         assert(delResult.workingTreeClean === true, 'Deleted file marked workingTreeClean');
         assert(delResult.historyStatus === 'REMOVED_FROM_HEAD_STILL_IN_HISTORY', 'Deleted file correctly identifies secret STILL IN COMMIT HISTORY (got: ' + delResult.historyStatus + ')');

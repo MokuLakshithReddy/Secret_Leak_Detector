@@ -1,5 +1,7 @@
 import * as vscode from 'vscode';
 import * as crypto from 'crypto';
+import * as fs from 'fs';
+import * as path from 'path';
 import { SecretFinding } from '../core/types';
 import { RedactedFindingView, toRedactedFindingView } from './dashboardModel';
 export { RedactedFindingView, toRedactedFindingView };
@@ -65,11 +67,21 @@ export class DashboardPanel {
             vscode.commands.executeCommand('secret-leak-detector.installGitHook');
             return;
           case 'openFile':
-            if (message.file && message.line) {
-              const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(message.file));
-              await vscode.window.showTextDocument(doc, {
-                selection: new vscode.Range(message.line - 1, 0, message.line - 1, 0),
-              });
+            if (
+              typeof message.file === 'string' &&
+              message.file.trim().length > 0 &&
+              typeof message.line === 'number' &&
+              message.line >= 1
+            ) {
+              const targetPath = path.resolve(message.file);
+              if (fs.existsSync(targetPath)) {
+                try {
+                  const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(targetPath));
+                  await vscode.window.showTextDocument(doc, {
+                    selection: new vscode.Range(message.line - 1, 0, message.line - 1, 0),
+                  });
+                } catch {}
+              }
             }
             return;
         }

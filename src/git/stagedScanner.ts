@@ -92,35 +92,12 @@ export function scanStagedChangesSync(workspaceRoot: string): StagedScanResult {
         { cwd: gitRoot, encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 }
       );
     } catch (blobErr: any) {
-      allFindings.push({
-        type: 'SCAN_ERROR',
-        provider: 'Internal',
-        file: normalizedRelPath,
-        fullPath: path.join(gitRoot, relPath),
-        line: 0,
-        column: 0,
-        rawSecret: '',
-        redactedSecret: '',
-        confidence: 0,
-        risk: 'CRITICAL' as any,
-        signals: [`git show failed: ${blobErr.message || String(blobErr)}`],
-        evidence: { score: 0, items: [] },
-        riskAssessment: {
-          score: 100,
-          blastRadius: { level: 'UNKNOWN', summary: 'Staged blob unreadable — scan blocked' },
-          factors: [],
-        },
-        remediation: {
-          steps: [],
-          envVarName: '',
-          replacementCode: '',
-          envFileSnippet: '',
-          envExampleSnippet: '',
-          gitHistoryPurgeCommand: '',
-          diffPreview: '',
-        },
-      } as any);
-      continue;
+      return {
+        status: 'ERROR',
+        findings: allFindings,
+        error: `Could not read staged blob for '${normalizedRelPath}': ${blobErr.message || String(blobErr)}`,
+        filesScanned,
+      };
     }
 
     const addedLineNumbers = new Set<number>();
@@ -167,7 +144,7 @@ export function scanStagedChangesSync(workspaceRoot: string): StagedScanResult {
 }
 
 /**
- * Asynchronous version for the extension host to avoid freezing the main thread.
+ * Asynchronous staged scanner for use in VS Code extension (keeps UI thread non-blocking).
  */
 export async function scanStagedChangesAsync(workspaceRoot: string): Promise<StagedScanResult> {
   const gitRoot = await getGitTopLevelAsync(workspaceRoot);
@@ -216,35 +193,12 @@ export async function scanStagedChangesAsync(workspaceRoot: string): Promise<Sta
       );
       stagedBlob = blobOut;
     } catch (blobErr: any) {
-      allFindings.push({
-        type: 'SCAN_ERROR',
-        provider: 'Internal',
-        file: normalizedRelPath,
-        fullPath: path.join(gitRoot, relPath),
-        line: 0,
-        column: 0,
-        rawSecret: '',
-        redactedSecret: '',
-        confidence: 0,
-        risk: 'CRITICAL' as any,
-        signals: [`git show failed: ${blobErr.message || String(blobErr)}`],
-        evidence: { score: 0, items: [] },
-        riskAssessment: {
-          score: 100,
-          blastRadius: { level: 'UNKNOWN', summary: 'Staged blob unreadable — scan blocked' },
-          factors: [],
-        },
-        remediation: {
-          steps: [],
-          envVarName: '',
-          replacementCode: '',
-          envFileSnippet: '',
-          envExampleSnippet: '',
-          gitHistoryPurgeCommand: '',
-          diffPreview: '',
-        },
-      } as any);
-      continue;
+      return {
+        status: 'ERROR',
+        findings: allFindings,
+        error: `Could not read staged blob for '${normalizedRelPath}': ${blobErr.message || String(blobErr)}`,
+        filesScanned,
+      };
     }
 
     const addedLineNumbers = new Set<number>();

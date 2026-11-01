@@ -77,7 +77,7 @@ export class FindingsTreeProvider implements vscode.TreeDataProvider<TreeItem> {
           `- **Confidence:** ${f.confidence}%\n` +
           `- **Entropy:** ${f.entropy} bits/char\n` +
           `- **Secret:** \`${f.redactedSecret}\`\n\n` +
-          `*${f.remediation}*`
+          `*Suggested Fix: ${f.remediation?.replacementCode || f.remediation?.envVarName || 'Migrate to .env'}*`
         );
         item.iconPath = new vscode.ThemeIcon('key');
 

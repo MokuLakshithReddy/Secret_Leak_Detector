@@ -68,7 +68,7 @@ export class VerificationEngine {
 
     if (historyCheckFailed || !gitExposure || gitExposure.statusDescription.includes('Failed to query git log')) {
       return {
-        isResolved: true,
+        isResolved: false,
         targetFileClean: true,
         workingTreeClean: true,
         historyStatus: 'UNKNOWN',
@@ -82,7 +82,7 @@ export class VerificationEngine {
     if (gitExposure.isPresentInHistory) {
       const commitSha = gitExposure.introducedCommit?.sha ? gitExposure.introducedCommit.sha.substring(0, 7) : 'historical';
       return {
-        isResolved: true,
+        isResolved: false,
         targetFileClean: true,
         workingTreeClean: true,
         historyStatus: 'REMOVED_FROM_HEAD_STILL_IN_HISTORY',

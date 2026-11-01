@@ -186,3 +186,45 @@ export function validateHuggingFaceToken(token: string): ValidationResult {
   }
   return { isValid: false, confidenceBonus: 0, reason: 'Invalid Hugging Face token structure' };
 }
+
+/**
+ * Validates AWS Secret Access Key (40-char Base64 with high entropy).
+ */
+export function validateAwsSecretKey(key: string): ValidationResult {
+  if (/^[A-Za-z0-9/+=]{40}$/.test(key)) {
+    return { isValid: true, confidenceBonus: 12, reason: 'Valid 40-character AWS Secret Access Key Base64 format' };
+  }
+  return { isValid: false, confidenceBonus: 0, reason: 'Invalid AWS Secret Access Key format' };
+}
+
+/**
+ * Validates Slack Incoming Webhook URL.
+ */
+export function validateSlackWebhook(url: string): ValidationResult {
+  if (/^https:\/\/hooks\.slack\.com\/services\/T[A-Z0-9_]{8,12}\/B[A-Z0-9_]{8,12}\/[A-Za-z0-9_]{24}$/.test(url)) {
+    return { isValid: true, confidenceBonus: 15, reason: 'Valid Slack Incoming Webhook URL structure' };
+  }
+  return { isValid: false, confidenceBonus: 0, reason: 'Invalid Slack Incoming Webhook URL' };
+}
+
+/**
+ * Validates Azure Storage Account Shared Key (86-88 char Base64 ending with ==).
+ */
+export function validateAzureStorageKey(key: string): ValidationResult {
+  if (/^[A-Za-z0-9/+=]{86,88}==$/.test(key)) {
+    return { isValid: true, confidenceBonus: 12, reason: 'Valid Azure Storage Account Key Base64 format with padding' };
+  }
+  return { isValid: false, confidenceBonus: 0, reason: 'Invalid Azure Storage Key format' };
+}
+
+/**
+ * Validates Cryptographic Private Key (PEM format).
+ */
+export function validatePrivateKeyPem(pem: string): ValidationResult {
+  const headerMatch = /-----BEGIN (?:[A-Z0-9_-]+ )*PRIVATE KEY(?: BLOCK)?-----/.test(pem);
+  const footerMatch = /-----END (?:[A-Z0-9_-]+ )*PRIVATE KEY(?: BLOCK)?-----/.test(pem);
+  if (headerMatch && footerMatch) {
+    return { isValid: true, confidenceBonus: 20, reason: 'Valid Cryptographic Private Key PEM block container' };
+  }
+  return { isValid: false, confidenceBonus: 0, reason: 'Incomplete or malformed PEM key container' };
+}

@@ -174,10 +174,14 @@ export class GitHistoryEngine {
     if (!isGit) return [];
 
     try {
-      // Get recent commit diffs
+      // Get commit diffs across all branches, including merge commits
+      const gitArgs = ['log', '--all', '-p', '-U1'];
+      if (maxCommits > 0) {
+        gitArgs.push('-n', String(maxCommits));
+      }
       const { stdout } = await execFileAsync(
         'git',
-        ['log', '-n', String(maxCommits), '-p', '-U1', '--no-merges'],
+        gitArgs,
         { cwd: this.workspaceRoot, maxBuffer: 20 * 1024 * 1024 }
       );
 
