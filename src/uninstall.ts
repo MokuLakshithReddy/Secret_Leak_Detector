@@ -63,10 +63,38 @@ function getGlobalStorageCandidates(): string[] {
 }
 
 export function runUninstall(): void {
+  const home = process.env.HOME || process.env.USERPROFILE || '';
+
   // 1. Clean current working directory hook if any
   cleanHook(path.join(process.cwd(), '.git', 'hooks', 'pre-commit'));
 
-  // 2. Discover recorded repositories and hooks across globalStorage directories
+  // 2. Clean hooks recorded in user-global ~/.sld/installed-hooks.json
+  const sldRecord = path.join(home, '.sld', 'installed-hooks.json');
+  if (fs.existsSync(sldRecord)) {
+    try {
+      const hooks: string[] = JSON.parse(fs.readFileSync(sldRecord, 'utf8'));
+      if (Array.isArray(hooks)) {
+        for (const h of hooks) {
+          cleanHook(h);
+        }
+      }
+      fs.unlinkSync(sldRecord);
+    } catch {}
+  }
+
+  // 3. Clean hooks configured via global core.hooksPath if any
+  try {
+    const { execFileSync } = require('child_process');
+    const globalHooksPath = execFileSync('git', ['config', '--global', 'core.hooksPath'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    if (globalHooksPath) {
+      cleanHook(path.join(globalHooksPath, 'pre-commit'));
+    }
+  } catch {}
+
+  // 4. Discover recorded repositories and hooks across globalStorage directories
   const storageDirs = getGlobalStorageCandidates();
   for (const sDir of storageDirs) {
     if (!fs.existsSync(sDir)) continue;
@@ -84,7 +112,7 @@ export function runUninstall(): void {
       } catch {}
     }
 
-    // 3. Remove stable CLI binary from globalStorage so no frozen orphaned scanner survives
+    // Remove stable CLI binary from globalStorage so no frozen orphaned scanner survives
     const cliPath = path.join(sDir, 'cli.js');
     if (fs.existsSync(cliPath)) {
       try {

@@ -2,6 +2,7 @@
 import * as path from 'path';
 import * as fs from 'fs';
 import * as readline from 'readline';
+import { execFileSync } from 'child_process';
 import { scanFile, scanContent, buildScanResult } from '../core/scanner/scanner';
 import { GitHistoryEngine } from '../core/history/gitHistoryEngine';
 import { GitTimelineEngine } from '../core/history/gitTimeline';
@@ -136,10 +137,26 @@ async function runScan(cmdArgs: string[], cwd: string) {
   const isJson = cmdArgs.includes('--json');
   const isSarif = cmdArgs.includes('--sarif');
   const isStaged = cmdArgs.includes('--staged');
-  const ignoreSkipped =
-    cmdArgs.includes('--ignore-skipped') ||
-    cmdArgs.includes('--allow-skipped') ||
-    process.env.SLD_IGNORE_SKIPPED === '1';
+  const failOnSkipped = cmdArgs.includes('--no-ignore-skipped') || cmdArgs.includes('--fail-on-skipped');
+  let ignoreSkipped =
+    !failOnSkipped &&
+    (cmdArgs.includes('--ignore-skipped') ||
+      cmdArgs.includes('--allow-skipped') ||
+      process.env.SLD_IGNORE_SKIPPED === '1' ||
+      process.env.SLD_IGNORE_SKIPPED === 'true');
+
+  if (!ignoreSkipped && !failOnSkipped) {
+    try {
+      const gitConfigIgnore = execFileSync('git', ['config', '--bool', 'secret-leak-detector.ignore-skipped'], {
+        cwd,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim();
+      if (gitConfigIgnore === 'true') {
+        ignoreSkipped = true;
+      }
+    } catch {}
+  }
 
   const baselineIdx = cmdArgs.indexOf('--baseline');
   const baselineFile = baselineIdx !== -1 ? cmdArgs[baselineIdx + 1] : undefined;
@@ -193,7 +210,7 @@ async function runScan(cmdArgs: string[], cwd: string) {
     if (!isGit) {
       fail('Error: Not a Git repository.');
     }
-    const staged = scanStagedChangesSync(cwd, { disallowInlineIgnore, ignoreSkipped });
+    const staged = scanStagedChangesSync(cwd, { disallowInlineIgnore, ignoreSkipped: !failOnSkipped });
     findings.push(...staged.findings);
     filesScanned = staged.filesScanned || 0;
 
@@ -205,22 +222,22 @@ async function runScan(cmdArgs: string[], cwd: string) {
       for (const sf of staged.skippedFiles) {
         skippedFiles.push({ file: sf.path, reason: sf.reason });
       }
-      if (ignoreSkipped) {
+      if (failOnSkipped) {
         if (!isJson && !isSarif) {
-          console.warn(`\n⚠️  Skipped ${staged.skippedFiles.length} file(s) during staged scan (--ignore-skipped active):`);
-          for (const sf of staged.skippedFiles) {
-            console.warn(`   • ${sf.path}: ${sf.reason}`);
-          }
-        }
-      } else {
-        if (!isJson && !isSarif) {
-          console.error(`\n❌ Error: ${staged.skippedFiles.length} file(s) were skipped during staged scan (failing closed for safety):`);
+          console.error(`\n❌ Error: ${staged.skippedFiles.length} file(s) were skipped during staged scan (strict mode active):`);
           for (const sf of staged.skippedFiles) {
             console.error(`   • ${sf.path}: ${sf.reason}`);
           }
           console.error('Use --ignore-skipped to bypass this check if these files are intentionally uninspected.\n');
         }
         process.exit(2);
+      } else {
+        if (!isJson && !isSarif) {
+          console.warn(`\n⚠️  Skipped ${staged.skippedFiles.length} binary or oversized file(s) during staged scan:`);
+          for (const sf of staged.skippedFiles) {
+            console.warn(`   • ${sf.path}: ${sf.reason}`);
+          }
+        }
       }
     }
   } else {

@@ -163,14 +163,18 @@
           "default": [
             "**/node_modules/**",
             "**/.git/**",
-            "**/dist/**",
-            "**/build/**",
-            "**/*.min.js",
-            "**/*.lock",
+            "dist/**",
+            "build/**",
             "**/package-lock.json",
-            "**/pnpm-lock.yaml"
+            "**/pnpm-lock.yaml",
+            "**/yarn.lock"
           ],
           "description": "File patterns excluded from workspace secret scans."
+        },
+        "secretLeakDetector.ignoreSkipped": {
+          "type": "boolean",
+          "default": true,
+          "description": "Treat binary files and oversized files as warnings during Git staged scans instead of blocking commits."
         },
         "secretLeakDetector.failOn": {
           "type": "string",

@@ -360,7 +360,7 @@ export function scanStagedChangesSync(workspaceRoot: string, options?: ScannerOp
       };
     }
     if (size > MAX_STAGED_FILE_SIZE) {
-      if (options?.ignoreSkipped) {
+      if (options?.ignoreSkipped !== false) {
         skippedFiles.push({
           path: p,
           reason: `File size (${(size / (1024 * 1024)).toFixed(1)}MB) exceeds 5MB limit`,
@@ -596,7 +596,7 @@ export async function scanStagedChangesAsync(workspaceRoot: string, options?: Sc
       };
     }
     if (size > MAX_STAGED_FILE_SIZE) {
-      if (options?.ignoreSkipped) {
+      if (options?.ignoreSkipped !== false) {
         skippedFiles.push({
           path: p,
           reason: `File size (${(size / (1024 * 1024)).toFixed(1)}MB) exceeds 5MB limit`,

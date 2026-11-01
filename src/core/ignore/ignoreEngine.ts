@@ -7,8 +7,12 @@ export const BINARY_EXTENSIONS = new Set([
   '.exe', '.dll', '.so', '.dylib', '.bin', '.iso', '.dmg',
   '.woff', '.woff2', '.ttf', '.eot', '.otf',
   '.mp3', '.mp4', '.avi', '.mov', '.wmv', '.flv', '.mkv',
-  '.pyc', '.pyo', '.class', '.jar', '.war',
+  '.pyc', '.pyo', '.class', '.jar', '.war', '.ear', '.aar',
   '.sqlite', '.db', '.dat',
+  // Machine learning models, tensor formats, and binary weights
+  '.wasm', '.pkl', '.pickle', '.npy', '.npz', '.parquet', '.onnx',
+  '.pb', '.h5', '.hdf5', '.tflite', '.safetensors', '.pt', '.pth',
+  '.o', '.obj', '.lib', '.a',
 ]);
 
 export const DEFAULT_IGNORE_PATTERNS = [
@@ -16,18 +20,16 @@ export const DEFAULT_IGNORE_PATTERNS = [
   'node_modules/**',
   '**/.git/**',
   '.git/**',
-  '**/dist/**',
   'dist/**',
-  '**/build/**',
   'build/**',
-  '**/*.min.js',
-  '*.min.js',
-  '**/*.lock',
-  '*.lock',
-  '**/package-lock.json',
   'package-lock.json',
-  '**/pnpm-lock.yaml',
+  '**/package-lock.json',
   'pnpm-lock.yaml',
+  '**/pnpm-lock.yaml',
+  'yarn.lock',
+  '**/yarn.lock',
+  'bun.lockb',
+  '**/bun.lockb',
 ];
 
 const ignorePatternsCache = new Map<string, string[]>();
@@ -118,8 +120,9 @@ export function globToRegex(pattern: string): RegExp {
     p = p.slice(0, -1);
   }
 
-  // Strip leading slash if any
-  if (p.startsWith('/')) {
+  // Track if pattern is anchored to root
+  const hadLeadingSlash = p.startsWith('/');
+  if (hadLeadingSlash) {
     p = p.slice(1);
   }
 
@@ -154,10 +157,13 @@ export function globToRegex(pattern: string): RegExp {
   }
 
   if (matchDir) {
+    if (hadLeadingSlash || p.includes('/')) {
+      return new RegExp('^' + regex + '(/.*)?$');
+    }
     return new RegExp('(?:^|/)' + regex + '(/.*)?$');
   }
 
-  if (!p.includes('/')) {
+  if (!p.includes('/') && !hadLeadingSlash) {
     return new RegExp('(?:^|/)' + regex + '$');
   }
 
@@ -175,9 +181,18 @@ export function matchesIgnorePattern(relPath: string, pattern: string): boolean 
   // Exact relative path match
   if (normRel === normPat) return true;
 
-  // Directory prefix match: e.g. "dist" matches "dist/bundle.js"
-  const dirPat = normPat.endsWith('/') ? normPat.slice(0, -1) : normPat;
-  if (normRel === dirPat || normRel.startsWith(dirPat + '/')) return true;
+  // Directory prefix match: e.g. "dist" or "dist/" matches "dist/bundle.js"
+  const isAnchored = normPat.startsWith('/');
+  const cleanPat = isAnchored ? normPat.slice(1) : normPat;
+  const dirPat = cleanPat.endsWith('/') ? cleanPat.slice(0, -1) : cleanPat;
+
+  if (!cleanPat.includes('*')) {
+    if (isAnchored || cleanPat.includes('/')) {
+      if (normRel === dirPat || normRel.startsWith(dirPat + '/')) return true;
+    } else {
+      if (normRel === dirPat || normRel.startsWith(dirPat + '/') || normRel.includes('/' + dirPat + '/')) return true;
+    }
+  }
 
   try {
     const re = globToRegex(normPat);

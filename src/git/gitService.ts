@@ -1,8 +1,10 @@
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { SecretFinding, Risk } from '../core/types';
+import { ScannerOptions } from '../core/scanner/scanner';
 import {
   scanStagedChangesAsync,
   scanStagedChangesSync,
@@ -16,6 +18,42 @@ const execFileAsync = promisify(execFile);
 
 export type GitScanStatus = 'CLEAN' | 'FINDINGS' | 'ERROR';
 export { StagedScanResult, SkippedFile };
+
+export function recordInstalledHook(hookPath: string): void {
+  try {
+    const sldDir = path.join(os.homedir(), '.sld');
+    if (!fs.existsSync(sldDir)) {
+      fs.mkdirSync(sldDir, { recursive: true });
+    }
+    const registryPath = path.join(sldDir, 'installed-hooks.json');
+    let hooks: string[] = [];
+    if (fs.existsSync(registryPath)) {
+      try {
+        const parsed = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
+        if (Array.isArray(parsed)) hooks = parsed.filter((p) => typeof p === 'string');
+      } catch {}
+    }
+    const norm = path.resolve(hookPath);
+    if (!hooks.includes(norm)) {
+      hooks.push(norm);
+      fs.writeFileSync(registryPath, JSON.stringify(hooks, null, 2), 'utf8');
+    }
+  } catch {}
+}
+
+export function unrecordInstalledHook(hookPath: string): void {
+  try {
+    const registryPath = path.join(os.homedir(), '.sld', 'installed-hooks.json');
+    if (fs.existsSync(registryPath)) {
+      const parsed = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
+      if (Array.isArray(parsed)) {
+        const norm = path.resolve(hookPath);
+        const updated = parsed.filter((p) => typeof p === 'string' && path.resolve(p) !== norm);
+        fs.writeFileSync(registryPath, JSON.stringify(updated, null, 2), 'utf8');
+      }
+    }
+  } catch {}
+}
 
 export class GitService {
   private workspaceRoot: string;
@@ -71,15 +109,15 @@ export class GitService {
    *
    * Uses non-blocking async execution in the extension host.
    */
-  public async scanStagedChanges(): Promise<StagedScanResult> {
-    return scanStagedChangesAsync(this.workspaceRoot);
+  public async scanStagedChanges(options?: ScannerOptions): Promise<StagedScanResult> {
+    return scanStagedChangesAsync(this.workspaceRoot, options);
   }
 
   /**
    * Synchronous staged changes scanner for CLI scripts.
    */
-  public scanStagedChangesSync(): StagedScanResult {
-    return scanStagedChangesSync(this.workspaceRoot);
+  public scanStagedChangesSync(options?: ScannerOptions): StagedScanResult {
+    return scanStagedChangesSync(this.workspaceRoot, options);
   }
 
   public formatTerminalBlockedMessage(findings: SecretFinding[]): string {
@@ -228,6 +266,7 @@ After fixing:
 
     try {
       fs.writeFileSync(hookPath, hookContent, { mode: 0o755 });
+      recordInstalledHook(hookPath);
       return { success: true, message: `Pre-commit hook successfully installed to ${hookPath}` };
     } catch (err) {
       return { success: false, message: `Failed to write hook file: ${err}` };
@@ -311,6 +350,7 @@ After fixing:
           fs.copyFileSync(resolvedBackup, hookPath);
           fs.unlinkSync(resolvedBackup);
           fs.unlinkSync(latestBackupMarkerPath);
+          unrecordInstalledHook(hookPath);
           return { success: true, message: 'Uninstalled SLD hook and restored original pre-commit hook.' };
         } else {
           // Untrusted or missing backup reference; safely remove marker
@@ -321,6 +361,7 @@ After fixing:
       }
       // No backup — safely remove the SLD hook
       fs.unlinkSync(hookPath);
+      unrecordInstalledHook(hookPath);
       return { success: true, message: 'Removed Secret Leak Detector pre-commit hook.' };
     } catch (err: any) {
       return { success: false, message: `Failed to uninstall hook: ${err.message}` };

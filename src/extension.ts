@@ -305,6 +305,7 @@ export function activate(context: vscode.ExtensionContext) {
 
       const blockCommits = getConfig().get<boolean>('blockGitCommits', true);
       const configuredFailOn = resolveFailOn(getConfig().get<string>('failOn', DEFAULT_FAIL_ON));
+      const ignoreSkipped = getConfig().get<boolean>('ignoreSkipped', true);
 
       const folders = vscode.workspace.workspaceFolders || [];
       const gitRoots = new Set<string>();
@@ -324,7 +325,7 @@ export function activate(context: vscode.ExtensionContext) {
 
       for (const root of gitRoots) {
         const gs = new GitService(root, (msg) => outputChannel.appendLine(msg));
-        const scanResult = await gs.scanStagedChanges();
+        const scanResult = await gs.scanStagedChanges({ ignoreSkipped });
         if (scanResult.status === 'ERROR') {
           errors.push(`${root}: ${scanResult.error}`);
         }
@@ -396,6 +397,19 @@ export function activate(context: vscode.ExtensionContext) {
       const configuredFailOn = resolveFailOn(getConfig().get<string>('failOn', DEFAULT_FAIL_ON));
       const result = await gitService.installPreCommitHook(activeCliPath, process.execPath, blockCommits, configuredFailOn);
       if (result.success) {
+        try {
+          const hooksRecordPath = path.join(context.globalStorageUri.fsPath, 'installed-hooks.json');
+          const hookFile = await gitService.getHookPath();
+          let existingHooks: string[] = [];
+          if (fs.existsSync(hooksRecordPath)) {
+            const parsed = JSON.parse(fs.readFileSync(hooksRecordPath, 'utf8'));
+            if (Array.isArray(parsed)) existingHooks = parsed.filter((p) => typeof p === 'string');
+          }
+          if (!existingHooks.includes(hookFile)) {
+            existingHooks.push(hookFile);
+            fs.writeFileSync(hooksRecordPath, JSON.stringify(existingHooks, null, 2), 'utf8');
+          }
+        } catch {}
         vscode.window.showInformationMessage(`🛡️ ${result.message}`);
       } else {
         vscode.window.showErrorMessage(`Failed to install hook: ${result.message}`);
@@ -408,6 +422,17 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('secret-leak-detector.uninstallGitHook', async () => {
       const result = await gitService.uninstallPreCommitHook();
       if (result.success) {
+        try {
+          const hooksRecordPath = path.join(context.globalStorageUri.fsPath, 'installed-hooks.json');
+          const hookFile = await gitService.getHookPath();
+          if (fs.existsSync(hooksRecordPath)) {
+            const parsed = JSON.parse(fs.readFileSync(hooksRecordPath, 'utf8'));
+            if (Array.isArray(parsed)) {
+              const updated = parsed.filter((p: string) => p !== hookFile);
+              fs.writeFileSync(hooksRecordPath, JSON.stringify(updated, null, 2), 'utf8');
+            }
+          }
+        } catch {}
         vscode.window.showInformationMessage(`🛡️ ${result.message}`);
       } else {
         vscode.window.showErrorMessage(`Failed to uninstall hook: ${result.message}`);

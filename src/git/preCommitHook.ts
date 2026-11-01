@@ -75,8 +75,8 @@ else
   echo "   Pinned CLI ($PINNED_CLI) not found and no global CLI available."
   echo "   Staged changes could not be verified secret-free, so the commit was refused."
   echo ""
-  echo "   Recovery guidance (if Secret Leak Detector was uninstalled):"
-  echo "     rm .git/hooks/pre-commit"
+  echo "   To remove this hook (if Secret Leak Detector was uninstalled):"
+  echo "     rm \"\$(git rev-parse --git-path hooks/pre-commit)\""
   echo "     (or restore your original hook from .git/hooks/pre-commit.sld-backup.*)"
   echo "   Or reinstall Secret Leak Detector in VS Code."
   exit 2
@@ -98,7 +98,9 @@ else
   echo ""
   echo "❌ COMMIT BLOCKED (fail-closed): Secret Leak Detector scanner is unavailable."
   echo "   Staged changes could not be verified secret-free, so the commit was refused."
-  echo "   Install Node.js (>=18) or the 'secret-leak-detector' CLI, then retry."
+  echo "   To remove this hook (if Secret Leak Detector was uninstalled):"
+  echo "     rm \"\$(git rev-parse --git-path hooks/pre-commit)\""
+  echo "   Or install Node.js (>=18) or the 'secret-leak-detector' CLI, then retry."
   exit 2
 fi`;
 
@@ -149,6 +151,9 @@ elif [ "$SCAN_STATUS" -eq 127 ]; then
 elif [ "$SCAN_STATUS" -ne 0 ]; then
   echo ""
   echo "❌ COMMIT BLOCKED (fail-closed): Scanner exited with error ($SCAN_STATUS)."
+  echo "   If a file could not be read or inspected, you can bypass with:"
+  echo "     SLD_IGNORE_SKIPPED=1 git commit"
+  echo "     or: git config secret-leak-detector.ignore-skipped true"
   exit 2
 fi
 

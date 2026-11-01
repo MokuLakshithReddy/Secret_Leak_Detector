@@ -301,6 +301,35 @@ export async function runGitHookIntegrationTests(): Promise<void> {
     console.log('');
   }
 
+  // ── Test group 11: Binary commit allowed & scoped src/dist/ scan ──────────
+  if (bash) {
+    console.log('── Test group 11: Binary commit allowed & scoped src/dist/ scan ──');
+    const group11Repo = createTempRepo();
+    installHook(group11Repo, cliPath);
+
+    // 1. Commit containing only binary file (logo.png) + clean file succeeds
+    const pngHeader = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00]);
+    fs.writeFileSync(path.join(group11Repo, 'logo.png'), pngHeader);
+    fs.writeFileSync(path.join(group11Repo, 'doc.txt'), 'clean document\n', 'utf8');
+    execFileSync('git', ['add', 'logo.png', 'doc.txt'], { cwd: group11Repo, stdio: 'pipe' });
+
+    const binCommit = tryCommit(group11Repo, 'add binary logo');
+    assert(binCommit.status === 0, 'Binary logo.png commit allowed (warning only, not blocked)');
+
+    // 2. Commit containing secret in src/dist/token.ts is BLOCKED (scoped exclude does not skip src/dist)
+    const srcDistDir = path.join(group11Repo, 'src', 'dist');
+    fs.mkdirSync(srcDistDir, { recursive: true });
+    const awsKey = synth(['AK', 'IA', '1234567890SRCSEC']);
+    fs.writeFileSync(path.join(srcDistDir, 'token.ts'), `export const apiKey = "${awsKey}";\n`, 'utf8');
+    execFileSync('git', ['add', 'src/dist/token.ts'], { cwd: group11Repo, stdio: 'pipe' });
+
+    const srcDistCommit = tryCommit(group11Repo, 'leak in src/dist');
+    assert(srcDistCommit.status !== 0, 'Secret in src/dist/token.ts blocked by hook (not skipped by top-level dist/** pattern)');
+
+    try { fs.rmSync(group11Repo, { recursive: true, force: true }); } catch {}
+    console.log('');
+  }
+
   // ── Cleanup ───────────────────────────────────────────────────────────────
   try { fs.rmSync(repoDir, { recursive: true, force: true }); } catch { /* ignore */ }
 

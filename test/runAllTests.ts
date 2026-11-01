@@ -1406,6 +1406,65 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
     // Test 4: Version utility returns matching 1.0.3 version
     const { getPackageVersion } = require('../src/core/version');
     assert(getPackageVersion() === '1.0.3', `getPackageVersion returns 1.0.3 (got ${getPackageVersion()})`);
+
+    // --- 31. Binary and Oversize Tolerant Staged Scans, Scoped Excludes & Hook Registry ---
+    console.log('\n--- 31. Binary and Oversize Tolerant Staged Scans, Scoped Excludes & Hook Registry ---');
+    {
+      const { BINARY_EXTENSIONS, DEFAULT_IGNORE_PATTERNS, matchesIgnorePattern: matchesPat } = require('../src/core/ignore/ignoreEngine');
+      const { recordInstalledHook, unrecordInstalledHook } = require('../src/git/gitService');
+      const { cleanHook } = require('../src/uninstall');
+
+      // 1. Expanded binary extensions
+      assert(BINARY_EXTENSIONS.has('.wasm'), 'Binary extensions includes .wasm');
+      assert(BINARY_EXTENSIONS.has('.pkl'), 'Binary extensions includes .pkl');
+      assert(BINARY_EXTENSIONS.has('.npy'), 'Binary extensions includes .npy');
+      assert(BINARY_EXTENSIONS.has('.parquet'), 'Binary extensions includes .parquet');
+      assert(BINARY_EXTENSIONS.has('.onnx'), 'Binary extensions includes .onnx');
+      assert(BINARY_EXTENSIONS.has('.safetensors'), 'Binary extensions includes .safetensors');
+
+      // 2. Scoped default excludes
+      assert(!DEFAULT_IGNORE_PATTERNS.includes('**/dist/**'), 'DEFAULT_IGNORE_PATTERNS does not contain **/dist/**');
+      assert(!DEFAULT_IGNORE_PATTERNS.includes('**/build/**'), 'DEFAULT_IGNORE_PATTERNS does not contain **/build/**');
+      assert(!DEFAULT_IGNORE_PATTERNS.includes('**/*.min.js'), 'DEFAULT_IGNORE_PATTERNS does not contain **/*.min.js');
+      assert(!DEFAULT_IGNORE_PATTERNS.includes('*.min.js'), 'DEFAULT_IGNORE_PATTERNS does not contain *.min.js');
+      assert(!DEFAULT_IGNORE_PATTERNS.includes('**/*.lock'), 'DEFAULT_IGNORE_PATTERNS does not contain **/*.lock');
+      assert(!DEFAULT_IGNORE_PATTERNS.includes('*.lock'), 'DEFAULT_IGNORE_PATTERNS does not contain *.lock');
+
+      assert(matchesPat('dist/bundle.js', 'dist/**') === true, 'dist/** matches top-level dist/bundle.js');
+      assert(matchesPat('build/output.js', 'build/**') === true, 'build/** matches top-level build/output.js');
+      assert(matchesPat('src/dist/token.ts', 'dist/**') === false, 'dist/** does NOT match src/dist/token.ts');
+      assert(matchesPat('lib/build/config.ts', 'build/**') === false, 'build/** does NOT match lib/build/config.ts');
+      assert(DEFAULT_IGNORE_PATTERNS.some((p: string) => matchesPat('secrets.lock', p)) === false, 'secrets.lock is NOT excluded by default');
+      assert(DEFAULT_IGNORE_PATTERNS.some((p: string) => matchesPat('app.min.js', p)) === false, 'app.min.js is NOT excluded by default');
+      assert(DEFAULT_IGNORE_PATTERNS.some((p: string) => matchesPat('package-lock.json', p)) === true, 'package-lock.json IS excluded by default');
+
+      // 3. Staged binary file scan tolerates binary assets without ERROR status
+      const binScratch = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-staged-bin-'));
+      cp.execSync('git init', { cwd: binScratch, stdio: 'ignore' });
+      cp.execSync('git config user.name "SLD Test"', { cwd: binScratch, stdio: 'ignore' });
+      cp.execSync('git config user.email "sld@test.com"', { cwd: binScratch, stdio: 'ignore' });
+      // Write a dummy PNG with valid PNG magic bytes
+      const pngHeader = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00]);
+      fs.writeFileSync(path.join(binScratch, 'logo.png'), pngHeader);
+      fs.writeFileSync(path.join(binScratch, 'README.md'), '# Clean Readme\n', 'utf8');
+      cp.execSync('git add logo.png README.md', { cwd: binScratch, stdio: 'ignore' });
+
+      const binStagedRes = scanStagedChangesSync(binScratch);
+      assert(binStagedRes.status === 'CLEAN', `Staging binary file returns CLEAN (got ${binStagedRes.status})`);
+      assert(binStagedRes.skippedFiles && binStagedRes.skippedFiles.length === 1, 'Binary file recorded in skippedFiles');
+      assert(binStagedRes.skippedFiles![0].path === 'logo.png', 'Skipped file path is logo.png');
+      assert(binStagedRes.findings.length === 0, 'No false findings on clean staged files with binary');
+
+      // Clean up bin scratch
+      try { fs.rmSync(binScratch, { recursive: true, force: true }); } catch {}
+
+      // 4. Hook registry functions
+      const testHookPath = path.join(os.tmpdir(), 'test-repo', '.git', 'hooks', 'pre-commit');
+      recordInstalledHook(testHookPath);
+      const sldRegistry = path.join(os.homedir(), '.sld', 'installed-hooks.json');
+      assert(fs.existsSync(sldRegistry), 'Installed hook recorded in ~/.sld/installed-hooks.json');
+      unrecordInstalledHook(testHookPath);
+    }
   }
 
   console.log('\n============================================================');
