@@ -78,10 +78,22 @@ export class DashboardPanel {
               );
               if (!matchingFinding) return;
 
-              let targetPath = matchingFinding.fullPath;
+              let targetPath = matchingFinding.fullPath || matchingFinding.file;
               if (!path.isAbsolute(targetPath)) {
-                const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-                targetPath = root ? path.resolve(root, targetPath) : path.resolve(targetPath);
+                let resolved = false;
+                // Search across all workspace folders and Git roots
+                for (const folder of vscode.workspace.workspaceFolders || []) {
+                  const cand = path.resolve(folder.uri.fsPath, targetPath);
+                  if (fs.existsSync(cand)) {
+                    targetPath = cand;
+                    resolved = true;
+                    break;
+                  }
+                }
+                if (!resolved) {
+                  const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || process.cwd();
+                  targetPath = path.resolve(root, targetPath);
+                }
               }
 
               if (fs.existsSync(targetPath)) {

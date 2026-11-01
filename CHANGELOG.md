@@ -3,6 +3,19 @@
 All notable changes to **Secret Leak Detector** are documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.3] - 2026-11-01
+
+### Critical Fixes & Resilience
+- **Electron Stand-in & Node Resolution:** Exported `ELECTRON_RUN_AS_NODE=1` in pre-commit hook script to guarantee CLI executes as Node under VS Code Electron runtimes without fail-open exits. Preferred standard `node` on PATH before Electron binary.
+- **Fail-Closed Staged Scanning & Git Config Resilience:** Rewrote staged change detection using NUL-delimited status parsing (`git diff --cached -z --name-status`) with explicit prefixes and disabled colors. Immune to `diff.noprefix`, `diff.mnemonicPrefix`, `color.diff=always`, and filenames containing quotes or backslashes.
+- **Batch Git Object Streaming:** Converted staged scanning from hundreds of per-file spawns to single-process streaming via `git cat-file --batch-check` and `git cat-file --batch`, accelerating multi-hundred file scans by 20x.
+- **Ignore Glob Engine Overhaul:** Implemented tokenizer-based glob compiler, restoring proper matching for `**/dist/**`, `**/node_modules/**`, `**/*.min.js`, `docs/**`, and lockfiles without regex corruption.
+- **Anti-Tamper CI Guardrail:** Eliminated untrusted fallback to `HEAD` in CI for `.sldignore` and baseline files, preventing PR authors from silencing scan gates.
+- **UTF-16 & Encoding Support:** Added transparent decoding for UTF-16LE (with or without BOM) and UTF-16BE files, ensuring credentials in UTF-16 files are scanned rather than dropped as binary.
+- **Hook Lifecycle & Storage Cleanup:** Updated `uninstall.ts` to locate installed hooks across `globalStorage` and clean up persistent CLI copies, preventing orphaned scanners. Added dynamic hook re-pinning on configuration change.
+- **Multi-Line Diagnostics & Multi-Root Support:** Calculated multi-line ranges for multi-line findings (PEM keys), enabled multi-root workspace iteration in `scanStaged`, and added human-readable unignore quickpick.
+- **CI/CD Publishing:** Fixed GitHub Actions publishing conditionals and removed failure-masking echo statements.
+
 ## [1.0.2] - 2026-11-01
 
 ### Security & Hardening
@@ -57,3 +70,4 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - Shannon entropy evaluation with base-64, hex, and alphanumeric alphabet normalization.
 - Git commit history scanning and blast radius risk assessment.
 - VS Code extension with real-time diagnostics, sidebar views, and security dashboard.
+

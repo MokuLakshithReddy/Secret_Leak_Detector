@@ -1178,7 +1178,79 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
     // Test 4: CLI --version
     const cliPath = path.join(process.cwd(), 'dist', 'cli.js');
     const verRes = cp.spawnSync(process.execPath, [cliPath, '--version'], { encoding: 'utf8' });
-    assert(verRes.stdout.trim() === '1.0.2', 'CLI --version prints valid semantic version (got: ' + verRes.stdout.trim() + ')');
+    assert(verRes.stdout.trim() === '1.0.3', 'CLI --version prints valid semantic version (got: ' + verRes.stdout.trim() + ')');
+  }
+
+  // --- 28. Robust Git Diff Parsing, Glob Matching, UTF-16, & Hook Lifecycle ---
+  console.log('\n--- 28. Robust Git Diff Parsing, Glob Matching, UTF-16, & Hook Lifecycle ---');
+  {
+    const { matchesIgnorePattern } = require('../src/core/ignore/ignoreEngine');
+    const { decodeTextBuffer, parseNameStatusZ } = require('../src/git/stagedScanner');
+    const { buildPreCommitHook } = require('../src/git/preCommitHook');
+    const { analyzeAstContext } = require('../src/core/context/astAnalyzer');
+
+    // Test 1: Ignore glob matching on all typical patterns
+    const globCases = [
+      ['dist/bundle.js', '**/dist/**', true],
+      ['src/dist/bundle.js', '**/dist/**', true],
+      ['node_modules/foo/index.js', '**/node_modules/**', true],
+      ['app.min.js', '**/*.min.js', true],
+      ['src/app.min.js', '**/*.min.js', true],
+      ['docs/guide.md', 'docs/**', true],
+      ['docs/sub/guide.md', 'docs/**', true],
+      ['package-lock.json', '**/package-lock.json', true],
+      ['sub/package-lock.json', '**/package-lock.json', true],
+      ['package-lock.json', 'package-lock.json', true],
+      ['sub/package-lock.json', 'package-lock.json', true],
+      ['dist/index.js', 'dist/', true],
+      ['build/index.js', 'build/', true],
+      ['src/index.ts', 'dist/', false],
+    ];
+
+    for (const [file, pat, expected] of globCases) {
+      const match = matchesIgnorePattern(file, pat);
+      assert(match === expected, `Glob '${pat}' matching '${file}' expected ${expected}, got ${match}`);
+    }
+
+    // Test 2: UTF-16LE text decoding without BOM
+    const fakeAwsKey = synth(['AK', 'IA', '1234567890ABCDEF']);
+    const utf16leBuf = Buffer.from(`AWS_ACCESS_KEY_ID="${fakeAwsKey}"\n`, 'utf16le');
+    const decodedText = decodeTextBuffer(utf16leBuf);
+    assert(decodedText !== null, 'UTF-16LE text buffer successfully decoded without binary false rejection');
+    const utf16Findings = scanContent(decodedText || '', 'config.env');
+    assert(utf16Findings.length >= 1, 'Detected credentials inside decoded UTF-16LE file');
+
+    // Test 3: NUL-delimited name-status parsing with special chars
+    const rawTokens = Buffer.from(
+      'M\0file with spaces.ts\0' +
+      'A\0file"with"quotes.ts\0' +
+      'M\0file\\with\\backslashes.ts\0' +
+      'R100\0old_name.ts\0new_name.ts\0' +
+      'D\0deleted_file.ts\0'
+    );
+    const parsedEntries = parseNameStatusZ(rawTokens);
+    assert(parsedEntries.length === 5, 'parseNameStatusZ parsed all 5 entries accurately');
+    assert(parsedEntries[1].path === 'file"with"quotes.ts', 'Quotes in filename preserved without unescaping corruption');
+    assert(parsedEntries[2].path === 'file/with/backslashes.ts', 'Backslashes normalized cleanly');
+    assert(parsedEntries[3].status === 'R' && parsedEntries[3].oldPath === 'old_name.ts', 'Scored rename parsed with oldPath');
+
+    // Test 4: Hook generation includes ELECTRON_RUN_AS_NODE and node fallback
+    const hookScript = buildPreCommitHook('HIGH', '/path/to/cli.js', '/path/to/Code.exe', true);
+    assert(hookScript.includes('ELECTRON_RUN_AS_NODE=1'), 'Hook script exports ELECTRON_RUN_AS_NODE=1 for Electron stand-in');
+    assert(hookScript.includes("command -v node >/dev/null 2>&1"), 'Hook script checks system node on PATH');
+
+    // Test 5: Zero-dependency Lexical AST fallback
+    const fallbackLines = [
+      'const apiKey = process.env.API_KEY || "fallback_token_here";',
+      'logger.info("Logging sensitive call", apiKey);',
+      'const config = { auth: { stripeKey: "sk_test_123" } };',
+    ];
+    const astEnvFallback = analyzeAstContext(fallbackLines, 0);
+    assert(astEnvFallback.isEnvFallback === true, 'Lexical AST identifies env fallback assignment');
+    const astLogging = analyzeAstContext(fallbackLines, 1);
+    assert(astLogging.isLoggingCall === true, 'Lexical AST identifies logging call');
+    const astProp = analyzeAstContext(fallbackLines, 2);
+    assert(astProp.isSensitiveProperty === true, 'Lexical AST identifies sensitive property');
   }
 
   console.log('\n============================================================');

@@ -23,8 +23,25 @@ import {
 const args = process.argv.slice(2);
 const command = args[0] || 'help';
 
+function getPackageVersion(): string {
+  try {
+    const candidates = [
+      path.resolve(__dirname, '..', 'package.json'),
+      path.resolve(__dirname, 'package.json'),
+      path.resolve(process.cwd(), 'package.json'),
+    ];
+    for (const cand of candidates) {
+      if (fs.existsSync(cand)) {
+        const pkg = JSON.parse(fs.readFileSync(cand, 'utf8'));
+        if (pkg.name === 'secret-leak-detector' && pkg.version) return pkg.version;
+      }
+    }
+  } catch {}
+  return '1.0.2';
+}
+
 if (command === '--version' || command === '-v' || args.includes('--version') || args.includes('-v')) {
-  console.log('1.0.2');
+  console.log(getPackageVersion());
   process.exit(0);
 }
 
@@ -175,6 +192,11 @@ async function runScan(cmdArgs: string[], cwd: string) {
   const startTime = Date.now();
   let findings: SecretFinding[] = [];
   let filesScanned = 0;
+  const skippedFiles: { file: string; reason: string }[] = [];
+  const disallowInlineIgnore =
+    args.includes('--no-inline-ignore') ||
+    args.includes('--disallow-inline-ignore') ||
+    process.env.SLD_DISALLOW_INLINE_IGNORE === '1';
 
   if (isStaged) {
     const gitEngine = new GitHistoryEngine(cwd);
@@ -182,12 +204,24 @@ async function runScan(cmdArgs: string[], cwd: string) {
     if (!isGit) {
       fail('Error: Not a Git repository.');
     }
-    const staged = scanStagedChangesSync(cwd);
+    const staged = scanStagedChangesSync(cwd, { disallowInlineIgnore });
     findings.push(...staged.findings);
     filesScanned = staged.filesScanned || 0;
 
     if (staged.status === 'ERROR') {
       fail(`Git staged scan error: ${staged.error}`);
+    }
+
+    if (staged.skippedFiles && staged.skippedFiles.length > 0) {
+      for (const sf of staged.skippedFiles) {
+        skippedFiles.push({ file: sf.path, reason: sf.reason });
+      }
+      if (!isJson && !isSarif) {
+        console.warn(`\n⚠️  Skipped ${staged.skippedFiles.length} file(s) during staged scan:`);
+        for (const sf of staged.skippedFiles) {
+          console.warn(`   • ${sf.path}: ${sf.reason}`);
+        }
+      }
     }
   } else {
     // Scan directory or single file
@@ -201,11 +235,11 @@ async function runScan(cmdArgs: string[], cwd: string) {
       console.log(`ℹ️  Excluded ${excludedFiles.length} file(s) matching patterns: ${distinctPatterns.join(', ')}`);
     }
 
-    const skippedFiles: { file: string; reason: string }[] = [];
     for (const file of filesToScan) {
       findings.push(
         ...scanFile(file, {
           workspaceRoot: cwd,
+          disallowInlineIgnore,
           onSkippedFile: (skippedPath: string, reason: string) => {
             skippedFiles.push({ file: skippedPath, reason });
           },
@@ -277,8 +311,9 @@ async function runScan(cmdArgs: string[], cwd: string) {
         },
       };
     });
-    const scanResult = buildScanResult(safeFindings as SecretFinding[], filesScanned, durationMs);
+    const scanResult: any = buildScanResult(safeFindings as SecretFinding[], filesScanned, durationMs);
     if (baselineStats) scanResult.baselineStats = baselineStats;
+    if (skippedFiles.length > 0) scanResult.skippedFiles = skippedFiles;
     console.log(JSON.stringify(scanResult, null, 2));
     processExitCheck(findings, failOn);
     return;
@@ -298,8 +333,16 @@ async function runScan(cmdArgs: string[], cwd: string) {
     console.log(`Resolved:         ${baselineStats.resolved}`);
   }
 
+  if (skippedFiles.length > 0) {
+    console.log(`Skipped Files:    ${skippedFiles.length}`);
+  }
+
   if (findings.length === 0) {
-    console.log('\n✅ ALL CLEAN! No secrets or credentials detected.');
+    if (skippedFiles.length > 0) {
+      console.log(`\n⚠️  SCAN COMPLETED WITH WARNINGS: 0 secrets detected in ${filesScanned} scanned file(s), but ${skippedFiles.length} file(s) were skipped (binary or oversized).`);
+    } else {
+      console.log('\n✅ ALL CLEAN! No secrets or credentials detected.');
+    }
     console.log('============================================================\n');
     process.exit(0);
   }

@@ -30,11 +30,15 @@ export function buildPreCommitHook(
   const escapedNode = pinnedNode ? pinnedNode.replace(/'/g, `'\\''`) : '';
 
   const nodeResolution = escapedNode
-    ? `# Resolved Node.js executable
-if [ -x '${escapedNode}' ]; then
-  NODE_CMD='${escapedNode}'
-elif command -v node >/dev/null 2>&1; then
+    ? `# Resolved Node.js executable (prefer system node on PATH, fallback to pinned runtime)
+if command -v node >/dev/null 2>&1; then
   NODE_CMD='node'
+elif [ -x '${escapedNode}' ]; then
+  NODE_CMD='${escapedNode}'
+elif [ -x '/usr/local/bin/node' ]; then
+  NODE_CMD='/usr/local/bin/node'
+elif [ -x '/opt/homebrew/bin/node' ]; then
+  NODE_CMD='/opt/homebrew/bin/node'
 else
   NODE_CMD=''
 fi`
@@ -60,6 +64,7 @@ if [ -n "$PINNED_CLI" ] && [ -f "$PINNED_CLI" ]; then
     echo "   Ensure 'node' is in your PATH or configure your Git client environment."
     exit 127
   fi
+  export ELECTRON_RUN_AS_NODE=1
   "$NODE_CMD" "$PINNED_CLI" scan --staged --fail-on "$SLD_FAIL_ON"
   SCAN_STATUS=$?
 elif command -v secret-leak-detector >/dev/null 2>&1; then
@@ -86,6 +91,7 @@ if [ -n "$SLD_CLI_PATH" ] && [ -f "$SLD_CLI_PATH" ]; then
     echo "   The pre-commit hook requires Node.js (>=18) to execute the scanner."
     exit 127
   fi
+  export ELECTRON_RUN_AS_NODE=1
   "$NODE_CMD" "$SLD_CLI_PATH" scan --staged --fail-on "$SLD_FAIL_ON"
   SCAN_STATUS=$?
 elif command -v secret-leak-detector >/dev/null 2>&1; then

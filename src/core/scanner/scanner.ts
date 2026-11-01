@@ -15,6 +15,7 @@ export interface ScannerOptions {
   minEntropyThreshold?: number;
   workspaceRoot?: string;
   onSkippedFile?: (filePath: string, reason: string) => void;
+  disallowInlineIgnore?: boolean;
 }
 
 function getFileIdPart(relativePath: string): string {
@@ -151,7 +152,7 @@ export function scanContent(
       // Check for inline suppression comments (e.g. // sld-ignore, # sld-ignore)
       const currentLineText = contentLines[lineNumber - 1] || '';
       const prevLineText = lineNumber > 1 ? contentLines[lineNumber - 2] : '';
-      if (hasInlineSuppression(currentLineText, prevLineText)) {
+      if (!opts?.disallowInlineIgnore && hasInlineSuppression(currentLineText, prevLineText)) {
         continue;
       }
 

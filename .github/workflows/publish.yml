@@ -8,6 +8,9 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    env:
+      OVSX_TOKEN: ${{ secrets.OVSX_TOKEN }}
+      VSCE_TOKEN: ${{ secrets.VSCE_TOKEN }}
     steps:
       - name: Checkout Repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -28,19 +31,16 @@ jobs:
           npm run lint
           npm test
           npm run test:git-hook
+          npm run test:vscode
           npm run benchmark:gate
 
       - name: Package Extension
         run: npm run package
 
       - name: Publish to Open VSX Registry
-        if: env.OVSX_TOKEN != ''
-        env:
-          OVSX_TOKEN: ${{ secrets.OVSX_TOKEN }}
-        run: npx ovsx publish *.vsix -p "$OVSX_TOKEN" || echo "OpenVSX publish completed or skipped"
+        if: ${{ env.OVSX_TOKEN != '' }}
+        run: npx ovsx publish *.vsix -p "$OVSX_TOKEN"
 
       - name: Publish to Visual Studio Marketplace
-        if: env.VSCE_TOKEN != ''
-        env:
-          VSCE_TOKEN: ${{ secrets.VSCE_TOKEN }}
-        run: npx vsce publish --packagePath *.vsix -p "$VSCE_TOKEN" || echo "VSCE publish completed or skipped"
+        if: ${{ env.VSCE_TOKEN != '' }}
+        run: npx vsce publish --packagePath *.vsix -p "$VSCE_TOKEN"

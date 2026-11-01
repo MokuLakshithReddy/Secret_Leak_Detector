@@ -120,12 +120,23 @@ export class BaselineEngine {
       ? path.basename(this.baselinePath)
       : this.baselinePath;
 
-    const candidateRefs = [
-      gitRef,
-      `origin/${gitRef}`,
-      `refs/remotes/origin/${gitRef}`,
-      'HEAD',
-    ];
+    const isCI = !!(process.env.CI || process.env.GITHUB_ACTIONS || process.env.GITLAB_CI);
+    let candidateRefs: string[];
+
+    if (isCI) {
+      // In CI, PRs must NEVER fall back to HEAD or working tree to bypass gates.
+      const baseRef = process.env.GITHUB_BASE_REF || process.env.CI_MERGE_REQUEST_TARGET_BRANCH_NAME;
+      candidateRefs = baseRef
+        ? [`origin/${baseRef}`, `refs/remotes/origin/${baseRef}`, baseRef]
+        : ['origin/main', 'origin/master'];
+    } else {
+      candidateRefs = [
+        gitRef,
+        `origin/${gitRef}`,
+        `refs/remotes/origin/${gitRef}`,
+        'HEAD',
+      ];
+    }
 
     const { execFileSync } = require('child_process');
     for (const ref of candidateRefs) {

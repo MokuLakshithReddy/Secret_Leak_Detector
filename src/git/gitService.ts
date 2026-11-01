@@ -246,7 +246,16 @@ After fixing:
       if (!content.includes(SLD_HOOK_MARKER)) return false;
 
       const normCurrent = currentCliPath.replace(/\\/g, '/');
-      if (!content.includes(normCurrent)) {
+      const expectedFailOn = `SLD_FAIL_ON="${failOn}"`;
+      const expectedBlockCommits = `SLD_BLOCK_COMMITS="${blockCommits ? '1' : '0'}"`;
+      const hasElectronNode = content.includes('ELECTRON_RUN_AS_NODE=1');
+
+      if (
+        !content.includes(normCurrent) ||
+        !content.includes(expectedFailOn) ||
+        !content.includes(expectedBlockCommits) ||
+        !hasElectronNode
+      ) {
         const res = await this.installPreCommitHook(currentCliPath, customNodePath, blockCommits, failOn);
         return res.success;
       }

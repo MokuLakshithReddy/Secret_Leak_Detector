@@ -2,7 +2,7 @@
   "name": "secret-leak-detector",
   "displayName": "Secret Leak Detector",
   "description": "Developer-first credential protection. Detect, trace, block, and fix secret leaks before they leave your machine.",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "publisher": "MokuLakshithReddy",
   "icon": "media/icon.png",
   "license": "MIT",
@@ -205,7 +205,8 @@
     "package": "vsce package --no-git-tag-version --no-dependencies",
     "benchmark:heldout": "npx ts-node --project tsconfig.json evaluation/datasets/heldOutCorpus.ts",
     "test:git-hook": "npx ts-node --project tsconfig.json test/integration/gitHookScenarios.test.ts",
-    "vscode:uninstall": "node ./dist/uninstall.js"
+    "vscode:uninstall": "node ./dist/uninstall.js",
+    "test:vscode": "npx ts-node --project tsconfig.json test/integration/vscodeExtensionHost.test.ts"
   },
   "devDependencies": {
     "@types/node": "^20.11.24",

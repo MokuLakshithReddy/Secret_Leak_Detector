@@ -137,7 +137,19 @@ export class DiagnosticProvider {
     const line = Math.max(0, finding.line - 1);
     const startCol = Math.max(0, finding.column - 1);
     const startPos = new vscode.Position(line, startCol);
-    const endPos = new vscode.Position(line, startCol + finding.length);
+
+    let endPos: vscode.Position;
+    const textToCheck = finding.rawSecret || (finding.evidence?.surroundingCode?.targetLine ? finding.redactedSecret : '');
+    if (textToCheck && textToCheck.includes('\n')) {
+      const lines = textToCheck.split(/\r?\n/);
+      const endLine = line + lines.length - 1;
+      const endCol = lines.length > 1
+        ? lines[lines.length - 1].length
+        : startCol + lines[0].length;
+      endPos = new vscode.Position(endLine, endCol);
+    } else {
+      endPos = new vscode.Position(line, startCol + finding.length);
+    }
     const range = new vscode.Range(startPos, endPos);
 
     let severity = vscode.DiagnosticSeverity.Warning;
