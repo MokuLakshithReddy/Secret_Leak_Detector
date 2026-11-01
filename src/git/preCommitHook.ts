@@ -21,7 +21,9 @@ export function buildPreCommitHook(
   failOn: Risk = DEFAULT_FAIL_ON,
   cliPath?: string,
   nodePath?: string,
-  blockCommits = true
+  blockCommits = true,
+  disallowInline = false,
+  failOnSkipped = false
 ): string {
   const threshold = (RISK_LEVELS as readonly string[]).includes(failOn) ? failOn : DEFAULT_FAIL_ON;
   const pinnedCli = cliPath ? cliPath.replace(/\\/g, '/') : '';
@@ -64,21 +66,20 @@ if [ -n "$PINNED_CLI" ] && [ -f "$PINNED_CLI" ]; then
     echo "   Ensure 'node' is in your PATH or configure your Git client environment."
     exit 127
   fi
-  ELECTRON_RUN_AS_NODE=1 "$NODE_CMD" "$PINNED_CLI" scan --staged --fail-on "$SLD_FAIL_ON" $DISALLOW_INLINE $IGNORE_SKIPPED
+  ELECTRON_RUN_AS_NODE=1 "$NODE_CMD" "$PINNED_CLI" scan --staged --fail-on "$SLD_FAIL_ON" $DISALLOW_INLINE $IGNORE_SKIPPED $FAIL_ON_SKIPPED
   SCAN_STATUS=$?
 elif command -v secret-leak-detector >/dev/null 2>&1; then
-  secret-leak-detector scan --staged --fail-on "$SLD_FAIL_ON" $DISALLOW_INLINE $IGNORE_SKIPPED
+  secret-leak-detector scan --staged --fail-on "$SLD_FAIL_ON" $DISALLOW_INLINE $IGNORE_SKIPPED $FAIL_ON_SKIPPED
   SCAN_STATUS=$?
 else
+  HOOK_PATH="$(git rev-parse --git-path hooks/pre-commit 2>/dev/null || echo "$0")"
   echo ""
   echo "❌ COMMIT BLOCKED (fail-closed): Secret Leak Detector scanner is unavailable."
   echo "   Pinned CLI ($PINNED_CLI) not found and no global CLI available."
-  echo "   Staged changes could not be verified secret-free, so the commit was refused."
-  echo ""
-  echo "   To remove this hook (if Secret Leak Detector was uninstalled):"
-  echo "     rm \"\$(git rev-parse --git-path hooks/pre-commit)\""
-  echo "     (or restore your original hook from .git/hooks/pre-commit.sld-backup.*)"
-  echo "   Or reinstall Secret Leak Detector in VS Code."
+  echo "   Recovery instructions:"
+  echo "     - Re-pin hook: open the project in VS Code with Secret Leak Detector installed"
+  echo "     - Install CLI globally: npm install -g secret-leak-detector"
+  echo "     - Remove hook: rm \"$HOOK_PATH\""
   exit 2
 fi`
     : `# Scanner determined from environment or global binary (never ./dist/cli.js relative to repo)
@@ -89,18 +90,20 @@ if [ -n "$SLD_CLI_PATH" ] && [ -f "$SLD_CLI_PATH" ]; then
     echo "   The pre-commit hook requires Node.js (>=18) to execute the scanner."
     exit 127
   fi
-  ELECTRON_RUN_AS_NODE=1 "$NODE_CMD" "$SLD_CLI_PATH" scan --staged --fail-on "$SLD_FAIL_ON" $DISALLOW_INLINE $IGNORE_SKIPPED
+  ELECTRON_RUN_AS_NODE=1 "$NODE_CMD" "$SLD_CLI_PATH" scan --staged --fail-on "$SLD_FAIL_ON" $DISALLOW_INLINE $IGNORE_SKIPPED $FAIL_ON_SKIPPED
   SCAN_STATUS=$?
 elif command -v secret-leak-detector >/dev/null 2>&1; then
-  secret-leak-detector scan --staged --fail-on "$SLD_FAIL_ON" $DISALLOW_INLINE $IGNORE_SKIPPED
+  secret-leak-detector scan --staged --fail-on "$SLD_FAIL_ON" $DISALLOW_INLINE $IGNORE_SKIPPED $FAIL_ON_SKIPPED
   SCAN_STATUS=$?
 else
+  HOOK_PATH="$(git rev-parse --git-path hooks/pre-commit 2>/dev/null || echo "$0")"
   echo ""
   echo "❌ COMMIT BLOCKED (fail-closed): Secret Leak Detector scanner is unavailable."
-  echo "   Staged changes could not be verified secret-free, so the commit was refused."
-  echo "   To remove this hook (if Secret Leak Detector was uninstalled):"
-  echo "     rm \"\$(git rev-parse --git-path hooks/pre-commit)\""
-  echo "   Or install Node.js (>=18) or the 'secret-leak-detector' CLI, then retry."
+  echo "   Pinned CLI not found and no global CLI available."
+  echo "   Recovery instructions:"
+  echo "     - Re-pin hook: open the project in VS Code with Secret Leak Detector installed"
+  echo "     - Install CLI globally: npm install -g secret-leak-detector"
+  echo "     - Remove hook: rm \"$HOOK_PATH\""
   exit 2
 fi`;
 
@@ -116,17 +119,24 @@ ${SLD_HOOK_MARKER}
 # Fail-closed: if the scanner cannot be executed, the commit is BLOCKED.
 SLD_FAIL_ON="${threshold}"
 SLD_BLOCK_COMMITS="${blockCommits ? '1' : '0'}"
+SLD_DISALLOW_INLINE_DEFAULT="${disallowInline ? '1' : '0'}"
+SLD_FAIL_ON_SKIPPED_DEFAULT="${failOnSkipped ? '1' : '0'}"
 
 echo "🔐 [Secret Leak Detector] Inspecting staged changes for credentials..."
 
 DISALLOW_INLINE=""
-if [ "$SLD_DISALLOW_INLINE_IGNORE" = "1" ] || [ "$(git config --bool secret-leak-detector.disallow-inline-ignore 2>/dev/null)" = "true" ]; then
+if [ "$SLD_DISALLOW_INLINE_IGNORE" = "1" ] || [ "$SLD_DISALLOW_INLINE_DEFAULT" = "1" ] || [ "$(git config --bool secret-leak-detector.disallow-inline-ignore 2>/dev/null)" = "true" ]; then
   DISALLOW_INLINE="--no-inline-ignore"
 fi
 
 IGNORE_SKIPPED=""
 if [ "$SLD_IGNORE_SKIPPED" = "1" ] || [ "$(git config --bool secret-leak-detector.ignore-skipped 2>/dev/null)" = "true" ]; then
   IGNORE_SKIPPED="--ignore-skipped"
+fi
+
+FAIL_ON_SKIPPED=""
+if [ "$SLD_FAIL_ON_SKIPPED" = "1" ] || [ "$SLD_FAIL_ON_SKIPPED_DEFAULT" = "1" ] || [ "$(git config --bool secret-leak-detector.fail-on-skipped 2>/dev/null)" = "true" ]; then
+  FAIL_ON_SKIPPED="--fail-on-skipped"
 fi
 
 ${nodeResolution}

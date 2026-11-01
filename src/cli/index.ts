@@ -747,15 +747,22 @@ async function runHook(cmdArgs: string[], cwd: string) {
   const gitService = new GitService(cwd);
 
   if (subCommand === 'install') {
-    const result = await gitService.installPreCommitHook();
+    const strict = cmdArgs.includes('--strict') || cmdArgs.includes('--fail-on-skipped');
+    const noInline = cmdArgs.includes('--no-inline-ignore') || cmdArgs.includes('--disallow-inline-ignore');
+    const failOnIdx = cmdArgs.indexOf('--fail-on');
+    const failOn = failOnIdx !== -1 && isRiskTier(cmdArgs[failOnIdx + 1]) ? resolveFailOn(cmdArgs[failOnIdx + 1]) : DEFAULT_FAIL_ON;
+
+    const result = await gitService.installPreCommitHook(undefined, undefined, true, failOn, noInline, strict);
     if (!result.success) {
       fail(`Error: ${result.message}`);
     }
     console.log(`✅ ${result.message}`);
     console.log(
-      `   Severity policy (single source: src/core/policy.ts): blocks ${DEFAULT_FAIL_ON} and above; ` +
+      `   Severity policy (single source: src/core/policy.ts): blocks ${failOn} and above; ` +
         `fails closed when the scanner cannot run.`
     );
+    if (strict) console.log(`   Strict mode: enabled (--fail-on-skipped)`);
+    if (noInline) console.log(`   Inline suppression comments: disallowed (--no-inline-ignore)`);
   } else if (subCommand === 'uninstall') {
     const result = await gitService.uninstallPreCommitHook();
     if (!result.success) {
@@ -763,7 +770,7 @@ async function runHook(cmdArgs: string[], cwd: string) {
     }
     console.log(`✅ ${result.message}`);
   } else {
-    fail('Usage: secret-leak-detector hook [install|uninstall]');
+    fail('Usage: secret-leak-detector hook [install|uninstall] [--strict] [--no-inline-ignore] [--fail-on <TIER>]');
   }
 }
 

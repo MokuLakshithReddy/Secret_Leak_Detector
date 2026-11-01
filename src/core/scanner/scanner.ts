@@ -17,6 +17,7 @@ export interface ScannerOptions {
   onSkippedFile?: (filePath: string, reason: string) => void;
   disallowInlineIgnore?: boolean;
   ignoreSkipped?: boolean;
+  maxFileSize?: number;
 }
 
 function getFileIdPart(relativePath: string): string {
@@ -325,19 +326,23 @@ export function scanContent(
     });
   }
 
-  // D. Base64 encoded payload: Buffer.from("c2tfbGl2ZV8...", "base64") or atob("...")
-  const b64Regex = /(?:Buffer\.from|atob|b64decode)\s*\(\s*(?:b)?["']([A-Za-z0-9+/=]{24,200})["']/g;
+  // D. Base64 encoded payload: Buffer.from("c2tfbGl2ZV8...", "base64"), atob("..."), or standalone base64 string literals
+  const b64Regex = /(?:(?:Buffer\.from|atob|b64decode)\s*\(\s*(?:b)?["']([A-Za-z0-9+/=]{20,300})["']|["']([A-Za-z0-9+/]{20,}={0,2})["'])/g;
   let b64Match: RegExpExecArray | null;
   while ((b64Match = b64Regex.exec(content)) !== null) {
+    const rawB64 = b64Match[1] || b64Match[2];
+    if (!rawB64) continue;
     try {
-      const decoded = Buffer.from(b64Match[1], 'base64').toString('utf8');
-      if (decoded.length >= 10 && /^[\x20-\x7E\r\n]+$/.test(decoded)) {
-        candidates.push({
-          combined: decoded,
-          matchOffset: b64Match.index,
-          matchLength: b64Match[0].length,
-          description: 'Resolved base64-encoded credential payload',
-        });
+      if (rawB64.length % 4 === 0 || rawB64.endsWith('=')) {
+        const decoded = Buffer.from(rawB64, 'base64').toString('utf8');
+        if (decoded.length >= 10 && /^[\x20-\x7E\r\n]+$/.test(decoded)) {
+          candidates.push({
+            combined: decoded,
+            matchOffset: b64Match.index,
+            matchLength: b64Match[0].length,
+            description: 'Resolved base64-encoded credential payload',
+          });
+        }
       }
     } catch {}
   }

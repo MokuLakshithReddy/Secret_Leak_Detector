@@ -1,18 +1,18 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
+/**
+ * Extensions for pure non-text binary formats that cannot hold readable text.
+ * Files with ambiguous extensions (e.g. .png, .bin, .pkl, .sqlite) are NOT skipped
+ * by extension; their actual contents are inspected so text disguised as binary is caught.
+ */
 export const BINARY_EXTENSIONS = new Set([
-  '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico', '.webp', '.tiff', '.tif',
-  '.pdf', '.zip', '.tar', '.gz', '.bz2', '.7z', '.rar',
-  '.exe', '.dll', '.so', '.dylib', '.bin', '.iso', '.dmg',
+  '.exe', '.dll', '.so', '.dylib', '.iso', '.dmg',
   '.woff', '.woff2', '.ttf', '.eot', '.otf',
-  '.mp3', '.mp4', '.avi', '.mov', '.wmv', '.flv', '.mkv',
-  '.pyc', '.pyo', '.class', '.jar', '.war', '.ear', '.aar',
-  '.sqlite', '.db', '.dat',
-  // Machine learning models, tensor formats, and binary weights
-  '.wasm', '.pkl', '.pickle', '.npy', '.npz', '.parquet', '.onnx',
-  '.pb', '.h5', '.hdf5', '.tflite', '.safetensors', '.pt', '.pth',
+  '.mp3', '.mp4', '.avi', '.mov', '.wmv', '.flv', '.mkv', '.wav',
+  '.pyc', '.pyo', '.class',
   '.o', '.obj', '.lib', '.a',
+  '.wasm', '.pkl', '.npy', '.parquet', '.onnx', '.safetensors',
 ]);
 
 export const DEFAULT_IGNORE_PATTERNS = [

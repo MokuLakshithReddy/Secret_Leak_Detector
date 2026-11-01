@@ -48,18 +48,63 @@ function getGlobalStorageCandidates(): string[] {
       : path.join(home, '.config'));
 
   const appNames = ['Code', 'Code - Insiders', 'VSCodium', 'Cursor', 'Windsurf'];
+  const extNames = ['mokulakshithreddy.secret-leak-detector', 'MokuLakshithReddy.secret-leak-detector', 'secret-leak-detector'];
   const dirs: string[] = [];
 
   for (const app of appNames) {
-    dirs.push(path.join(appData, app, 'User', 'globalStorage', 'mokulakshithreddy.secret-leak-detector'));
-    if (process.platform === 'win32') {
-      dirs.push(path.join(home, 'AppData', 'Roaming', app, 'User', 'globalStorage', 'mokulakshithreddy.secret-leak-detector'));
+    for (const ext of extNames) {
+      dirs.push(path.join(appData, app, 'User', 'globalStorage', ext));
+      if (process.platform === 'win32') {
+        dirs.push(path.join(home, 'AppData', 'Roaming', app, 'User', 'globalStorage', ext));
+        dirs.push(path.join(home, 'AppData', 'Local', app, 'User', 'globalStorage', ext));
+      }
     }
+    // Also discover workspaces from the editor's global storage.json
+    cleanWorkspacesFromStorageJson(appData, app);
   }
 
   // Also check standard Linux/macOS ~/.config paths
-  dirs.push(path.join(home, '.config', 'Code', 'User', 'globalStorage', 'mokulakshithreddy.secret-leak-detector'));
+  for (const ext of extNames) {
+    dirs.push(path.join(home, '.config', 'Code', 'User', 'globalStorage', ext));
+  }
   return dirs;
+}
+
+function cleanWorkspacesFromStorageJson(appData: string, app: string): void {
+  try {
+    const storageJsonPath = path.join(appData, app, 'User', 'globalStorage', 'storage.json');
+    if (!fs.existsSync(storageJsonPath)) return;
+    const content = fs.readFileSync(storageJsonPath, 'utf8');
+    const matches = content.match(/"(?:file|folderUri|workspaceUri)":\s*"file:\/\/\/([^"]+)"/g);
+    if (matches) {
+      for (const m of matches) {
+        const pMatch = m.match(/"file:\/\/\/([^"]+)"/);
+        if (pMatch && pMatch[1]) {
+          let diskPath = decodeURIComponent(pMatch[1]);
+          if (process.platform === 'win32' && /^\/[a-zA-Z]:/.test(diskPath)) {
+            diskPath = diskPath.slice(1);
+          }
+          cleanHook(path.join(diskPath, '.git', 'hooks', 'pre-commit'));
+        }
+      }
+    }
+  } catch {}
+}
+
+function cleanCommonDevDirs(home: string): void {
+  const common = ['Projects', 'Documents', 'Desktop', 'workspace', 'repos', 'src', 'dev', 'code'];
+  for (const c of common) {
+    const parentDir = path.join(home, c);
+    if (!fs.existsSync(parentDir)) continue;
+    try {
+      const entries = fs.readdirSync(parentDir, { withFileTypes: true });
+      for (const e of entries) {
+        if (e.isDirectory()) {
+          cleanHook(path.join(parentDir, e.name, '.git', 'hooks', 'pre-commit'));
+        }
+      }
+    } catch {}
+  }
 }
 
 export function runUninstall(): void {
@@ -94,7 +139,7 @@ export function runUninstall(): void {
     }
   } catch {}
 
-  // 4. Discover recorded repositories and hooks across globalStorage directories
+  // 4. Discover recorded repositories and hooks across globalStorage directories and storage.json
   const storageDirs = getGlobalStorageCandidates();
   for (const sDir of storageDirs) {
     if (!fs.existsSync(sDir)) continue;
@@ -120,6 +165,9 @@ export function runUninstall(): void {
       } catch {}
     }
   }
+
+  // 5. Sweep common developer workspaces in user home
+  cleanCommonDevDirs(home);
 }
 
 runUninstall();

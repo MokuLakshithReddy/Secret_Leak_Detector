@@ -1,6 +1,6 @@
 # Validation Methodology — Secret Leak Detector
 
-> **Version:** 1.0.2 | **Document date:** 2026-10
+> **Version:** 1.0.3 | **Document date:** 2026-11
 
 ---
 
@@ -264,7 +264,7 @@ tests (groups 3–5), still passing the generation and installation tests (group
 |------|---------|----------|
 | Node.js | v24 | Windows x64 |
 | TypeScript (dev/optional) | 5.3.3 | Dynamic AST parsing when present; zero-dependency lexical fallback |
-| Secret Leak Detector | 1.0.2 | — |
+| Secret Leak Detector | 1.0.3 | — |
 
 ### Determinism
 
@@ -377,7 +377,7 @@ Follow these steps on your own machine to produce independent verification:
    ```bash
    npm run package
    ```
-   Expected: produces `secret-leak-detector-1.0.2.vsix` without errors.
+   Expected: produces `secret-leak-detector-1.0.3.vsix` without errors.
 
 9. **Scan the repository itself for accidental secrets**
    ```bash

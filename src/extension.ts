@@ -90,6 +90,8 @@ export function activate(context: vscode.ExtensionContext) {
     const folders = vscode.workspace.workspaceFolders || [];
     const blockCommits = getConfig().get<boolean>('blockGitCommits', true);
     const configuredFailOn = resolveFailOn(getConfig().get<string>('failOn', DEFAULT_FAIL_ON));
+    const disallowInline = getConfig().get<boolean>('disallowInlineIgnore', false);
+    const failOnSkipped = getConfig().get<boolean>('failOnSkipped', false);
 
     const hooksRecordPath = path.join(context.globalStorageUri.fsPath, 'installed-hooks.json');
     let existingHooks: string[] = [];
@@ -107,7 +109,7 @@ export function activate(context: vscode.ExtensionContext) {
     for (const folder of folders) {
       const gs = new GitService(folder.uri.fsPath, (msg) => outputChannel.appendLine(msg));
       if (await gs.isGitRepo()) {
-        await gs.ensureHookIsPinned(cli, process.execPath, blockCommits, configuredFailOn).catch(() => {});
+        await gs.ensureHookIsPinned(cli, process.execPath, blockCommits, configuredFailOn, disallowInline, failOnSkipped).catch(() => {});
         try {
           const hookFile = await gs.getHookPath();
           allHooks.add(hookFile);
@@ -395,7 +397,16 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('secret-leak-detector.installGitHook', async () => {
       const blockCommits = getConfig().get<boolean>('blockGitCommits', true);
       const configuredFailOn = resolveFailOn(getConfig().get<string>('failOn', DEFAULT_FAIL_ON));
-      const result = await gitService.installPreCommitHook(activeCliPath, process.execPath, blockCommits, configuredFailOn);
+      const disallowInline = getConfig().get<boolean>('disallowInlineIgnore', false);
+      const failOnSkipped = getConfig().get<boolean>('failOnSkipped', false);
+      const result = await gitService.installPreCommitHook(
+        activeCliPath,
+        process.execPath,
+        blockCommits,
+        configuredFailOn,
+        disallowInline,
+        failOnSkipped
+      );
       if (result.success) {
         try {
           const hooksRecordPath = path.join(context.globalStorageUri.fsPath, 'installed-hooks.json');

@@ -19,7 +19,7 @@
 Install from the **[VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=MokuLakshithReddy.secret-leak-detector)**, or download the `.vsix` directly from [GitHub Releases](https://github.com/MokuLakshithReddy/Secret_Leak_Detector/releases) and install it:
 
 ```bash
-code --install-extension secret-leak-detector-1.0.2.vsix
+code --install-extension secret-leak-detector-1.0.3.vsix
 ```
 
 ### CLI

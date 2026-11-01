@@ -1370,12 +1370,12 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
     cp.execSync('git add large.txt', { cwd: stagedScratch, stdio: 'ignore' });
 
     // Without ignoreSkipped -> fails closed with ERROR
-    const noIgnoreRes = scanStagedChangesSync(stagedScratch, { ignoreSkipped: false });
+    const noIgnoreRes = scanStagedChangesSync(stagedScratch, { ignoreSkipped: false, maxFileSize: 5 * 1024 * 1024 });
     assert(noIgnoreRes.status === 'ERROR', `Oversized staged file without ignoreSkipped returns ERROR (got ${noIgnoreRes.status})`);
     assert(noIgnoreRes.error?.includes('exceeds 5MB limit'), 'Error mentions 5MB limit and bypass guidance');
 
     // With ignoreSkipped -> allows scan, marks as skipped
-    const ignoreRes = scanStagedChangesSync(stagedScratch, { ignoreSkipped: true });
+    const ignoreRes = scanStagedChangesSync(stagedScratch, { ignoreSkipped: true, maxFileSize: 5 * 1024 * 1024 });
     assert(ignoreRes.status === 'FINDINGS', 'Oversized staged file with ignoreSkipped allows scan to complete');
     assert(ignoreRes.skippedFiles && ignoreRes.skippedFiles.length >= 1, 'Skipped files array contains the oversized file');
 
@@ -1464,6 +1464,91 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
       const sldRegistry = path.join(os.homedir(), '.sld', 'installed-hooks.json');
       assert(fs.existsSync(sldRegistry), 'Installed hook recorded in ~/.sld/installed-hooks.json');
       unrecordInstalledHook(testHookPath);
+    }
+
+    // --- 32. Content-Based Inspection, Encodings (UTF-16BE/32/Gzip), NUL Byte & Base64 Resilience ---
+    console.log('\n--- 32. Content-Based Inspection, Encodings (UTF-16BE/32/Gzip), NUL Byte & Base64 Resilience ---');
+    {
+      const { decodeTextBuffer } = require('../src/git/stagedScanner');
+      const { scanContent } = require('../src/core/scanner/scanner');
+      const zlib = require('zlib');
+
+      // 1. Text file with NUL byte in the first 1 KB
+      const nulBuffer = Buffer.concat([
+        Buffer.from('prefix text before null\0', 'utf8'),
+        Buffer.from('AKIA1234567890ABCDEF and more normal text here\n', 'utf8')
+      ]);
+      const nulDecoded = decodeTextBuffer(nulBuffer);
+      assert(nulDecoded !== null, 'Text buffer with sparse NUL byte is decoded as text');
+      assert(nulDecoded!.includes('AKIA1234567890ABCDEF'), 'Token preserved across NUL byte boundary');
+
+      // 2. UTF-16BE without BOM
+      const utf16beSource = 'AKIA1234567890BEF123 token in utf16be\n';
+      const utf16beBuf = Buffer.alloc(utf16beSource.length * 2);
+      for (let i = 0; i < utf16beSource.length; i++) {
+        utf16beBuf.writeUInt16BE(utf16beSource.charCodeAt(i), i * 2);
+      }
+      const utf16beDecoded = decodeTextBuffer(utf16beBuf);
+      assert(utf16beDecoded !== null, 'UTF-16BE buffer without BOM is successfully decoded');
+      assert(utf16beDecoded!.includes('AKIA1234567890BEF123'), 'Decoded UTF-16BE contains the token');
+
+      // 3. UTF-32LE with and without BOM
+      const utf32Source = 'AKIA1234567890UTF321 token in utf32\n';
+      const utf32Buf = Buffer.alloc(utf32Source.length * 4);
+      for (let i = 0; i < utf32Source.length; i++) {
+        utf32Buf.writeUInt32LE(utf32Source.charCodeAt(i), i * 4);
+      }
+      const utf32Decoded = decodeTextBuffer(utf32Buf);
+      assert(utf32Decoded !== null, 'UTF-32 buffer is successfully decoded');
+      assert(utf32Decoded!.includes('AKIA1234567890UTF321'), 'Decoded UTF-32 contains the token');
+
+      // 4. Gzip compressed token payload
+      const gzipSource = 'export const AWS_SECRET="AKIA1234567890GZIP99";\n';
+      const gzipBuf = zlib.gzipSync(Buffer.from(gzipSource, 'utf8'));
+      const gzipDecoded = decodeTextBuffer(gzipBuf);
+      assert(gzipDecoded !== null, 'Gzip compressed buffer is decompressed and decoded');
+      assert(gzipDecoded!.includes('AKIA1234567890GZIP99'), 'Decompressed gzip contains the token');
+
+      // 5. Binary file with embedded token
+      const binaryPayload = Buffer.concat([
+        Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x01, 0x02, 0x03]),
+        Buffer.from('AKIA1234567890EMBEDDED', 'ascii'),
+        Buffer.from([0x00, 0x01, 0x02, 0x03, 0xff, 0xfe, 0x00, 0x00])
+      ]);
+      const binaryDecoded = decodeTextBuffer(binaryPayload);
+      assert(binaryDecoded !== null, 'Dense binary buffer with embedded strings has text extracted');
+      assert(binaryDecoded!.includes('AKIA1234567890EMBEDDED'), 'Extracted strings contain embedded token');
+
+      // 6. Base64 token deobfuscation
+      const b64Secret = Buffer.from('AKIA1234567890B64SEC', 'utf8').toString('base64');
+      const b64Code = `const key = "${b64Secret}";\n`;
+      const b64Findings = scanContent(b64Code, 'config.js');
+      assert(b64Findings.length >= 1, `Base64 wrapped token detected (got ${b64Findings.length})`);
+      assert(b64Findings[0].type.includes('AWS'), 'Base64 wrapped token correctly identified as AWS key');
+
+      // 7. Staged scan with token in text file named *.png, *.bin, *.sqlite
+      const stagedDisguised = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-staged-disguise-'));
+      cp.execSync('git init', { cwd: stagedDisguised, stdio: 'ignore' });
+      cp.execSync('git config user.name "SLD Test"', { cwd: stagedDisguised, stdio: 'ignore' });
+      cp.execSync('git config user.email "sld@test.com"', { cwd: stagedDisguised, stdio: 'ignore' });
+      const disguisedKey = synth(['AK', 'IA', '0123456789DISGUI']);
+      fs.writeFileSync(path.join(stagedDisguised, 'data.png'), `export const key = "${disguisedKey}";\n`, 'utf8');
+      fs.writeFileSync(path.join(stagedDisguised, 'dump.sqlite'), `INSERT INTO keys VALUES ('${disguisedKey}');\n`, 'utf8');
+      cp.execSync('git add data.png dump.sqlite', { cwd: stagedDisguised, stdio: 'ignore' });
+
+      const { scanStagedChangesSync: stagedSync } = require('../src/git/stagedScanner');
+      const disguiseResult = stagedSync(stagedDisguised);
+      assert(disguiseResult.status === 'FINDINGS', `Text file disguised as .png/.sqlite is scanned and detected (got ${disguiseResult.status})`);
+      assert(disguiseResult.findings.length >= 2, `Both disguised files flagged (got ${disguiseResult.findings.length})`);
+      try { fs.rmSync(stagedDisguised, { recursive: true, force: true }); } catch {}
+
+      // 8. Pre-commit hook configuration and fail-closed guidance
+      const { buildPreCommitHook } = require('../src/git/preCommitHook');
+      const nonExistentCli = path.join(os.tmpdir(), 'non-existent-sld-cli.js');
+      const selfHealingHook = buildPreCommitHook(undefined, nonExistentCli);
+      assert(selfHealingHook.includes('fail-closed') || selfHealingHook.includes('FAIL-CLOSED'), 'Hook enforces fail-closed contract when scanner CLI is unavailable');
+      assert(selfHealingHook.includes('SLD_FAIL_ON_SKIPPED'), 'Hook includes SLD_FAIL_ON_SKIPPED configuration');
+      assert(selfHealingHook.includes('SLD_DISALLOW_INLINE_DEFAULT'), 'Hook includes SLD_DISALLOW_INLINE_DEFAULT configuration');
     }
   }
 
