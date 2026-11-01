@@ -71,9 +71,11 @@ export function validateBaselineSchema(parsed: unknown): BaselineFile {
 }
 
 export class BaselineEngine {
+  private workspaceRoot: string;
   private baselinePath: string;
 
   constructor(workspaceRoot: string, customFilename = DEFAULT_BASELINE_FILENAME) {
+    this.workspaceRoot = workspaceRoot;
     this.baselinePath = path.isAbsolute(customFilename)
       ? customFilename
       : path.join(workspaceRoot, customFilename);
@@ -117,9 +119,23 @@ export class BaselineEngine {
    * to ensure PRs cannot modify the baseline in their working tree to bypass CI checks.
    */
   public loadBaselineFromGit(gitRef = 'HEAD'): BaselineFile | null {
-    const gitPath = path.isAbsolute(this.baselinePath)
-      ? path.basename(this.baselinePath)
-      : this.baselinePath;
+    const { execFileSync } = require('child_process');
+    let gitPath = this.baselinePath;
+    try {
+      const gitRoot = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+        cwd: this.workspaceRoot,
+        encoding: 'utf8',
+        stdio: ['pipe', 'pipe', 'ignore'],
+      }).trim();
+      const absBaseline = path.isAbsolute(this.baselinePath)
+        ? this.baselinePath
+        : path.resolve(this.workspaceRoot, this.baselinePath);
+      gitPath = path.relative(gitRoot, absBaseline).replace(/\\/g, '/');
+    } catch {
+      gitPath = path.isAbsolute(this.baselinePath)
+        ? path.basename(this.baselinePath)
+        : this.baselinePath.replace(/\\/g, '/');
+    }
 
     const isCI = !!(process.env.CI || process.env.GITHUB_ACTIONS || process.env.GITLAB_CI);
     let candidateRefs: string[];
@@ -139,7 +155,6 @@ export class BaselineEngine {
       ];
     }
 
-    const { execFileSync } = require('child_process');
     for (const ref of candidateRefs) {
       try {
         const data = execFileSync('git', ['show', `${ref}:${gitPath}`], {

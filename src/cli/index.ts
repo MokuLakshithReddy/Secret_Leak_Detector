@@ -240,6 +240,11 @@ async function runScan(cmdArgs: string[], cwd: string) {
         }
       }
     }
+
+    if (staged.ignoredFiles && staged.ignoredFiles.length > 0 && !isJson && !isSarif) {
+      const distinctPatterns = Array.from(new Set(staged.ignoredFiles.map((e) => e.pattern)));
+      console.log(`ℹ️  Excluded ${staged.ignoredFiles.length} staged file(s) matching patterns: ${distinctPatterns.join(', ')}`);
+    }
   } else {
     // Scan directory or single file
     const filesToScan: string[] = [];

@@ -22,6 +22,7 @@ export interface StagedScanResult {
   status: 'CLEAN' | 'FINDINGS' | 'ERROR';
   findings: SecretFinding[];
   skippedFiles?: SkippedFile[];
+  ignoredFiles?: { path: string; pattern: string }[];
   error?: string;
   filesScanned?: number;
 }
@@ -135,10 +136,13 @@ function decodeUtf32(buf: Buffer, littleEndian: boolean): string {
 export function decodeTextBuffer(buf: Buffer): string | null {
   if (buf.length === 0) return '';
 
-  // 1. gzip decompression: 0x1F 0x8B
+  // 1. gzip decompression: 0x1F 0x8B (capped to 64MB output to prevent zip bomb DoS)
   if (buf.length >= 2 && buf[0] === 0x1f && buf[1] === 0x8b) {
     try {
-      const decompressed = zlib.gunzipSync(buf, { finishFlush: zlib.constants.Z_SYNC_FLUSH });
+      const decompressed = zlib.gunzipSync(buf, {
+        maxOutputLength: 64 * 1024 * 1024,
+        finishFlush: zlib.constants.Z_SYNC_FLUSH,
+      });
       const decoded = decodeTextBuffer(decompressed);
       if (decoded !== null) return decoded;
     } catch {}
@@ -358,6 +362,49 @@ function parseDiffHunks(diffOutput: string): Map<string, Set<number>> {
 }
 
 /**
+ * Collects staged submodule links (git mode 160000).
+ * Submodule commit bumps point to commits, not blobs in the parent repo,
+ * so they must be filtered out before cat-file --batch-check to prevent false missing errors.
+ */
+function getStagedSubmodulesSync(gitRoot: string): Set<string> {
+  const submodules = new Set<string>();
+  try {
+    const out = execFileSync('git', [...GIT_BASE_ARGS, 'ls-files', '--stage', '-z'], {
+      cwd: gitRoot,
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    const entries = out.toString('utf8').split('\0');
+    for (const entry of entries) {
+      if (!entry) continue;
+      const [meta, relPath] = entry.split('\t');
+      if (meta && relPath && meta.startsWith('160000')) {
+        submodules.add(relPath.replace(/\\/g, '/'));
+      }
+    }
+  } catch {}
+  return submodules;
+}
+
+async function getStagedSubmodulesAsync(gitRoot: string): Promise<Set<string>> {
+  const submodules = new Set<string>();
+  try {
+    const { stdout } = await execFileAsync('git', [...GIT_BASE_ARGS, 'ls-files', '--stage', '-z'], {
+      cwd: gitRoot,
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    const entries = stdout.split('\0');
+    for (const entry of entries) {
+      if (!entry) continue;
+      const [meta, relPath] = entry.split('\t');
+      if (meta && relPath && meta.startsWith('160000')) {
+        submodules.add(relPath.replace(/\\/g, '/'));
+      }
+    }
+  } catch {}
+  return submodules;
+}
+
+/**
  * Fast synchronous staged changes scanner.
  * Enforces fail-closed security, NUL-delimited status parsing, and batch blob reading.
  */
@@ -391,7 +438,9 @@ export function scanStagedChangesSync(workspaceRoot: string, options?: ScannerOp
   }
 
   const stagedEntries = parseNameStatusZ(statusBuf);
-  const activeEntries = stagedEntries.filter((e) => e.status !== 'D');
+  const submodules = getStagedSubmodulesSync(gitRoot);
+  // Filter deletions and submodule bumps (mode 160000)
+  const activeEntries = stagedEntries.filter((e) => e.status !== 'D' && !submodules.has(e.path));
 
   if (activeEntries.length === 0) {
     return { status: 'CLEAN', findings: [], skippedFiles: [], filesScanned: 0 };
@@ -399,14 +448,17 @@ export function scanStagedChangesSync(workspaceRoot: string, options?: ScannerOp
 
   const ignorePatterns = [...DEFAULT_IGNORE_PATTERNS, ...loadIgnorePatterns(gitRoot)];
   const skippedFiles: SkippedFile[] = [];
+  const ignoredFiles: { path: string; pattern: string }[] = [];
   const candidatePaths: string[] = [];
 
   for (const entry of activeEntries) {
     const relPath = entry.path;
     const ext = path.extname(relPath).toLowerCase();
 
-    // Honor ignore patterns (.sldignore and standard defaults)
-    if (ignorePatterns.some((pattern) => matchesIgnorePattern(relPath, pattern))) {
+    // Honor ignore patterns (.sldignore and standard defaults) and track them to avoid silent skips
+    const matchedIgnore = ignorePatterns.find((pattern) => matchesIgnorePattern(relPath, pattern));
+    if (matchedIgnore) {
+      ignoredFiles.push({ path: relPath, pattern: matchedIgnore });
       continue;
     }
 
@@ -420,7 +472,7 @@ export function scanStagedChangesSync(workspaceRoot: string, options?: ScannerOp
   }
 
   if (candidatePaths.length === 0) {
-    return { status: 'CLEAN', findings: [], skippedFiles, filesScanned: 0 };
+    return { status: 'CLEAN', findings: [], skippedFiles, ignoredFiles, filesScanned: 0 };
   }
 
   // 2. Batch size check via single git cat-file --batch-check
@@ -449,25 +501,24 @@ export function scanStagedChangesSync(workspaceRoot: string, options?: ScannerOp
     }
     if (size > effectiveLimit) {
       const maxMb = (effectiveLimit / (1024 * 1024)).toFixed(0);
-      if (options?.ignoreSkipped !== false) {
+      if (options?.ignoreSkipped === true) {
         skippedFiles.push({
           path: p,
           reason: `File size (${(size / (1024 * 1024)).toFixed(1)}MB) exceeds ${maxMb}MB limit`,
         });
         continue;
-      } else {
-        return {
-          status: 'ERROR',
-          findings: [],
-          error: `File '${p}' (${(size / (1024 * 1024)).toFixed(1)}MB) exceeds ${maxMb}MB limit. Use --ignore-skipped to bypass.`,
-        };
       }
+      return {
+        status: 'ERROR',
+        findings: [],
+        error: `File '${p}' (${(size / (1024 * 1024)).toFixed(1)}MB) exceeds ${maxMb}MB limit. Use --ignore-skipped to bypass.`,
+      };
     }
     readablePaths.push(p);
   }
 
   if (readablePaths.length === 0) {
-    return { status: 'CLEAN', findings: [], skippedFiles, filesScanned: 0 };
+    return { status: 'CLEAN', findings: [], skippedFiles, ignoredFiles, filesScanned: 0 };
   }
 
   // 3. Batch read blobs in a single spawn
@@ -576,6 +627,7 @@ export function scanStagedChangesSync(workspaceRoot: string, options?: ScannerOp
     status: allFindings.length > 0 ? 'FINDINGS' : 'CLEAN',
     findings: allFindings,
     skippedFiles,
+    ignoredFiles,
     filesScanned,
   };
 }
@@ -614,7 +666,9 @@ export async function scanStagedChangesAsync(workspaceRoot: string, options?: Sc
   }
 
   const stagedEntries = parseNameStatusZ(statusBuf);
-  const activeEntries = stagedEntries.filter((e) => e.status !== 'D');
+  const submodules = await getStagedSubmodulesAsync(gitRoot);
+  // Filter deletions and submodule bumps (mode 160000)
+  const activeEntries = stagedEntries.filter((e) => e.status !== 'D' && !submodules.has(e.path));
 
   if (activeEntries.length === 0) {
     return { status: 'CLEAN', findings: [], skippedFiles: [], filesScanned: 0 };
@@ -622,13 +676,16 @@ export async function scanStagedChangesAsync(workspaceRoot: string, options?: Sc
 
   const ignorePatterns = [...DEFAULT_IGNORE_PATTERNS, ...loadIgnorePatterns(gitRoot)];
   const skippedFiles: SkippedFile[] = [];
+  const ignoredFiles: { path: string; pattern: string }[] = [];
   const candidatePaths: string[] = [];
 
   for (const entry of activeEntries) {
     const relPath = entry.path;
     const ext = path.extname(relPath).toLowerCase();
 
-    if (ignorePatterns.some((pattern) => matchesIgnorePattern(relPath, pattern))) {
+    const matchedIgnore = ignorePatterns.find((pattern) => matchesIgnorePattern(relPath, pattern));
+    if (matchedIgnore) {
+      ignoredFiles.push({ path: relPath, pattern: matchedIgnore });
       continue;
     }
 
@@ -641,7 +698,7 @@ export async function scanStagedChangesAsync(workspaceRoot: string, options?: Sc
   }
 
   if (candidatePaths.length === 0) {
-    return { status: 'CLEAN', findings: [], skippedFiles, filesScanned: 0 };
+    return { status: 'CLEAN', findings: [], skippedFiles, ignoredFiles, filesScanned: 0 };
   }
 
   // 2. Async batch size check
@@ -697,25 +754,24 @@ export async function scanStagedChangesAsync(workspaceRoot: string, options?: Sc
     }
     if (size > effectiveAsyncLimit) {
       const maxMb = (effectiveAsyncLimit / (1024 * 1024)).toFixed(0);
-      if (options?.ignoreSkipped !== false) {
+      if (options?.ignoreSkipped === true) {
         skippedFiles.push({
           path: p,
           reason: `File size (${(size / (1024 * 1024)).toFixed(1)}MB) exceeds ${maxMb}MB limit`,
         });
         continue;
-      } else {
-        return {
-          status: 'ERROR',
-          findings: [],
-          error: `File '${p}' (${(size / (1024 * 1024)).toFixed(1)}MB) exceeds ${maxMb}MB limit. Use --ignore-skipped to bypass.`,
-        };
       }
+      return {
+        status: 'ERROR',
+        findings: [],
+        error: `File '${p}' (${(size / (1024 * 1024)).toFixed(1)}MB) exceeds ${maxMb}MB limit. Use --ignore-skipped to bypass.`,
+      };
     }
     readablePaths.push(p);
   }
 
   if (readablePaths.length === 0) {
-    return { status: 'CLEAN', findings: [], skippedFiles, filesScanned: 0 };
+    return { status: 'CLEAN', findings: [], skippedFiles, ignoredFiles, filesScanned: 0 };
   }
 
   // 3. Async batch read blobs
@@ -859,6 +915,7 @@ export async function scanStagedChangesAsync(workspaceRoot: string, options?: Sc
     status: allFindings.length > 0 ? 'FINDINGS' : 'CLEAN',
     findings: allFindings,
     skippedFiles,
+    ignoredFiles,
     filesScanned,
   };
 }

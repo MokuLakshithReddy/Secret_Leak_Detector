@@ -46,8 +46,11 @@ export interface FalsePositiveCheck {
 export function evaluateFalsePositive(
   secret: string,
   inferredVarName?: string,
-  filePath?: string
+  filePath?: string,
+  provider = 'Generic Credential'
 ): FalsePositiveCheck {
+  const isGeneric = provider.startsWith('Generic');
+
   // Check exact placeholders in secret value
   if (/(?:process\.env|import\.meta\.env|os\.environ|ENV[\[\.])/.test(secret)) {
     return {
@@ -58,13 +61,14 @@ export function evaluateFalsePositive(
   }
 
   // Check property access or object path expressions (e.g. this.config.apiToken, request.headers.authorization)
+  // Only suppress property access shapes for generic rules to prevent dropping real dotted tokens like SendGrid (SG.<22>.<43>)
   const isPropertyAccess =
     /^(?:this|self|window|global|req|request|headers|config|options|ctx|context|env|process)\.[a-zA-Z0-9_$.]+/i.test(secret) ||
     (/^[a-zA-Z_$][a-zA-Z0-9_$]*(?:\.[a-zA-Z_$][a-zA-Z0-9_$]*)+$/.test(secret) &&
       !secret.startsWith('ey') &&
       !secret.startsWith('ya29.'));
 
-  if (isPropertyAccess) {
+  if (isGeneric && isPropertyAccess) {
     return {
       isFalsePositive: true,
       reason: 'Property access or object path expression, not a hard-coded credential literal',

@@ -182,7 +182,7 @@ export function buildEvidenceModel(
   }
 
   // 6. False Positive & Placeholder Check
-  const fpCheck = evaluateFalsePositive(rawSecret, lexicalContext.inferredVariable, filePath);
+  const fpCheck = evaluateFalsePositive(rawSecret, lexicalContext.inferredVariable, filePath, rule.provider);
   if (fpCheck.isFalsePositive) {
     return {
       confidence: 0,

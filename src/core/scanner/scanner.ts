@@ -62,10 +62,14 @@ function normalizeLongLinesWithMap(raw: string, maxLineLen = 4000): LineMap {
       origLine.push(lineNum);
       colOffset.push(0);
     } else {
-      for (let pos = 0; pos < line.length; pos += maxLineLen - 100) {
+      // Raised chunk overlap to 512 chars so OpenAI project keys (160+ chars),
+      // JWTs, and multi-line PEM boundaries straddling chunks are never truncated or missed
+      const OVERLAP = 512;
+      for (let pos = 0; pos < line.length; pos += maxLineLen - OVERLAP) {
         chunks.push(line.substring(pos, pos + maxLineLen));
         origLine.push(lineNum);
         colOffset.push(pos);
+        if (pos + maxLineLen >= line.length) break;
       }
     }
   }
@@ -97,7 +101,7 @@ export function scanContent(
   const rules = opts.rules || CORE_RULES;
   const workspaceRoot = opts.workspaceRoot;
   const fileContext = analyzeFileContext(filePath, workspaceRoot);
-  const contentLines = content.split(/\r?\n/);
+  const rawLines = rawContent.split(/\r?\n/);
   const findings: SecretFinding[] = [];
 
   // Zero-allocation line & column offset index (instantiated lazily on first match)
@@ -141,22 +145,16 @@ export function scanContent(
     return { line: realLine, column: realCol };
   }
 
-  // Memory-efficient context extractor: windows lines to avoid multi-megabyte string array allocations
-  let cachedFullLines: string[] | null = null;
+  // Memory-efficient context extractor: windows lines from real rawLines to ensure inline ignore,
+  // AST assignments, and lexical context strictly align with true reported coordinate numbers
   function getContextWindow(targetLine1Based: number): { lines: string[]; relativeTargetIdx: number } {
-    if (content.length <= 1024 * 1024) {
-      if (!cachedFullLines) cachedFullLines = content.split(/\r?\n/);
-      return { lines: cachedFullLines, relativeTargetIdx: targetLine1Based - 1 };
-    }
-    const offsets = getLineOffsets();
     const targetIdx0 = targetLine1Based - 1;
+    if (rawLines.length <= 1000) {
+      return { lines: rawLines, relativeTargetIdx: targetIdx0 };
+    }
     const windowStartIdx = Math.max(0, targetIdx0 - 30);
-    const windowEndIdx = Math.min(offsets.length - 1, targetIdx0 + 30);
-
-    const startByte = offsets[windowStartIdx];
-    const endByte = windowEndIdx + 1 < offsets.length ? offsets[windowEndIdx + 1] : content.length;
-    const windowText = content.substring(startByte, endByte);
-    const windowLines = windowText.split(/\r?\n/);
+    const windowEndIdx = Math.min(rawLines.length - 1, targetIdx0 + 30);
+    const windowLines = rawLines.slice(windowStartIdx, windowEndIdx + 1);
     return { lines: windowLines, relativeTargetIdx: targetIdx0 - windowStartIdx };
   }
 
@@ -173,9 +171,9 @@ export function scanContent(
       // Calculate line and column via binary search on line offsets (0 heap allocation)
       const { line: lineNumber, column: columnNumber } = getPosition(secretIndex);
 
-      // Check for inline suppression comments (e.g. // sld-ignore, # sld-ignore)
-      const currentLineText = contentLines[lineNumber - 1] || '';
-      const prevLineText = lineNumber > 1 ? contentLines[lineNumber - 2] : '';
+      // Check for inline suppression comments (e.g. // sld-ignore, # sld-ignore) using real raw coordinates
+      const currentLineText = rawLines[lineNumber - 1] || '';
+      const prevLineText = lineNumber > 1 ? rawLines[lineNumber - 2] : '';
       if (!opts?.disallowInlineIgnore && hasInlineSuppression(currentLineText, prevLineText)) {
         continue;
       }
@@ -356,8 +354,8 @@ export function scanContent(
         const rawSecret = ruleMatch[1] || ruleMatch[0];
         const { line: lineNumber, column: columnNumber } = getPosition(candidate.matchOffset);
 
-        const currentLineText = contentLines[lineNumber - 1] || '';
-        const prevLineText = lineNumber > 1 ? contentLines[lineNumber - 2] : '';
+        const currentLineText = rawLines[lineNumber - 1] || '';
+        const prevLineText = lineNumber > 1 ? rawLines[lineNumber - 2] : '';
         if (!opts?.disallowInlineIgnore && hasInlineSuppression(currentLineText, prevLineText)) {
           continue;
         }
