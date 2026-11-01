@@ -141,7 +141,7 @@ After fixing:
    * Handles worktrees, bare repos, and core.hooksPath overrides correctly
    * by asking Git itself rather than assuming .git/hooks.
    */
-  private async resolveHooksDir(): Promise<string> {
+  public async resolveHooksDir(): Promise<string> {
     try {
       const { stdout } = await execFileAsync(
         'git',
@@ -158,6 +158,14 @@ After fixing:
   }
 
   /**
+   * Returns the absolute path to the pre-commit hook in this repository.
+   */
+  public async getHookPath(): Promise<string> {
+    const hooksDir = await this.resolveHooksDir();
+    return path.join(hooksDir, 'pre-commit');
+  }
+
+  /**
    * Installs pre-commit hook into the effective Git hooks directory.
    * If an existing hook exists, backs it up with a timestamped name and chains it.
    */
@@ -169,6 +177,14 @@ After fixing:
   ): Promise<{ success: boolean; message: string }> {
     if (!(await this.isGitRepo())) {
       return { success: false, message: 'Workspace is not a Git repository.' };
+    }
+
+    const targetCli = customCliPath || this.cliPath;
+    if (!targetCli || !fs.existsSync(targetCli)) {
+      return {
+        success: false,
+        message: `Cannot install pre-commit hook: bundled CLI binary not found at '${targetCli || 'undefined'}'. Installation aborted.`,
+      };
     }
 
     const hooksDir = await this.resolveHooksDir();
@@ -197,14 +213,6 @@ After fixing:
       } catch (err) {
         return { success: false, message: `Could not backup existing hook: ${err}` };
       }
-    }
-
-    const targetCli = customCliPath || this.cliPath;
-    if (!targetCli || !fs.existsSync(targetCli)) {
-      return {
-        success: false,
-        message: `Cannot install pre-commit hook: bundled CLI binary not found at '${targetCli || 'undefined'}'. Installation aborted.`,
-      };
     }
 
     if (/[\/\\](?:_npx|Temp|tmp)[\/\\]/i.test(targetCli)) {

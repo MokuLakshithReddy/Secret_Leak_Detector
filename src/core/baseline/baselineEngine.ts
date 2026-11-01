@@ -192,10 +192,10 @@ export class BaselineEngine {
   } {
     let baseline: BaselineFile | null = null;
     if (process.env.CI) {
-      const gitRef = process.env.GITHUB_BASE_REF || process.env.CI_MERGE_REQUEST_TARGET_BRANCH_NAME || 'HEAD';
+      // In CI, only load baseline from the base branch ref; NEVER fall back to the working tree
+      const gitRef = process.env.GITHUB_BASE_REF || process.env.CI_MERGE_REQUEST_TARGET_BRANCH_NAME || 'origin/main';
       baseline = this.loadBaselineFromGit(gitRef);
-    }
-    if (!baseline) {
+    } else {
       baseline = this.loadBaseline();
     }
     if (!baseline) {
@@ -217,22 +217,23 @@ export class BaselineEngine {
 
     const newFindings: SecretFinding[] = [];
     const existingFindings: SecretFinding[] = [];
-    const matchedFingerprints = new Set<string>();
+    const matchedKeys = new Set<string>();
 
     for (const finding of currentFindings) {
       const normFile = normalizeBaselinePath(finding.file);
-      const match = baselineByFileAndFp.get(`${normFile}:${finding.fingerprint}`);
+      const key = `${normFile}:${finding.fingerprint}`;
+      const match = baselineByFileAndFp.get(key);
 
       if (match) {
         finding.status = 'BASELINE';
         existingFindings.push(finding);
-        matchedFingerprints.add(match.fingerprint);
+        matchedKeys.add(key);
       } else {
         newFindings.push(finding);
       }
     }
 
-    const resolvedCount = Math.max(0, baseline.findings.length - matchedFingerprints.size);
+    const resolvedCount = Math.max(0, baseline.findings.length - matchedKeys.size);
 
     return {
       newFindings,

@@ -57,6 +57,21 @@ export function evaluateFalsePositive(
     };
   }
 
+  // Check property access or object path expressions (e.g. this.config.apiToken, request.headers.authorization)
+  const isPropertyAccess =
+    /^(?:this|self|window|global|req|request|headers|config|options|ctx|context|env|process)\.[a-zA-Z0-9_$.]+/i.test(secret) ||
+    (/^[a-zA-Z_$][a-zA-Z0-9_$]*(?:\.[a-zA-Z_$][a-zA-Z0-9_$]*)+$/.test(secret) &&
+      !secret.startsWith('ey') &&
+      !secret.startsWith('ya29.'));
+
+  if (isPropertyAccess) {
+    return {
+      isFalsePositive: true,
+      reason: 'Property access or object path expression, not a hard-coded credential literal',
+      confidencePenalty: 100,
+    };
+  }
+
   if (/^(?:passwordRequired|required_field|required|optional|placeholder|changeme|default|test|dummy|example|string|undefined|null)$/i.test(secret)) {
     return {
       isFalsePositive: true,

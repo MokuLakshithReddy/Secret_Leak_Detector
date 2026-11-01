@@ -8,7 +8,7 @@ const isBenchmark = process.argv.includes('--benchmark');
 const isCliOnly = process.argv.includes('--cli');
 const isDemo = process.argv.includes('--demo');
 
-const defaultExternals = ['typescript', 'vscode'];
+const defaultExternals = ['vscode'];
 
 async function buildAll() {
   if (isTest) {
@@ -146,7 +146,6 @@ async function buildAll() {
     entryPoints: ['src/cli/index.ts'],
     bundle: true,
     outfile: 'dist/cli.js',
-    external: ['typescript'],
     format: 'cjs',
     platform: 'node',
     target: 'node18',
@@ -177,7 +176,7 @@ async function buildAll() {
     entryPoints: ['src/extension.ts'],
     bundle: true,
     outfile: 'dist/extension.js',
-    external: ['vscode', 'typescript'],
+    external: ['vscode'],
     format: 'cjs',
     platform: 'node',
     target: 'node18',

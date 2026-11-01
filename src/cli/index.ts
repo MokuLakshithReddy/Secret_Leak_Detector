@@ -17,6 +17,7 @@ import { DEFAULT_FAIL_ON, resolveFailOn, shouldBlock, isRiskTier } from '../core
 import {
   matchesIgnorePattern,
   loadIgnorePatterns,
+  DEFAULT_IGNORE_PATTERNS,
   BINARY_EXTENSIONS,
 } from '../core/ignore/ignoreEngine';
 
@@ -758,7 +759,7 @@ function collectFiles(
   }
 
   const sldIgnores = loadIgnorePatterns(rootDir);
-  const allExcludes = [...userExcludes, ...sldIgnores];
+  const allExcludes = [...DEFAULT_IGNORE_PATTERNS, ...userExcludes, ...sldIgnores];
 
   const ext = path.extname(currentPath).toLowerCase();
   const rel = path.relative(rootDir, currentPath).replace(/\\/g, '/');

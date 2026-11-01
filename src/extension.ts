@@ -90,19 +90,33 @@ export function activate(context: vscode.ExtensionContext) {
     const folders = vscode.workspace.workspaceFolders || [];
     const blockCommits = getConfig().get<boolean>('blockGitCommits', true);
     const configuredFailOn = resolveFailOn(getConfig().get<string>('failOn', DEFAULT_FAIL_ON));
-    const installedHooks: string[] = [];
+
+    const hooksRecordPath = path.join(context.globalStorageUri.fsPath, 'installed-hooks.json');
+    let existingHooks: string[] = [];
+    try {
+      if (fs.existsSync(hooksRecordPath)) {
+        const parsed = JSON.parse(fs.readFileSync(hooksRecordPath, 'utf8'));
+        if (Array.isArray(parsed)) {
+          existingHooks = parsed.filter((p) => typeof p === 'string');
+        }
+      }
+    } catch {}
+
+    const allHooks = new Set<string>(existingHooks);
 
     for (const folder of folders) {
       const gs = new GitService(folder.uri.fsPath, (msg) => outputChannel.appendLine(msg));
       if (await gs.isGitRepo()) {
         await gs.ensureHookIsPinned(cli, process.execPath, blockCommits, configuredFailOn).catch(() => {});
-        installedHooks.push(path.join(folder.uri.fsPath, '.git', 'hooks', 'pre-commit'));
+        try {
+          const hookFile = await gs.getHookPath();
+          allHooks.add(hookFile);
+        } catch {}
       }
     }
 
     try {
-      const hooksRecordPath = path.join(context.globalStorageUri.fsPath, 'installed-hooks.json');
-      fs.writeFileSync(hooksRecordPath, JSON.stringify(installedHooks, null, 2), 'utf8');
+      fs.writeFileSync(hooksRecordPath, JSON.stringify(Array.from(allHooks), null, 2), 'utf8');
     } catch {}
   }
 

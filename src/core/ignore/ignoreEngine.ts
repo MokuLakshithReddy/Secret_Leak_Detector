@@ -30,6 +30,12 @@ export const DEFAULT_IGNORE_PATTERNS = [
   'pnpm-lock.yaml',
 ];
 
+const ignorePatternsCache = new Map<string, string[]>();
+
+export function clearIgnorePatternsCache(): void {
+  ignorePatternsCache.clear();
+}
+
 /**
  * Loads .sldignore patterns safely.
  *
@@ -39,6 +45,11 @@ export const DEFAULT_IGNORE_PATTERNS = [
  * rogue .sldignore or bypass scanner gates. In CI, we NEVER fall back to HEAD or working tree.
  */
 export function loadIgnorePatterns(rootDir: string): string[] {
+  const normalizedRoot = path.resolve(rootDir).replace(/\\/g, '/');
+  if (ignorePatternsCache.has(normalizedRoot)) {
+    return ignorePatternsCache.get(normalizedRoot)!;
+  }
+
   const isCI = !!(process.env.CI || process.env.GITHUB_ACTIONS || process.env.GITLAB_CI);
 
   if (isCI) {
@@ -58,16 +69,20 @@ export function loadIgnorePatterns(rootDir: string): string[] {
             stdio: ['ignore', 'pipe', 'ignore'],
           });
           if (content) {
-            return content
+            const patterns = content
               .split(/\r?\n/)
               .map((line: string) => line.trim())
               .filter((line: string) => line.length > 0 && !line.startsWith('#'));
+            ignorePatternsCache.set(normalizedRoot, patterns);
+            return patterns;
           }
         } catch {}
       }
       // If base branch lacks .sldignore in CI, no custom ignores are trusted
+      ignorePatternsCache.set(normalizedRoot, []);
       return [];
     } catch {
+      ignorePatternsCache.set(normalizedRoot, []);
       return [];
     }
   }
@@ -77,12 +92,15 @@ export function loadIgnorePatterns(rootDir: string): string[] {
   if (fs.existsSync(sldIgnorePath)) {
     try {
       const content = fs.readFileSync(sldIgnorePath, 'utf8');
-      return content
+      const patterns = content
         .split(/\r?\n/)
         .map((line) => line.trim())
         .filter((line) => line.length > 0 && !line.startsWith('#'));
+      ignorePatternsCache.set(normalizedRoot, patterns);
+      return patterns;
     } catch {}
   }
+  ignorePatternsCache.set(normalizedRoot, []);
   return [];
 }
 

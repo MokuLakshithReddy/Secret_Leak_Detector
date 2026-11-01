@@ -163,6 +163,13 @@ function batchCheckSizesSync(gitRoot: string, relPaths: string[]): Map<string, n
     maxBuffer: 64 * 1024 * 1024,
   });
 
+  if (res.error) {
+    throw new Error(`git cat-file --batch-check failed: ${res.error.message}`);
+  }
+  if (res.status !== 0) {
+    throw new Error(`git cat-file --batch-check exited with code ${res.status}: ${res.stderr || ''}`);
+  }
+
   if (res.stdout) {
     const lines = res.stdout.split(/\r?\n/);
     for (let i = 0; i < relPaths.length; i++) {
@@ -190,6 +197,13 @@ function batchReadBlobsSync(gitRoot: string, relPaths: string[]): Map<string, Bu
     input,
     maxBuffer: 64 * 1024 * 1024,
   });
+
+  if (res.error) {
+    throw new Error(`git cat-file --batch failed: ${res.error.message}`);
+  }
+  if (res.status !== 0) {
+    throw new Error(`git cat-file --batch exited with code ${res.status}: ${res.stderr ? res.stderr.toString('utf8') : ''}`);
+  }
 
   const buf = res.stdout;
   if (!buf || buf.length === 0) return blobs;
@@ -322,21 +336,42 @@ export function scanStagedChangesSync(workspaceRoot: string, options?: ScannerOp
   }
 
   // 2. Batch size check via single git cat-file --batch-check
-  const sizes = batchCheckSizesSync(gitRoot, candidatePaths);
+  let sizes: Map<string, number>;
+  try {
+    sizes = batchCheckSizesSync(gitRoot, candidatePaths);
+  } catch (err: any) {
+    return {
+      status: 'ERROR',
+      findings: [],
+      error: err.message || String(err),
+    };
+  }
+
   const readablePaths: string[] = [];
 
   for (const p of candidatePaths) {
     const size = sizes.get(p);
     if (size === undefined) {
-      skippedFiles.push({ path: p, reason: 'Could not inspect blob size' });
-      continue;
+      return {
+        status: 'ERROR',
+        findings: [],
+        error: `Could not inspect staged blob size for '${p}': buffer truncated or process failed.`,
+      };
     }
     if (size > MAX_STAGED_FILE_SIZE) {
-      skippedFiles.push({
-        path: p,
-        reason: `File size (${(size / (1024 * 1024)).toFixed(1)}MB) exceeds 5MB limit`,
-      });
-      continue;
+      if (options?.ignoreSkipped) {
+        skippedFiles.push({
+          path: p,
+          reason: `File size (${(size / (1024 * 1024)).toFixed(1)}MB) exceeds 5MB limit`,
+        });
+        continue;
+      } else {
+        return {
+          status: 'ERROR',
+          findings: [],
+          error: `File '${p}' (${(size / (1024 * 1024)).toFixed(1)}MB) exceeds 5MB limit. Use --ignore-skipped to bypass.`,
+        };
+      }
     }
     readablePaths.push(p);
   }
@@ -346,15 +381,27 @@ export function scanStagedChangesSync(workspaceRoot: string, options?: ScannerOp
   }
 
   // 3. Batch read blobs in a single spawn
-  const blobs = batchReadBlobsSync(gitRoot, readablePaths);
+  let blobs: Map<string, Buffer>;
+  try {
+    blobs = batchReadBlobsSync(gitRoot, readablePaths);
+  } catch (err: any) {
+    return {
+      status: 'ERROR',
+      findings: [],
+      error: err.message || String(err),
+    };
+  }
 
   // 4. Decode contents & detect binary/encoding
   const textByPath = new Map<string, string>();
   for (const p of readablePaths) {
     const rawBuf = blobs.get(p);
     if (!rawBuf) {
-      skippedFiles.push({ path: p, reason: 'Could not read staged blob' });
-      continue;
+      return {
+        status: 'ERROR',
+        findings: [],
+        error: `Could not read staged blob for '${p}': buffer truncated or read failed.`,
+      };
     }
     const decoded = decodeTextBuffer(rawBuf);
     if (decoded === null) {
@@ -369,28 +416,36 @@ export function scanStagedChangesSync(workspaceRoot: string, options?: ScannerOp
     return { status: 'CLEAN', findings: [], skippedFiles, filesScanned: 0 };
   }
 
-  // 5. Parse added line numbers from unified diff (bounded to scannable paths)
+  // 5. Parse added line numbers from unified diff (chunked to 50 pathspecs to prevent ARG_MAX overflow)
   let diffOutput = '';
-  try {
-    diffOutput = execFileSync(
-      'git',
-      [
-        ...GIT_BASE_ARGS,
-        'diff',
-        '--cached',
-        '-U0',
-        '--no-color',
-        '--no-ext-diff',
-        '--src-prefix=a/',
-        '--dst-prefix=b/',
-        '--',
-        ...scannablePaths,
-      ],
-      { cwd: gitRoot, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }
-    );
-  } catch (err: any) {
-    // If diff fails, fail closed by scanning all lines of every scannable file
-    diffOutput = '';
+  const CHUNK_SIZE = 50;
+  for (let i = 0; i < scannablePaths.length; i += CHUNK_SIZE) {
+    const chunk = scannablePaths.slice(i, i + CHUNK_SIZE);
+    try {
+      const chunkDiff = execFileSync(
+        'git',
+        [
+          ...GIT_BASE_ARGS,
+          'diff',
+          '--cached',
+          '-U0',
+          '--no-color',
+          '--no-ext-diff',
+          '--no-textconv',
+          '--literal-pathspecs',
+          '--src-prefix=a/',
+          '--dst-prefix=b/',
+          '--',
+          ...chunk,
+        ],
+        { cwd: gitRoot, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }
+      );
+      diffOutput += '\n' + chunkDiff;
+    } catch (err: any) {
+      // If diff fails, fail closed by scanning all lines of every scannable file
+      diffOutput = '';
+      break;
+    }
   }
 
   const hunksMap = parseDiffHunks(diffOutput);
@@ -429,19 +484,272 @@ export function scanStagedChangesSync(workspaceRoot: string, options?: ScannerOp
 
 /**
  * Asynchronous staged changes scanner for the VS Code extension host.
+ * Completely non-blocking using child_process streams.
  */
 export async function scanStagedChangesAsync(workspaceRoot: string, options?: ScannerOptions): Promise<StagedScanResult> {
-  // Use synchronous batch implementation offloaded or non-blocking
-  return new Promise((resolve) => {
-    try {
-      const res = scanStagedChangesSync(workspaceRoot, options);
-      resolve(res);
-    } catch (err: any) {
-      resolve({
+  const gitRoot = await getGitTopLevelAsync(workspaceRoot);
+
+  let statusBuf: Buffer;
+  try {
+    const { stdout } = await execFileAsync(
+      'git',
+      [
+        ...GIT_BASE_ARGS,
+        'diff',
+        '--cached',
+        '-z',
+        '--name-status',
+        '--no-color',
+        '--no-ext-diff',
+        '--src-prefix=a/',
+        '--dst-prefix=b/',
+      ],
+      { cwd: gitRoot, maxBuffer: 64 * 1024 * 1024, encoding: 'buffer' }
+    );
+    statusBuf = Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout);
+  } catch (diffErr: any) {
+    return {
+      status: 'ERROR',
+      findings: [],
+      error: `git diff --cached failed: ${diffErr.message || String(diffErr)}`,
+    };
+  }
+
+  const stagedEntries = parseNameStatusZ(statusBuf);
+  const activeEntries = stagedEntries.filter((e) => e.status !== 'D');
+
+  if (activeEntries.length === 0) {
+    return { status: 'CLEAN', findings: [], skippedFiles: [], filesScanned: 0 };
+  }
+
+  const ignorePatterns = [...DEFAULT_IGNORE_PATTERNS, ...loadIgnorePatterns(gitRoot)];
+  const skippedFiles: SkippedFile[] = [];
+  const candidatePaths: string[] = [];
+
+  for (const entry of activeEntries) {
+    const relPath = entry.path;
+    const ext = path.extname(relPath).toLowerCase();
+
+    if (ignorePatterns.some((pattern) => matchesIgnorePattern(relPath, pattern))) {
+      continue;
+    }
+
+    if (BINARY_EXTENSIONS.has(ext)) {
+      skippedFiles.push({ path: relPath, reason: 'Binary file extension skipped' });
+      continue;
+    }
+
+    candidatePaths.push(relPath);
+  }
+
+  if (candidatePaths.length === 0) {
+    return { status: 'CLEAN', findings: [], skippedFiles, filesScanned: 0 };
+  }
+
+  // 2. Async batch size check
+  const sizes = new Map<string, number>();
+  try {
+    const input = candidatePaths.map((p) => `:${p}\n`).join('');
+    const child = spawn('git', [...GIT_BASE_ARGS, 'cat-file', '--batch-check'], {
+      cwd: gitRoot,
+    });
+    let out = '';
+    let err = '';
+    child.stdout.on('data', (d) => (out += d.toString('utf8')));
+    child.stderr.on('data', (d) => (err += d.toString('utf8')));
+    child.stdin.write(input);
+    child.stdin.end();
+
+    await new Promise<void>((resolve, reject) => {
+      child.on('error', reject);
+      child.on('close', (code) => {
+        if (code !== 0) reject(new Error(`git cat-file --batch-check exited with code ${code}: ${err}`));
+        else resolve();
+      });
+    });
+
+    const lines = out.split(/\r?\n/);
+    for (let i = 0; i < candidatePaths.length; i++) {
+      const line = lines[i];
+      if (!line) continue;
+      const parts = line.split(' ');
+      if (parts.length >= 3 && parts[1] === 'blob') {
+        sizes.set(candidatePaths[i], parseInt(parts[2], 10) || 0);
+      }
+    }
+  } catch (err: any) {
+    return {
+      status: 'ERROR',
+      findings: [],
+      error: err.message || String(err),
+    };
+  }
+
+  const readablePaths: string[] = [];
+  for (const p of candidatePaths) {
+    const size = sizes.get(p);
+    if (size === undefined) {
+      return {
         status: 'ERROR',
         findings: [],
-        error: err.message || String(err),
-      });
+        error: `Could not inspect staged blob size for '${p}': buffer truncated or process failed.`,
+      };
     }
-  });
+    if (size > MAX_STAGED_FILE_SIZE) {
+      if (options?.ignoreSkipped) {
+        skippedFiles.push({
+          path: p,
+          reason: `File size (${(size / (1024 * 1024)).toFixed(1)}MB) exceeds 5MB limit`,
+        });
+        continue;
+      } else {
+        return {
+          status: 'ERROR',
+          findings: [],
+          error: `File '${p}' (${(size / (1024 * 1024)).toFixed(1)}MB) exceeds 5MB limit. Use --ignore-skipped to bypass.`,
+        };
+      }
+    }
+    readablePaths.push(p);
+  }
+
+  if (readablePaths.length === 0) {
+    return { status: 'CLEAN', findings: [], skippedFiles, filesScanned: 0 };
+  }
+
+  // 3. Async batch read blobs
+  const blobs = new Map<string, Buffer>();
+  try {
+    const input = readablePaths.map((p) => `:${p}\n`).join('');
+    const child = spawn('git', [...GIT_BASE_ARGS, 'cat-file', '--batch'], {
+      cwd: gitRoot,
+    });
+    const chunks: Buffer[] = [];
+    let err = '';
+    child.stdout.on('data', (d) => chunks.push(d));
+    child.stderr.on('data', (d) => (err += d.toString('utf8')));
+    child.stdin.write(input);
+    child.stdin.end();
+
+    await new Promise<void>((resolve, reject) => {
+      child.on('error', reject);
+      child.on('close', (code) => {
+        if (code !== 0) reject(new Error(`git cat-file --batch exited with code ${code}: ${err}`));
+        else resolve();
+      });
+    });
+
+    const buf = Buffer.concat(chunks);
+    let offset = 0;
+    let pathIdx = 0;
+    while (offset < buf.length && pathIdx < readablePaths.length) {
+      const newlineIdx = buf.indexOf(10, offset);
+      if (newlineIdx === -1) break;
+      const header = buf.toString('utf8', offset, newlineIdx).trim();
+      offset = newlineIdx + 1;
+
+      const parts = header.split(' ');
+      if (parts.length >= 3 && parts[1] === 'blob') {
+        const size = parseInt(parts[2], 10);
+        const content = buf.subarray(offset, offset + size);
+        blobs.set(readablePaths[pathIdx++], content);
+        offset += size;
+        if (offset < buf.length && buf[offset] === 10) offset++;
+      } else {
+        pathIdx++;
+      }
+    }
+  } catch (err: any) {
+    return {
+      status: 'ERROR',
+      findings: [],
+      error: err.message || String(err),
+    };
+  }
+
+  // 4. Decode
+  const textByPath = new Map<string, string>();
+  for (const p of readablePaths) {
+    const rawBuf = blobs.get(p);
+    if (!rawBuf) {
+      return {
+        status: 'ERROR',
+        findings: [],
+        error: `Could not read staged blob for '${p}': buffer truncated or read failed.`,
+      };
+    }
+    const decoded = decodeTextBuffer(rawBuf);
+    if (decoded === null) {
+      skippedFiles.push({ path: p, reason: 'Binary content detected' });
+      continue;
+    }
+    textByPath.set(p, decoded);
+  }
+
+  const scannablePaths = Array.from(textByPath.keys());
+  if (scannablePaths.length === 0) {
+    return { status: 'CLEAN', findings: [], skippedFiles, filesScanned: 0 };
+  }
+
+  // 5. Async chunked diff
+  let diffOutput = '';
+  const CHUNK_SIZE = 50;
+  for (let i = 0; i < scannablePaths.length; i += CHUNK_SIZE) {
+    const chunk = scannablePaths.slice(i, i + CHUNK_SIZE);
+    try {
+      const { stdout } = await execFileAsync(
+        'git',
+        [
+          ...GIT_BASE_ARGS,
+          'diff',
+          '--cached',
+          '-U0',
+          '--no-color',
+          '--no-ext-diff',
+          '--no-textconv',
+          '--literal-pathspecs',
+          '--src-prefix=a/',
+          '--dst-prefix=b/',
+          '--',
+          ...chunk,
+        ],
+        { cwd: gitRoot, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }
+      );
+      diffOutput += '\n' + stdout;
+    } catch {
+      // Chunk diff failed, fail closed
+    }
+  }
+
+  const hunksMap = parseDiffHunks(diffOutput);
+  const allFindings: SecretFinding[] = [];
+  let filesScanned = 0;
+
+  for (const relPath of scannablePaths) {
+    const text = textByPath.get(relPath);
+    if (!text) continue;
+
+    const addedLines = hunksMap.get(relPath) || new Set([-1]);
+
+    const scanOpts: ScannerOptions = {
+      workspaceRoot: gitRoot,
+      disallowInlineIgnore: options?.disallowInlineIgnore,
+    };
+
+    const findings = scanContent(text, relPath, scanOpts);
+    filesScanned++;
+
+    for (const finding of findings) {
+      if (addedLines.has(-1) || addedLines.has(finding.line)) {
+        allFindings.push(finding);
+      }
+    }
+  }
+
+  return {
+    status: allFindings.length > 0 ? 'FINDINGS' : 'CLEAN',
+    findings: allFindings,
+    skippedFiles,
+    filesScanned,
+  };
 }

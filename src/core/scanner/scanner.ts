@@ -16,43 +16,60 @@ export interface ScannerOptions {
   workspaceRoot?: string;
   onSkippedFile?: (filePath: string, reason: string) => void;
   disallowInlineIgnore?: boolean;
+  ignoreSkipped?: boolean;
 }
 
 function getFileIdPart(relativePath: string): string {
   return crypto.createHash('sha256').update(relativePath.replace(/\\/g, '/')).digest('hex').slice(0, 8);
 }
 
+interface LineMap {
+  text: string;
+  origLine: number[];
+  colOffset: number[];
+}
+
 /**
- * Bounds line length to prevent ReDoS on minified or adversarial single-line files.
+ * Bounds line length to prevent ReDoS on minified or adversarial single-line files,
+ * while strictly preserving original file line numbers and column coordinates.
  */
-function normalizeLongLines(raw: string, maxLineLen = 4000): string {
-  if (raw.length < maxLineLen) return raw;
-  let hasOverlongLine = false;
-  let lastNewline = -1;
-  for (let i = 0; i < raw.length; i++) {
-    if (raw.charCodeAt(i) === 10) {
-      if (i - lastNewline > maxLineLen) {
-        hasOverlongLine = true;
-        break;
-      }
-      lastNewline = i;
+function normalizeLongLinesWithMap(raw: string, maxLineLen = 4000): LineMap {
+  const lines = raw.split(/\r?\n/);
+  let hasLongLine = false;
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].length > maxLineLen) {
+      hasLongLine = true;
+      break;
     }
   }
-  if (!hasOverlongLine && raw.length - lastNewline <= maxLineLen) {
-    return raw;
+
+  if (!hasLongLine) {
+    const origLine = lines.map((_, idx) => idx + 1);
+    const colOffset = new Array(lines.length).fill(0);
+    return { text: raw, origLine, colOffset };
   }
-  const lines = raw.split(/\r?\n/);
-  const normalized: string[] = [];
-  for (const line of lines) {
+
+  const chunks: string[] = [];
+  const origLine: number[] = [];
+  const colOffset: number[] = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const lineNum = i + 1;
     if (line.length <= maxLineLen) {
-      normalized.push(line);
+      chunks.push(line);
+      origLine.push(lineNum);
+      colOffset.push(0);
     } else {
       for (let pos = 0; pos < line.length; pos += maxLineLen - 100) {
-        normalized.push(line.substring(pos, pos + maxLineLen));
+        chunks.push(line.substring(pos, pos + maxLineLen));
+        origLine.push(lineNum);
+        colOffset.push(pos);
       }
     }
   }
-  return normalized.join('\n');
+
+  return { text: chunks.join('\n'), origLine, colOffset };
 }
 
 interface DeobfuscationCandidate {
@@ -75,7 +92,7 @@ export function scanContent(
   options: ScannerOptions | string = {}
 ): SecretFinding[] {
   const opts: ScannerOptions = typeof options === 'string' ? { workspaceRoot: options } : options;
-  const content = normalizeLongLines(rawContent);
+  const { text: content, origLine, colOffset } = normalizeLongLinesWithMap(rawContent);
   const rules = opts.rules || CORE_RULES;
   const workspaceRoot = opts.workspaceRoot;
   const fileContext = analyzeFileContext(filePath, workspaceRoot);
@@ -104,9 +121,13 @@ export function scanContent(
       const mid = (low + high) >> 1;
       if (offsets[mid] <= offset) {
         if (mid === offsets.length - 1 || offsets[mid + 1] > offset) {
+          const chunkLine0 = mid;
+          const chunkCol = offset - offsets[mid] + 1;
+          const realLine = origLine[chunkLine0] !== undefined ? origLine[chunkLine0] : chunkLine0 + 1;
+          const realCol = (colOffset[chunkLine0] || 0) + chunkCol;
           return {
-            line: mid + 1,
-            column: offset - offsets[mid] + 1,
+            line: realLine,
+            column: realCol,
           };
         }
         low = mid + 1;
@@ -114,7 +135,9 @@ export function scanContent(
         high = mid - 1;
       }
     }
-    return { line: 1, column: offset + 1 };
+    const realLine = origLine[0] !== undefined ? origLine[0] : 1;
+    const realCol = (colOffset[0] || 0) + offset + 1;
+    return { line: realLine, column: realCol };
   }
 
   // Memory-efficient context extractor: windows lines to avoid multi-megabyte string array allocations
@@ -181,7 +204,7 @@ export function scanContent(
       // Only apply custom minEntropyThreshold to generic rules; preserve dedicated provider rule floors
       let effectiveMinEntropy: number | undefined;
       if (rule.minEntropy !== undefined) {
-        if (rule.provider === 'Generic' && opts.minEntropyThreshold !== undefined) {
+        if (rule.provider.startsWith('Generic') && opts.minEntropyThreshold !== undefined) {
           effectiveMinEntropy = opts.minEntropyThreshold;
         } else {
           effectiveMinEntropy = rule.minEntropy;
@@ -270,17 +293,24 @@ export function scanContent(
     });
   }
 
-  // B. Array .join(''): ['sk_live_', '12345...'].join('')
-  const arrayJoinRegex = /\[\s*["']([^"'\r\n]{2,80})["']\s*,\s*["']([^"'\r\n]{8,120})["'](?:\s*,\s*["']([^"'\r\n]{2,120})["'])*\s*\]\s*\.\s*join\s*\(\s*["']\s*["']\s*\)/g;
+  // B. Array .join(''): ['sk_live_', '12345...', 'part3', 'part4'].join('')
+  const arrayJoinRegex = /\[([^\]\r\n]{4,300})\]\s*\.\s*join\s*\(\s*["']\s*["']\s*\)/g;
   let arrayJoinMatch: RegExpExecArray | null;
   while ((arrayJoinMatch = arrayJoinRegex.exec(content)) !== null) {
-    const parts = [arrayJoinMatch[1], arrayJoinMatch[2], arrayJoinMatch[3]].filter(Boolean);
-    candidates.push({
-      combined: parts.join(''),
-      matchOffset: arrayJoinMatch.index,
-      matchLength: arrayJoinMatch[0].length,
-      description: 'Resolved split array join expression',
-    });
+    const itemRegex = /["']([^"'\r\n]*)["']/g;
+    const parts: string[] = [];
+    let itemMatch: RegExpExecArray | null;
+    while ((itemMatch = itemRegex.exec(arrayJoinMatch[1])) !== null) {
+      parts.push(itemMatch[1]);
+    }
+    if (parts.length >= 2) {
+      candidates.push({
+        combined: parts.join(''),
+        matchOffset: arrayJoinMatch.index,
+        matchLength: arrayJoinMatch[0].length,
+        description: 'Resolved split array join expression',
+      });
+    }
   }
 
   // C. Template literals: `sk_live_${'12345...'}`
@@ -323,7 +353,7 @@ export function scanContent(
 
         const currentLineText = contentLines[lineNumber - 1] || '';
         const prevLineText = lineNumber > 1 ? contentLines[lineNumber - 2] : '';
-        if (hasInlineSuppression(currentLineText, prevLineText)) {
+        if (!opts?.disallowInlineIgnore && hasInlineSuppression(currentLineText, prevLineText)) {
           continue;
         }
 
@@ -344,7 +374,7 @@ export function scanContent(
 
         let effectiveMinEntropy: number | undefined;
         if (rule.minEntropy !== undefined) {
-          if (rule.provider === 'Generic' && opts.minEntropyThreshold !== undefined) {
+          if (rule.provider.startsWith('Generic') && opts.minEntropyThreshold !== undefined) {
             effectiveMinEntropy = opts.minEntropyThreshold;
           } else {
             effectiveMinEntropy = rule.minEntropy;

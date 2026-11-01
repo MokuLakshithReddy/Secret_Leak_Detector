@@ -64,8 +64,7 @@ if [ -n "$PINNED_CLI" ] && [ -f "$PINNED_CLI" ]; then
     echo "   Ensure 'node' is in your PATH or configure your Git client environment."
     exit 127
   fi
-  export ELECTRON_RUN_AS_NODE=1
-  "$NODE_CMD" "$PINNED_CLI" scan --staged --fail-on "$SLD_FAIL_ON"
+  ELECTRON_RUN_AS_NODE=1 "$NODE_CMD" "$PINNED_CLI" scan --staged --fail-on "$SLD_FAIL_ON"
   SCAN_STATUS=$?
 elif command -v secret-leak-detector >/dev/null 2>&1; then
   secret-leak-detector scan --staged --fail-on "$SLD_FAIL_ON"
@@ -79,7 +78,6 @@ else
   echo "   Recovery guidance (if Secret Leak Detector was uninstalled):"
   echo "     rm .git/hooks/pre-commit"
   echo "     (or restore your original hook from .git/hooks/pre-commit.sld-backup.*)"
-  echo "     git config --unset-all core.hooksPath"
   echo "   Or reinstall Secret Leak Detector in VS Code."
   exit 2
 fi`
@@ -91,8 +89,7 @@ if [ -n "$SLD_CLI_PATH" ] && [ -f "$SLD_CLI_PATH" ]; then
     echo "   The pre-commit hook requires Node.js (>=18) to execute the scanner."
     exit 127
   fi
-  export ELECTRON_RUN_AS_NODE=1
-  "$NODE_CMD" "$SLD_CLI_PATH" scan --staged --fail-on "$SLD_FAIL_ON"
+  ELECTRON_RUN_AS_NODE=1 "$NODE_CMD" "$SLD_CLI_PATH" scan --staged --fail-on "$SLD_FAIL_ON"
   SCAN_STATUS=$?
 elif command -v secret-leak-detector >/dev/null 2>&1; then
   secret-leak-detector scan --staged --fail-on "$SLD_FAIL_ON"

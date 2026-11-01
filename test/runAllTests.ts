@@ -1,4 +1,4 @@
-﻿import { scanContent, scanFile, buildScanResult } from '../src/core/scanner/scanner';
+import { scanContent, scanFile, buildScanResult } from '../src/core/scanner/scanner';
 import { calculateShannonEntropy, calculateNormalizedEntropy } from '../src/core/entropy/entropy';
 import { redactSecret, generateFingerprint } from '../src/core/redactor/redactor';
 import { BaselineEngine, BaselineValidationError, validateBaselineSchema } from '../src/core/baseline/baselineEngine';
@@ -1251,6 +1251,74 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
     assert(astLogging.isLoggingCall === true, 'Lexical AST identifies logging call');
     const astProp = analyzeAstContext(fallbackLines, 2);
     assert(astProp.isSensitiveProperty === true, 'Lexical AST identifies sensitive property');
+
+    // --- 29. Long Line Coordinate Mapping, Multi-Part Joins & Baseline Resolution ---
+    console.log('\n--- 29. Long Line Coordinate Mapping, Multi-Part Joins & Baseline Resolution ---');
+
+    // Test 1: Coordinate mapping preserves line numbers when lines > 4000 chars are split
+    const key1 = synth(['AK', 'IA', '1234567890ABCDE1']);
+    const key2 = synth(['AK', 'IA', '1234567890ABCDE2']);
+    const longLine1 = 'const padding = "' + 'a'.repeat(4500) + '"; const token1 = "' + key1 + '";';
+    const line2 = 'const token2 = "' + key2 + '";';
+    const multilineContent = `${longLine1}\n${line2}`;
+    const mappedFindings = scanContent(multilineContent, 'overlong.ts');
+    assert(mappedFindings.length >= 2, 'Found both secrets in file with overlong first line');
+    const f1 = mappedFindings.find((f) => f.rawSecret === key1);
+    const f2 = mappedFindings.find((f) => f.rawSecret === key2);
+    assert(f1 !== undefined && f1.line === 1, `Secret past char 4000 on line 1 mapped to line 1 (got line ${f1?.line})`);
+    assert(f1 !== undefined && f1.column > 4500, `Secret past char 4000 on line 1 preserved column offset (got col ${f1?.column})`);
+    assert(f2 !== undefined && f2.line === 2, `Second line maintained line 2 coordinate without drifting (got line ${f2?.line})`);
+
+    // Test 2: Property access chains suppressed as false positives
+    const { evaluateFalsePositive } = require('../src/core/classifier/falsePositiveClassifier');
+    const propCheck1 = evaluateFalsePositive('this.config.apiToken');
+    assert(propCheck1.isFalsePositive === true, 'this.config.apiToken suppressed as property access');
+    const propCheck2 = evaluateFalsePositive('request.headers.authorization');
+    assert(propCheck2.isFalsePositive === true, 'request.headers.authorization suppressed as property access');
+
+    // Test 3: Array join with 4+ parts resolved
+    const fourPartJoinCode = `const key = ['sk_live_', '51ABCDEF', 'GHIJKLMN', '1234567890abcdef'].join('');`;
+    const fourPartFindings = scanContent(fourPartJoinCode, 'join.ts');
+    assert(fourPartFindings.length >= 1, 'Array join with 4 parts successfully resolved and detected');
+
+    // Test 4: Baseline multi-file duplicate resolution tracking
+    const { BaselineEngine } = require('../src/core/baseline/baselineEngine');
+    const baselineEngine = new BaselineEngine(process.cwd(), 'scratch-baseline-resolution.json');
+    const mockFindingA: any = {
+      id: 'sec_1',
+      fingerprint: 'fp_shared_123',
+      type: 'AWS Access Key ID',
+      provider: 'Amazon Web Services',
+      file: 'src/fileA.ts',
+      line: 10,
+      detectedAt: new Date().toISOString(),
+    };
+    const mockFindingB: any = {
+      id: 'sec_2',
+      fingerprint: 'fp_shared_123',
+      type: 'AWS Access Key ID',
+      provider: 'Amazon Web Services',
+      file: 'src/fileB.ts',
+      line: 20,
+      detectedAt: new Date().toISOString(),
+    };
+    const savedBaseline = baselineEngine.saveBaseline([mockFindingA, mockFindingB]);
+    assert(savedBaseline.findings.length === 2, 'Saved baseline has 2 findings across different files');
+
+    // Both findings present -> 0 resolved
+    const statusBoth = baselineEngine.filterAgainstBaseline([mockFindingA, mockFindingB]);
+    assert(statusBoth.resolvedCount === 0, `Both findings present reports 0 resolved (got ${statusBoth.resolvedCount})`);
+    assert(statusBoth.existingFindings.length === 2, 'Both findings classified as existing');
+
+    // fileB removed -> 1 resolved
+    const statusOneRemoved = baselineEngine.filterAgainstBaseline([mockFindingA]);
+    assert(statusOneRemoved.resolvedCount === 1, `Removing one file reports 1 resolved (got ${statusOneRemoved.resolvedCount})`);
+
+    // Clean up baseline file
+    try {
+      const fs = require('fs');
+      if (fs.existsSync(baselineEngine.getPath())) fs.unlinkSync(baselineEngine.getPath());
+    } catch {}
   }
 
   console.log('\n============================================================');
