@@ -64,10 +64,10 @@ if [ -n "$PINNED_CLI" ] && [ -f "$PINNED_CLI" ]; then
     echo "   Ensure 'node' is in your PATH or configure your Git client environment."
     exit 127
   fi
-  ELECTRON_RUN_AS_NODE=1 "$NODE_CMD" "$PINNED_CLI" scan --staged --fail-on "$SLD_FAIL_ON"
+  ELECTRON_RUN_AS_NODE=1 "$NODE_CMD" "$PINNED_CLI" scan --staged --fail-on "$SLD_FAIL_ON" $DISALLOW_INLINE $IGNORE_SKIPPED
   SCAN_STATUS=$?
 elif command -v secret-leak-detector >/dev/null 2>&1; then
-  secret-leak-detector scan --staged --fail-on "$SLD_FAIL_ON"
+  secret-leak-detector scan --staged --fail-on "$SLD_FAIL_ON" $DISALLOW_INLINE $IGNORE_SKIPPED
   SCAN_STATUS=$?
 else
   echo ""
@@ -89,10 +89,10 @@ if [ -n "$SLD_CLI_PATH" ] && [ -f "$SLD_CLI_PATH" ]; then
     echo "   The pre-commit hook requires Node.js (>=18) to execute the scanner."
     exit 127
   fi
-  ELECTRON_RUN_AS_NODE=1 "$NODE_CMD" "$SLD_CLI_PATH" scan --staged --fail-on "$SLD_FAIL_ON"
+  ELECTRON_RUN_AS_NODE=1 "$NODE_CMD" "$SLD_CLI_PATH" scan --staged --fail-on "$SLD_FAIL_ON" $DISALLOW_INLINE $IGNORE_SKIPPED
   SCAN_STATUS=$?
 elif command -v secret-leak-detector >/dev/null 2>&1; then
-  secret-leak-detector scan --staged --fail-on "$SLD_FAIL_ON"
+  secret-leak-detector scan --staged --fail-on "$SLD_FAIL_ON" $DISALLOW_INLINE $IGNORE_SKIPPED
   SCAN_STATUS=$?
 else
   echo ""
@@ -116,6 +116,16 @@ SLD_FAIL_ON="${threshold}"
 SLD_BLOCK_COMMITS="${blockCommits ? '1' : '0'}"
 
 echo "🔐 [Secret Leak Detector] Inspecting staged changes for credentials..."
+
+DISALLOW_INLINE=""
+if [ "$SLD_DISALLOW_INLINE_IGNORE" = "1" ] || [ "$(git config --bool secret-leak-detector.disallow-inline-ignore 2>/dev/null)" = "true" ]; then
+  DISALLOW_INLINE="--no-inline-ignore"
+fi
+
+IGNORE_SKIPPED=""
+if [ "$SLD_IGNORE_SKIPPED" = "1" ] || [ "$(git config --bool secret-leak-detector.ignore-skipped 2>/dev/null)" = "true" ]; then
+  IGNORE_SKIPPED="--ignore-skipped"
+fi
 
 ${nodeResolution}
 

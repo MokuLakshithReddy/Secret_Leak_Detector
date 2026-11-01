@@ -50,6 +50,17 @@ export class VerificationEngine {
       };
     }
 
+    if (!finding.rawSecret || finding.rawSecret.trim().length === 0) {
+      return {
+        isResolved: false,
+        targetFileClean: true,
+        workingTreeClean: true,
+        historyStatus: 'UNKNOWN',
+        details: 'Raw secret value unavailable to verify against commit history.',
+        timestamp: now,
+      };
+    }
+
     // File is either deleted or no longer contains the secret in the working tree.
     // Check Git history independently of current file existence.
     let gitExposure;
@@ -79,8 +90,13 @@ export class VerificationEngine {
       };
     }
 
-    if (gitExposure.isPresentInHistory) {
-      const commitSha = gitExposure.introducedCommit?.sha ? gitExposure.introducedCommit.sha.substring(0, 7) : 'historical';
+    const inHistory = !!(gitExposure.isPresentInHistory || finding.gitExposure?.isPresentInHistory);
+
+    if (inHistory) {
+      const commitSha =
+        gitExposure.introducedCommit?.sha?.substring(0, 7) ||
+        finding.gitExposure?.introducedCommit?.sha?.substring(0, 7) ||
+        'historical';
       return {
         isResolved: false,
         targetFileClean: true,

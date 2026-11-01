@@ -21,25 +21,10 @@ import {
   BINARY_EXTENSIONS,
 } from '../core/ignore/ignoreEngine';
 
+import { getPackageVersion } from '../core/version';
+
 const args = process.argv.slice(2);
 const command = args[0] || 'help';
-
-function getPackageVersion(): string {
-  try {
-    const candidates = [
-      path.resolve(__dirname, '..', 'package.json'),
-      path.resolve(__dirname, 'package.json'),
-      path.resolve(process.cwd(), 'package.json'),
-    ];
-    for (const cand of candidates) {
-      if (fs.existsSync(cand)) {
-        const pkg = JSON.parse(fs.readFileSync(cand, 'utf8'));
-        if (pkg.name === 'secret-leak-detector' && pkg.version) return pkg.version;
-      }
-    }
-  } catch {}
-  return '1.0.2';
-}
 
 if (command === '--version' || command === '-v' || args.includes('--version') || args.includes('-v')) {
   console.log(getPackageVersion());
@@ -151,7 +136,10 @@ async function runScan(cmdArgs: string[], cwd: string) {
   const isJson = cmdArgs.includes('--json');
   const isSarif = cmdArgs.includes('--sarif');
   const isStaged = cmdArgs.includes('--staged');
-  const ignoreSkipped = cmdArgs.includes('--ignore-skipped') || cmdArgs.includes('--allow-skipped');
+  const ignoreSkipped =
+    cmdArgs.includes('--ignore-skipped') ||
+    cmdArgs.includes('--allow-skipped') ||
+    process.env.SLD_IGNORE_SKIPPED === '1';
 
   const baselineIdx = cmdArgs.indexOf('--baseline');
   const baselineFile = baselineIdx !== -1 ? cmdArgs[baselineIdx + 1] : undefined;
@@ -205,7 +193,7 @@ async function runScan(cmdArgs: string[], cwd: string) {
     if (!isGit) {
       fail('Error: Not a Git repository.');
     }
-    const staged = scanStagedChangesSync(cwd, { disallowInlineIgnore });
+    const staged = scanStagedChangesSync(cwd, { disallowInlineIgnore, ignoreSkipped });
     findings.push(...staged.findings);
     filesScanned = staged.filesScanned || 0;
 
@@ -217,11 +205,22 @@ async function runScan(cmdArgs: string[], cwd: string) {
       for (const sf of staged.skippedFiles) {
         skippedFiles.push({ file: sf.path, reason: sf.reason });
       }
-      if (!isJson && !isSarif) {
-        console.warn(`\n⚠️  Skipped ${staged.skippedFiles.length} file(s) during staged scan:`);
-        for (const sf of staged.skippedFiles) {
-          console.warn(`   • ${sf.path}: ${sf.reason}`);
+      if (ignoreSkipped) {
+        if (!isJson && !isSarif) {
+          console.warn(`\n⚠️  Skipped ${staged.skippedFiles.length} file(s) during staged scan (--ignore-skipped active):`);
+          for (const sf of staged.skippedFiles) {
+            console.warn(`   • ${sf.path}: ${sf.reason}`);
+          }
         }
+      } else {
+        if (!isJson && !isSarif) {
+          console.error(`\n❌ Error: ${staged.skippedFiles.length} file(s) were skipped during staged scan (failing closed for safety):`);
+          for (const sf of staged.skippedFiles) {
+            console.error(`   • ${sf.path}: ${sf.reason}`);
+          }
+          console.error('Use --ignore-skipped to bypass this check if these files are intentionally uninspected.\n');
+        }
+        process.exit(2);
       }
     }
   } else {
@@ -528,9 +527,10 @@ async function runGraph(cmdArgs: string[], cwd: string) {
 
 async function runBaseline(cmdArgs: string[], cwd: string) {
   const isForce = cmdArgs.includes('--force') || cmdArgs.includes('-f');
+  const acceptAll = cmdArgs.includes('--accept-all') || cmdArgs.includes('--yes') || cmdArgs.includes('-y') || isForce;
   const subCommand = cmdArgs.find((a) => a === 'init' || a === 'update') || 'init';
   if (subCommand !== 'init' && subCommand !== 'update') {
-    fail('Usage: secret-leak-detector baseline [init|update] [--force]');
+    fail('Usage: secret-leak-detector baseline [init|update] [--force] [--accept-all]');
   }
 
   const baselineEngine = new BaselineEngine(cwd);
@@ -567,20 +567,34 @@ async function runBaseline(cmdArgs: string[], cwd: string) {
     fail(`Error: Baseline file '${DEFAULT_BASELINE_FILENAME}' already exists. Use 'baseline update' to refresh line numbers, or pass --force to reinitialize.`);
   }
 
-  if (findings.length > 0 && !isForce && process.stdin.isTTY) {
-    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-    const answer = await new Promise<string>((resolve) => {
-      rl.question(
-        `⚠️  Found ${findings.length} secret(s) in workspace. Whitelist all detected findings into ${DEFAULT_BASELINE_FILENAME}? (y/N): `,
-        (ans: string) => {
-          rl.close();
-          resolve(ans.trim().toLowerCase());
+  if (findings.length > 0) {
+    console.log(`\n📋 Reviewing ${findings.length} credential finding(s) detected in workspace:`);
+    for (const f of findings) {
+      console.log(`  • ${f.file}:${f.line} [${f.risk}] ${f.type} (${f.redactedSecret})`);
+    }
+    console.log('');
+
+    if (!acceptAll) {
+      if (process.stdin.isTTY) {
+        const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+        const answer = await new Promise<string>((resolve) => {
+          rl.question(
+            `⚠️  Whitelist the above ${findings.length} finding(s) into ${DEFAULT_BASELINE_FILENAME}? (y/N): `,
+            (ans: string) => {
+              rl.close();
+              resolve(ans.trim().toLowerCase());
+            }
+          );
+        });
+        if (answer !== 'y' && answer !== 'yes') {
+          console.log('Aborted. Baseline not initialized.');
+          return;
         }
-      );
-    });
-    if (answer !== 'y' && answer !== 'yes') {
-      console.log('Aborted. Baseline not initialized.');
-      return;
+      } else {
+        fail(
+          `Error: Whitelisting ${findings.length} finding(s) into baseline requires explicit confirmation or the '--accept-all' flag in non-interactive environments.`
+        );
+      }
     }
   }
 
@@ -698,6 +712,8 @@ async function runVerify(cmdArgs: string[], cwd: string) {
         console.log(`  • ${hf.type} (${hf.redactedSecret}) in commit ${hf.gitExposure?.introducedCommit?.sha.slice(0, 7) || 'history'}: ${vResult.details}`);
       }
       console.log('   Credential rotation and Git history purging are recommended.');
+      console.log('============================================================\n');
+      process.exit(1);
     } else {
       console.log('✅ HEAD AND RECENT HISTORY CLEAN: No historical exposures found for this file.');
     }

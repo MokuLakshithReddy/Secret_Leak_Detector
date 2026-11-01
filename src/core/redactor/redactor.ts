@@ -30,13 +30,22 @@ export function redactSecret(secret: string): string {
 }
 
 /**
- * Computes an anonymous deterministic HMAC-SHA-256 fingerprint for a credential
- * using a fixed domain salt. This prevents rainbow table or dictionary reconstruction
- * of weak secrets from baseline files while maintaining stable identity across scans.
+ * Computes an anonymous deterministic HMAC-SHA-256 fingerprint for a credential.
+ *
+ * Security & Guessability Design Note:
+ * Baseline fingerprints are deterministic identifiers used for tracking and cross-scan
+ * deduplication across developer machines and CI pipelines. Because the default domain salt
+ * is standardized across installations so that team-committed baseline files remain portable,
+ * fingerprints for known low-entropy strings (e.g. "password123") could theoretically be
+ * dictionary-guessed if an attacker accesses both the source code and baseline file.
+ *
+ * For high-security environments requiring non-guessable private tracking, configure an optional
+ * per-repository private salt via the `SLD_SALT` environment variable.
  */
-export function generateFingerprint(secret: string): string {
+export function generateFingerprint(secret: string, customSalt?: string): string {
+  const salt = customSalt || process.env.SLD_SALT || FINGERPRINT_DOMAIN_SALT;
   return crypto
-    .createHmac('sha256', FINGERPRINT_DOMAIN_SALT)
+    .createHmac('sha256', salt)
     .update(secret)
     .digest('hex')
     .substring(0, 16);

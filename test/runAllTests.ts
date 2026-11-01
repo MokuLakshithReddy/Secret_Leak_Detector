@@ -1319,6 +1319,93 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
       const fs = require('fs');
       if (fs.existsSync(baselineEngine.getPath())) fs.unlinkSync(baselineEngine.getPath());
     } catch {}
+
+    // --- 30. Staged Added-Line Filter, Ignore-Skipped & Verification Invariants ---
+    console.log('\n--- 30. Staged Added-Line Filter, Ignore-Skipped & Verification Invariants ---');
+
+    // Test 1: Staged added-line filter ignores pre-existing secrets on untouched lines
+    const stagedScratch = path.join(process.cwd(), 'scratch', 'sld-added-line-test');
+    try {
+      fs.rmSync(stagedScratch, { recursive: true, force: true });
+    } catch {}
+    fs.mkdirSync(stagedScratch, { recursive: true });
+
+    const cp = require('child_process');
+    cp.execSync('git init', { cwd: stagedScratch, stdio: 'ignore' });
+    cp.execSync('git config user.email "test@example.com"', { cwd: stagedScratch, stdio: 'ignore' });
+    cp.execSync('git config user.name "Test"', { cwd: stagedScratch, stdio: 'ignore' });
+
+    // Initial commit with a pre-existing secret on line 1
+    const testSecret = synth(['AK', 'IA', '1234567890STAGED']);
+    const initialContent = `const AWS_KEY = "${testSecret}";\nconst initial = true;\n`;
+    fs.writeFileSync(path.join(stagedScratch, 'app.ts'), initialContent, 'utf8');
+    cp.execSync('git add app.ts', { cwd: stagedScratch, stdio: 'ignore' });
+    cp.execSync('git commit -m "initial commit"', { cwd: stagedScratch, stdio: 'ignore' });
+
+    // Modify ONLY line 2 with a clean modification (line 1 is untouched)
+    const modifiedContent = `const AWS_KEY = "${testSecret}";\nconst initial = false;\nconst addedClean = "clean content";\n`;
+    fs.writeFileSync(path.join(stagedScratch, 'app.ts'), modifiedContent, 'utf8');
+    cp.execSync('git add app.ts', { cwd: stagedScratch, stdio: 'ignore' });
+
+    const { scanStagedChangesSync } = require('../src/git/stagedScanner');
+    const cleanModResult = scanStagedChangesSync(stagedScratch);
+    assert(cleanModResult.status === 'CLEAN', `Staged scan with pre-existing secret on untouched line reports CLEAN (got ${cleanModResult.status})`);
+    assert(cleanModResult.findings.length === 0, 'No findings reported when modified lines are clean');
+
+    // Now add a NEW secret on line 4
+    const newSecret = synth(['AK', 'IA', '0987654321NEWSEC']);
+    const leakContent = `${modifiedContent}const newLeak = "${newSecret}";\n`;
+    fs.writeFileSync(path.join(stagedScratch, 'app.ts'), leakContent, 'utf8');
+    cp.execSync('git add app.ts', { cwd: stagedScratch, stdio: 'ignore' });
+
+    const leakModResult = scanStagedChangesSync(stagedScratch);
+    assert(leakModResult.status === 'FINDINGS', `Staged scan with new secret on added line reports FINDINGS (got ${leakModResult.status})`);
+    assert(leakModResult.findings.length === 1, `Only the new secret on the added line is reported (got ${leakModResult.findings.length})`);
+    assert(leakModResult.findings[0].rawSecret === newSecret, 'Reported finding matches the newly added secret');
+
+    // Test 2: --ignore-skipped handling on oversized staged file
+    const largeFile = path.join(stagedScratch, 'large.txt');
+    const largeBuf = Buffer.alloc(5.5 * 1024 * 1024, 'a\n');
+    fs.writeFileSync(largeFile, largeBuf);
+    cp.execSync('git add large.txt', { cwd: stagedScratch, stdio: 'ignore' });
+
+    // Without ignoreSkipped -> fails closed with ERROR
+    const noIgnoreRes = scanStagedChangesSync(stagedScratch, { ignoreSkipped: false });
+    assert(noIgnoreRes.status === 'ERROR', `Oversized staged file without ignoreSkipped returns ERROR (got ${noIgnoreRes.status})`);
+    assert(noIgnoreRes.error?.includes('exceeds 5MB limit'), 'Error mentions 5MB limit and bypass guidance');
+
+    // With ignoreSkipped -> allows scan, marks as skipped
+    const ignoreRes = scanStagedChangesSync(stagedScratch, { ignoreSkipped: true });
+    assert(ignoreRes.status === 'FINDINGS', 'Oversized staged file with ignoreSkipped allows scan to complete');
+    assert(ignoreRes.skippedFiles && ignoreRes.skippedFiles.length >= 1, 'Skipped files array contains the oversized file');
+
+    // Clean up scratch git repo
+    try {
+      fs.rmSync(stagedScratch, { recursive: true, force: true });
+    } catch {}
+
+    // Test 3: VerificationEngine rejects secrets that still exist in history
+    const { VerificationEngine } = require('../src/core/verification/verificationEngine');
+    const verifyEngine = new VerificationEngine(process.cwd());
+    const mockHistoricalFinding: any = {
+      fullPath: path.join(process.cwd(), 'nonexistent-cleaned-file.ts'),
+      file: 'nonexistent-cleaned-file.ts',
+      rawSecret: 'mock_test_secret_in_history_xyz',
+      fingerprint: 'fp_hist_123',
+      line: 1,
+      gitExposure: {
+        isPresentInHead: false,
+        isPresentInHistory: true,
+        introducedCommit: { sha: 'abcdef1234567890' },
+      },
+    };
+    const histVerifyResult = await verifyEngine.verifyFindingFix(mockHistoricalFinding);
+    assert(histVerifyResult.isResolved === false, 'Secret remaining in git history is NOT marked resolved');
+    assert(histVerifyResult.historyStatus === 'REMOVED_FROM_HEAD_STILL_IN_HISTORY', 'History status correctly set to REMOVED_FROM_HEAD_STILL_IN_HISTORY');
+
+    // Test 4: Version utility returns matching 1.0.3 version
+    const { getPackageVersion } = require('../src/core/version');
+    assert(getPackageVersion() === '1.0.3', `getPackageVersion returns 1.0.3 (got ${getPackageVersion()})`);
   }
 
   console.log('\n============================================================');

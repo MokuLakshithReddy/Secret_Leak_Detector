@@ -1,4 +1,5 @@
 import { SecretFinding } from '../types';
+import { getPackageVersion } from '../version';
 
 /**
  * Formats findings into OASIS SARIF v2.1.0 format for GitHub Code Scanning / CI security alerts.
@@ -79,7 +80,7 @@ export function formatAsSarif(findings: SecretFinding[]): object {
         tool: {
           driver: {
             name: 'Secret Leak Detector',
-            semanticVersion: '1.0.2',
+            semanticVersion: getPackageVersion(),
             informationUri: 'https://github.com/MokuLakshithReddy/Secret_Leak_Detector',
             rules: Array.from(rulesMap.values()),
           },

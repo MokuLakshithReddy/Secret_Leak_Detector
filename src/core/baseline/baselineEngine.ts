@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { SecretFinding, BaselineFile, BaselineFinding } from '../types';
+import { getPackageVersion } from '../version';
 
 export const DEFAULT_BASELINE_FILENAME = '.secretleak-baseline.json';
 
@@ -164,14 +165,7 @@ export class BaselineEngine {
       firstSeen: f.detectedAt,
     }));
 
-    let pkgVersion = '1.0.2';
-    try {
-      const pkgPath = path.resolve(__dirname, '../../../package.json');
-      if (fs.existsSync(pkgPath)) {
-        const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
-        if (pkg.version) pkgVersion = pkg.version;
-      }
-    } catch {}
+    const pkgVersion = getPackageVersion();
 
     const file: BaselineFile = {
       version: 1,

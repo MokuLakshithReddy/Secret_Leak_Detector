@@ -26,6 +26,7 @@ export interface StagedScanResult {
 }
 
 const GIT_BASE_ARGS = [
+  '--literal-pathspecs',
   '-c', 'core.quotepath=false',
   '-c', 'diff.noprefix=false',
   '-c', 'diff.mnemonicPrefix=false',
@@ -432,7 +433,6 @@ export function scanStagedChangesSync(workspaceRoot: string, options?: ScannerOp
           '--no-color',
           '--no-ext-diff',
           '--no-textconv',
-          '--literal-pathspecs',
           '--src-prefix=a/',
           '--dst-prefix=b/',
           '--',
@@ -707,7 +707,6 @@ export async function scanStagedChangesAsync(workspaceRoot: string, options?: Sc
           '--no-color',
           '--no-ext-diff',
           '--no-textconv',
-          '--literal-pathspecs',
           '--src-prefix=a/',
           '--dst-prefix=b/',
           '--',

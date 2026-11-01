@@ -201,10 +201,10 @@ export function scanContent(
 
       // Check minimum entropy constraint:
       // Structured rules without an entropy requirement are never filtered by global minEntropy.
-      // Only apply custom minEntropyThreshold to generic rules; preserve dedicated provider rule floors
+      // Only apply custom minEntropyThreshold to generic API key rules; preserve password and provider rule floors
       let effectiveMinEntropy: number | undefined;
       if (rule.minEntropy !== undefined) {
-        if (rule.provider.startsWith('Generic') && opts.minEntropyThreshold !== undefined) {
+        if (rule.id === 'generic-api-key' && opts.minEntropyThreshold !== undefined) {
           effectiveMinEntropy = opts.minEntropyThreshold;
         } else {
           effectiveMinEntropy = rule.minEntropy;
@@ -374,7 +374,7 @@ export function scanContent(
 
         let effectiveMinEntropy: number | undefined;
         if (rule.minEntropy !== undefined) {
-          if (rule.provider.startsWith('Generic') && opts.minEntropyThreshold !== undefined) {
+          if (rule.id === 'generic-api-key' && opts.minEntropyThreshold !== undefined) {
             effectiveMinEntropy = opts.minEntropyThreshold;
           } else {
             effectiveMinEntropy = rule.minEntropy;

@@ -72,6 +72,11 @@ export class FindingsTreeProvider implements vscode.TreeDataProvider<TreeItem> {
           vscode.TreeItemCollapsibleState.None
         );
         const secretDisplay = redact ? f.redactedSecret : f.rawSecret;
+        const fixCode = typeof f.remediation?.replacementCode === 'string'
+          ? f.remediation.replacementCode
+          : typeof f.remediation?.envVarName === 'string'
+            ? `process.env.${f.remediation.envVarName}`
+            : 'Migrate to .env';
         item.description = `${f.file}:${f.line}`;
         item.tooltip = new vscode.MarkdownString(
           `**${f.type}** (${f.provider})\n\n` +
@@ -79,7 +84,7 @@ export class FindingsTreeProvider implements vscode.TreeDataProvider<TreeItem> {
           `- **Confidence:** ${f.confidence}%\n` +
           `- **Entropy:** ${f.entropy} bits/char\n` +
           `- **Secret:** \`${secretDisplay}\`\n\n` +
-          `*Suggested Fix: ${f.remediation?.replacementCode || f.remediation?.envVarName || 'Migrate to .env'}*`
+          `*Suggested Fix: ${fixCode}*`
         );
         item.iconPath = new vscode.ThemeIcon('key');
 
