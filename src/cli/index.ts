@@ -238,7 +238,7 @@ async function runScan(cmdArgs: string[], cwd: string) {
     if (!isGit) {
       fail('Error: Not a Git repository.');
     }
-    const staged = scanStagedChangesSync(cwd, { disallowInlineIgnore, ignoreSkipped: !failOnSkipped });
+    const staged = scanStagedChangesSync(cwd, { disallowInlineIgnore, ignoreSkipped, failOnSkipped });
     findings.push(...staged.findings);
     filesScanned = staged.filesScanned || 0;
 
@@ -728,7 +728,19 @@ async function runVerify(cmdArgs: string[], cwd: string) {
     fail(`Error: File does not exist: ${targetFile}`);
   }
 
-  const currentFindings = scanFile(absPath, { workspaceRoot: cwd });
+  let skippedReason: string | undefined;
+  const currentFindings = scanFile(absPath, {
+    workspaceRoot: cwd,
+    onSkippedFile: (_p, reason) => {
+      skippedReason = reason;
+    },
+  });
+
+  if (skippedReason) {
+    console.error(`\n❌ VERIFICATION INCOMPLETE: Target file '${targetFile}' could not be inspected.`);
+    console.error(`   Reason: ${skippedReason}\n`);
+    process.exit(2);
+  }
 
   console.log('\n============================================================');
   console.log(`🔍 RESCAN VERIFICATION: ${targetFile}`);
@@ -750,11 +762,30 @@ async function runVerify(cmdArgs: string[], cwd: string) {
   const isGit = await gitEngine.isGitRepo();
 
   if (isGit) {
-    console.log('Checking Git commit history status...');
-    const historyFindings = await gitEngine.scanHistoryCommits(50);
-    const relatedHistorical = historyFindings.filter(
-      (hf) => hf.file === targetFile || hf.file.endsWith(path.basename(targetFile))
-    );
+    let canonicalTargetRel: string;
+    try {
+      const gitRoot = execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd, encoding: 'utf8' }).trim();
+      canonicalTargetRel = path.relative(gitRoot, absPath).replace(/\\/g, '/');
+    } catch {
+      canonicalTargetRel = path.relative(cwd, absPath).replace(/\\/g, '/');
+    }
+
+    let totalCommits = 0;
+    try {
+      totalCommits = parseInt(execFileSync('git', ['rev-list', '--count', 'HEAD'], { cwd, encoding: 'utf8' }).trim(), 10) || 0;
+    } catch {}
+
+    const commitCoverageDesc = totalCommits > 0 ? `all ${totalCommits}` : 'full';
+    console.log(`Checking Git commit history status across ${commitCoverageDesc} commit(s)...`);
+
+    // Scan all commits (0 = unlimited) for complete history coverage
+    const historyFindings = await gitEngine.scanHistoryCommits(0);
+    // Strict match on canonical repository-relative path (prevents collisions on common basenames)
+    const relatedHistorical = historyFindings.filter((hf) => {
+      const normHf = hf.file.replace(/\\/g, '/');
+      return normHf === canonicalTargetRel;
+    });
+
     if (relatedHistorical.length > 0) {
       console.log(`⚠️  HISTORICAL EXPOSURE DETECTED: ${relatedHistorical.length} secret(s) in this file exist in Git history:`);
       for (const hf of relatedHistorical) {
@@ -765,7 +796,7 @@ async function runVerify(cmdArgs: string[], cwd: string) {
       console.log('============================================================\n');
       process.exit(1);
     } else {
-      console.log('✅ HEAD AND RECENT HISTORY CLEAN: No historical exposures found for this file.');
+      console.log(`✅ HEAD AND FULL HISTORY CLEAN: No historical exposures found for '${canonicalTargetRel}' across ${commitCoverageDesc} commit(s).`);
     }
   } else {
     console.log('Target file contains no active credentials.');

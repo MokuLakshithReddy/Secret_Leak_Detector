@@ -30,3 +30,7 @@ logs/
 
 # Demo temp repos created at runtime — excluded from SLD scan
 demo/tmp-fixture-repo/
+
+# User private salt & local hook records
+.sld/
+.sld/salt

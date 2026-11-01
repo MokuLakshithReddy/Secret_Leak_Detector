@@ -178,6 +178,7 @@ assert(commentFindings.length > 0, 'Adversarial inline comment disruption detect
 
 // --- 6. Baseline System Tests ---
 console.log('\n--- 6. Baseline Engine & CI Guardrail Tests ---');
+process.env.SLD_ISOLATE_BASELINE_TESTS = '1';
 const tmpDir = path.join(__dirname, '..', 'scratch', 'test_baseline');
 if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
 const baselineEngine = new BaselineEngine(tmpDir, 'test-baseline.json');
@@ -199,6 +200,7 @@ assert(checkWithNew.newFindings[0].provider === 'GitHub', 'New finding correctly
 try {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 } catch {}
+delete process.env.SLD_ISOLATE_BASELINE_TESTS;
 
 // --- 7. SARIF Generation Test ---
 console.log('\n--- 7. OASIS SARIF v2.1.0 Export Tests ---');
@@ -1654,6 +1656,146 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
       assert(uninstalledHook.includes('COMMIT BLOCKED (fail-closed)'), 'Hook enforces fail-closed when CLI is missing');
       assert(uninstalledHook.includes('Remove stranded hook: rm'), 'Hook provides actionable removal guidance');
       assert(uninstalledHook.includes('pre-commit.sld-backup.latest'), 'Hook checks for backup restoration');
+    }
+
+    // --- 35. CI Trusted Base Ref, Staged Multiline PEM & Fail-On-Skipped Invariants ---
+    console.log('\n--- 35. CI Trusted Base Ref, Staged Multiline PEM & Fail-On-Skipped Invariants ---');
+    {
+      const { resolveCIBaseRef } = require('../src/core/ignore/ignoreEngine');
+      const { BaselineEngine, BaselineValidationError } = require('../src/core/baseline/baselineEngine');
+      const { findingIntersectsAddedLines, scanStagedChangesSync } = require('../src/git/stagedScanner');
+      const { scanContent } = require('../src/core/scanner/scanner');
+
+      // 1. CI Base Ref ignores refs that point to HEAD
+      const dummyRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-ci-base-'));
+      try {
+        const { execFileSync } = require('child_process');
+        execFileSync('git', ['init', dummyRepo]);
+        execFileSync('git', ['-C', dummyRepo, 'config', 'user.name', 'Test']);
+        execFileSync('git', ['-C', dummyRepo, 'config', 'user.email', 'test@test.com']);
+        fs.writeFileSync(path.join(dummyRepo, 'file.txt'), 'init', 'utf8');
+        execFileSync('git', ['-C', dummyRepo, 'add', 'file.txt']);
+        execFileSync('git', ['-C', dummyRepo, 'commit', '-m', 'c1']);
+
+        // When SLD_BASE_REF points to HEAD, resolveCIBaseRef rejects it
+        process.env.SLD_BASE_REF = 'HEAD';
+        const rejectedHead = resolveCIBaseRef(dummyRepo);
+        assert(rejectedHead === null, 'resolveCIBaseRef rejects ref matching HEAD sha');
+        delete process.env.SLD_BASE_REF;
+
+        // 2. loadBaselineFromGit throws BaselineValidationError when baseline git blob is malformed
+        fs.writeFileSync(path.join(dummyRepo, '.secretleak-baseline.json'), '{ invalid json @@#', 'utf8');
+        execFileSync('git', ['-C', dummyRepo, 'add', '.secretleak-baseline.json']);
+        execFileSync('git', ['-C', dummyRepo, 'commit', '-m', 'add malformed baseline']);
+
+        let thrownErr: any = null;
+        try {
+          const bEngine = new BaselineEngine(dummyRepo, '.secretleak-baseline.json');
+          bEngine.loadBaselineFromGit('HEAD');
+        } catch (err) {
+          thrownErr = err;
+        }
+        assert(thrownErr instanceof BaselineValidationError, 'loadBaselineFromGit throws BaselineValidationError for malformed git baseline');
+
+        // 3. Staged multiline PEM key detection when only body lines are staged
+        const pemDummy = [
+          '-----BEGIN RSA PRIVATE KEY-----',
+          'MIIEowIBAAKCAQEA0Y1234567890abcdefghijklmnopqrstuvwxyz1234567890',
+          'abcdefghijklmnopqrstuvwxyz1234567890abcdefghijklmnopqrstuvwxyz12',
+          '34567890abcdefghijklmnopqrstuvwxyz1234567890abcdefghijklmnopqrst',
+          '-----END RSA PRIVATE KEY-----',
+        ].join('\n');
+
+        // Start line 10, spans 4 newlines (lines 10 to 14)
+        const mockPemFinding: any = {
+          line: 10,
+          rawSecret: pemDummy,
+        };
+        // If only line 12 is added in diff
+        const addedOnlyLine12 = new Set([12]);
+        assert(findingIntersectsAddedLines(mockPemFinding, addedOnlyLine12) === true, 'Multiline secret intersects added diff hunk on body lines');
+
+        // If diff touches unrelated line 5
+        const addedUnrelated = new Set([5]);
+        assert(findingIntersectsAddedLines(mockPemFinding, addedUnrelated) === false, 'Multiline secret correctly does not intersect untouched diff hunk');
+
+        // Staged git repo test: header and footer already in commit, only body lines staged
+        const multilineRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-multiline-pem-'));
+        try {
+          execFileSync('git', ['init', multilineRepo]);
+          execFileSync('git', ['-C', multilineRepo, 'config', 'user.name', 'Test']);
+          execFileSync('git', ['-C', multilineRepo, 'config', 'user.email', 'test@test.com']);
+
+          fs.writeFileSync(
+            path.join(multilineRepo, 'cert.key'),
+            '-----BEGIN RSA PRIVATE KEY-----\n// placeholder\n-----END RSA PRIVATE KEY-----\n',
+            'utf8'
+          );
+          execFileSync('git', ['-C', multilineRepo, 'add', 'cert.key']);
+          execFileSync('git', ['-C', multilineRepo, 'commit', '-m', 'commit header and footer']);
+
+          // Now stage real body lines
+          fs.writeFileSync(path.join(multilineRepo, 'cert.key'), pemDummy + '\n', 'utf8');
+          execFileSync('git', ['-C', multilineRepo, 'add', 'cert.key']);
+
+          const stagedSync = scanStagedChangesSync(multilineRepo);
+          assert(stagedSync.status === 'FINDINGS', 'Staging body lines of multiline secret is detected (got FINDINGS)');
+          assert(stagedSync.findings.length > 0, 'Multiline secret finding detected on staged body');
+        } finally {
+          try {
+            fs.rmSync(multilineRepo, { recursive: true, force: true });
+          } catch {}
+        }
+
+        // 4. Strict mode failOnSkipped returns ERROR when files are skipped
+        const strictRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-strict-repo-'));
+        try {
+          execFileSync('git', ['init', strictRepo]);
+          execFileSync('git', ['-C', strictRepo, 'config', 'user.name', 'Test']);
+          execFileSync('git', ['-C', strictRepo, 'config', 'user.email', 'test@test.com']);
+
+          // Create binary with 0 printable text (e.g. 100 null bytes)
+          const zeroTextBuf = Buffer.alloc(100, 0);
+          fs.writeFileSync(path.join(strictRepo, 'zero.bin'), zeroTextBuf);
+          execFileSync('git', ['-C', strictRepo, 'add', 'zero.bin']);
+
+          const strictResult = scanStagedChangesSync(strictRepo, { failOnSkipped: true });
+          assert(strictResult.status === 'ERROR', 'Strict mode (failOnSkipped) returns ERROR on skipped binary file');
+          assert(strictResult.skippedFiles && strictResult.skippedFiles.length > 0, 'Skipped files contains skipped entry');
+
+          const normalResult = scanStagedChangesSync(strictRepo, { failOnSkipped: false });
+          assert(normalResult.status === 'CLEAN', 'Non-strict mode returns CLEAN with warning');
+        } finally {
+          try {
+            fs.rmSync(strictRepo, { recursive: true, force: true });
+          } catch {}
+        }
+
+        // 5. Scanner workspaceRoot uses custom private salt
+        const saltDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-scanner-salt-'));
+        try {
+          const sldSaltDir = path.join(saltDir, '.sld');
+          fs.mkdirSync(sldSaltDir, { recursive: true });
+          fs.writeFileSync(path.join(sldSaltDir, 'salt'), 'test_scanner_salt_999\n', 'utf8');
+
+          const findingsDefault = scanContent('const k = "AKIA1234567890ABCDEF";', 'key.ts');
+          const findingsCustom = scanContent('const k = "AKIA1234567890ABCDEF";', 'key.ts', { workspaceRoot: saltDir });
+
+          assert(findingsDefault.length === 1 && findingsCustom.length === 1, 'Both scans find the key');
+          assert(
+            findingsDefault[0].fingerprint !== findingsCustom[0].fingerprint,
+            'Scanner uses workspaceRoot private salt for fingerprinting'
+          );
+        } finally {
+          try {
+            fs.rmSync(saltDir, { recursive: true, force: true });
+          } catch {}
+        }
+      } finally {
+        try {
+          fs.rmSync(dummyRepo, { recursive: true, force: true });
+        } catch {}
+      }
     }
   }
 

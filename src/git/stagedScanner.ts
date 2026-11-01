@@ -229,6 +229,26 @@ function parseDiffHunks(diffOutput: string): Map<string, Set<number>> {
 }
 
 /**
+ * Checks whether any line in a finding's source range intersects with the added diff lines.
+ * Prevents multiline secrets (such as PEM private keys) from escaping detection when only
+ * their body lines are staged while the header already existed in the repository.
+ */
+export function findingIntersectsAddedLines(finding: SecretFinding, addedLines: Set<number>): boolean {
+  if (addedLines.has(-1)) return true;
+  const raw = finding.rawSecret || '';
+  const newlineCount = (raw.match(/\r?\n/g) || []).length;
+  const startLine = finding.line;
+  const endLine = startLine + newlineCount;
+
+  for (let l = startLine; l <= endLine; l++) {
+    if (addedLines.has(l)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Collects staged submodule links (git mode 160000).
  * Submodule commit bumps point to commits, not blobs in the parent repo,
  * so they must be filtered out before cat-file --batch-check to prevent false missing errors.
@@ -320,7 +340,6 @@ export function scanStagedChangesSync(workspaceRoot: string, options?: ScannerOp
 
   for (const entry of activeEntries) {
     const relPath = entry.path;
-    const ext = path.extname(relPath).toLowerCase();
 
     // Honor ignore patterns (.sldignore and standard defaults) and track them to avoid silent skips
     const matchedIgnore = ignorePatterns.find((pattern) => matchesIgnorePattern(relPath, pattern));
@@ -329,12 +348,7 @@ export function scanStagedChangesSync(workspaceRoot: string, options?: ScannerOp
       continue;
     }
 
-    // Filter binary by extension only for non-text media/compiled formats
-    if (NON_TEXT_EXTENSIONS.has(ext)) {
-      skippedFiles.push({ path: relPath, reason: 'Binary file extension skipped' });
-      continue;
-    }
-
+    // Inspect content with decodeTextBuffer to protect credentials even in compiled/binary formats
     candidatePaths.push(relPath);
   }
 
@@ -385,6 +399,16 @@ export function scanStagedChangesSync(workspaceRoot: string, options?: ScannerOp
   }
 
   if (readablePaths.length === 0) {
+    if (options?.failOnSkipped && skippedFiles.length > 0) {
+      return {
+        status: 'ERROR',
+        findings: [],
+        skippedFiles,
+        ignoredFiles,
+        filesScanned: 0,
+        error: `Strict mode (failOnSkipped): ${skippedFiles.length} file(s) were skipped during staged scan: ${skippedFiles.map((s) => s.path).join(', ')}`,
+      };
+    }
     return { status: 'CLEAN', findings: [], skippedFiles, ignoredFiles, filesScanned: 0 };
   }
 
@@ -421,7 +445,17 @@ export function scanStagedChangesSync(workspaceRoot: string, options?: ScannerOp
 
   const scannablePaths = Array.from(textByPath.keys());
   if (scannablePaths.length === 0) {
-    return { status: 'CLEAN', findings: [], skippedFiles, filesScanned: 0 };
+    if (options?.failOnSkipped && skippedFiles.length > 0) {
+      return {
+        status: 'ERROR',
+        findings: [],
+        skippedFiles,
+        ignoredFiles,
+        filesScanned: 0,
+        error: `Strict mode (failOnSkipped): ${skippedFiles.length} file(s) were skipped during staged scan: ${skippedFiles.map((s) => s.path).join(', ')}`,
+      };
+    }
+    return { status: 'CLEAN', findings: [], skippedFiles, ignoredFiles, filesScanned: 0 };
   }
 
   // 5. Parse added line numbers from unified diff (chunked to 50 pathspecs to prevent ARG_MAX overflow)
@@ -476,13 +510,24 @@ export function scanStagedChangesSync(workspaceRoot: string, options?: ScannerOp
 
     const fileFindings: SecretFinding[] = [];
     for (const finding of findings) {
-      if (addedLines.has(-1) || addedLines.has(finding.line)) {
+      if (findingIntersectsAddedLines(finding, addedLines)) {
         fileFindings.push(finding);
       }
     }
     if (fileFindings.length > 0) {
       allFindings.push(...fileFindings);
     }
+  }
+
+  if (options?.failOnSkipped && skippedFiles.length > 0) {
+    return {
+      status: 'ERROR',
+      findings: allFindings,
+      skippedFiles,
+      ignoredFiles,
+      filesScanned,
+      error: `Strict mode (failOnSkipped): ${skippedFiles.length} file(s) were skipped during staged scan: ${skippedFiles.map((s) => s.path).join(', ')}`,
+    };
   }
 
   return {
@@ -543,16 +588,10 @@ export async function scanStagedChangesAsync(workspaceRoot: string, options?: Sc
 
   for (const entry of activeEntries) {
     const relPath = entry.path;
-    const ext = path.extname(relPath).toLowerCase();
 
     const matchedIgnore = ignorePatterns.find((pattern) => matchesIgnorePattern(relPath, pattern));
     if (matchedIgnore) {
       ignoredFiles.push({ path: relPath, pattern: matchedIgnore });
-      continue;
-    }
-
-    if (NON_TEXT_EXTENSIONS.has(ext)) {
-      skippedFiles.push({ path: relPath, reason: 'Binary file extension skipped' });
       continue;
     }
 
@@ -633,6 +672,16 @@ export async function scanStagedChangesAsync(workspaceRoot: string, options?: Sc
   }
 
   if (readablePaths.length === 0) {
+    if (options?.failOnSkipped && skippedFiles.length > 0) {
+      return {
+        status: 'ERROR',
+        findings: [],
+        skippedFiles,
+        ignoredFiles,
+        filesScanned: 0,
+        error: `Strict mode (failOnSkipped): ${skippedFiles.length} file(s) were skipped during staged scan: ${skippedFiles.map((s) => s.path).join(', ')}`,
+      };
+    }
     return { status: 'CLEAN', findings: [], skippedFiles, ignoredFiles, filesScanned: 0 };
   }
 
@@ -707,7 +756,17 @@ export async function scanStagedChangesAsync(workspaceRoot: string, options?: Sc
 
   const scannablePaths = Array.from(textByPath.keys());
   if (scannablePaths.length === 0) {
-    return { status: 'CLEAN', findings: [], skippedFiles, filesScanned: 0 };
+    if (options?.failOnSkipped && skippedFiles.length > 0) {
+      return {
+        status: 'ERROR',
+        findings: [],
+        skippedFiles,
+        ignoredFiles,
+        filesScanned: 0,
+        error: `Strict mode (failOnSkipped): ${skippedFiles.length} file(s) were skipped during staged scan: ${skippedFiles.map((s) => s.path).join(', ')}`,
+      };
+    }
+    return { status: 'CLEAN', findings: [], skippedFiles, ignoredFiles, filesScanned: 0 };
   }
 
   // 5. Async chunked diff
@@ -759,13 +818,24 @@ export async function scanStagedChangesAsync(workspaceRoot: string, options?: Sc
 
     const fileFindings: SecretFinding[] = [];
     for (const finding of findings) {
-      if (addedLines.has(-1) || addedLines.has(finding.line)) {
+      if (findingIntersectsAddedLines(finding, addedLines)) {
         fileFindings.push(finding);
       }
     }
     if (fileFindings.length > 0) {
       allFindings.push(...fileFindings);
     }
+  }
+
+  if (options?.failOnSkipped && skippedFiles.length > 0) {
+    return {
+      status: 'ERROR',
+      findings: allFindings,
+      skippedFiles,
+      ignoredFiles,
+      filesScanned,
+      error: `Strict mode (failOnSkipped): ${skippedFiles.length} file(s) were skipped during staged scan: ${skippedFiles.map((s) => s.path).join(', ')}`,
+    };
   }
 
   return {

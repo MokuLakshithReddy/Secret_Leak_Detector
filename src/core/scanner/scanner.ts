@@ -18,6 +18,7 @@ export interface ScannerOptions {
   onSkippedFile?: (filePath: string, reason: string) => void;
   disallowInlineIgnore?: boolean;
   ignoreSkipped?: boolean;
+  failOnSkipped?: boolean;
   maxFileSize?: number;
 }
 
@@ -243,7 +244,7 @@ export function scanContent(
       );
 
       const fileIdPart = getFileIdPart(relativePath);
-      const fingerprint = generateFingerprint(rawSecret);
+      const fingerprint = generateFingerprint(rawSecret, undefined, workspaceRoot);
       const id = `sec_${fingerprint}_${fileIdPart}`;
       const redacted = redactSecret(rawSecret);
 
@@ -421,7 +422,7 @@ export function scanContent(
         });
 
         const fileIdPart = getFileIdPart(relativePath);
-        const fingerprint = generateFingerprint(rawSecret);
+        const fingerprint = generateFingerprint(rawSecret, undefined, workspaceRoot);
         const id = `sec_${fingerprint}_${fileIdPart}`;
         const redacted = redactSecret(rawSecret);
 

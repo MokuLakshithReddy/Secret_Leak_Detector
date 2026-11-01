@@ -313,6 +313,7 @@ export function activate(context: vscode.ExtensionContext) {
       const blockCommits = getConfig().get<boolean>('blockGitCommits', true);
       const configuredFailOn = resolveFailOn(getConfig().get<string>('failOn', DEFAULT_FAIL_ON));
       const ignoreSkipped = getConfig().get<boolean>('ignoreSkipped', true);
+      const failOnSkipped = getConfig().get<boolean>('failOnSkipped', false);
 
       const folders = vscode.workspace.workspaceFolders || [];
       const gitRoots = new Set<string>();
@@ -332,7 +333,7 @@ export function activate(context: vscode.ExtensionContext) {
 
       for (const root of gitRoots) {
         const gs = new GitService(root, (msg) => outputChannel.appendLine(msg));
-        const scanResult = await gs.scanStagedChanges({ ignoreSkipped });
+        const scanResult = await gs.scanStagedChanges({ ignoreSkipped, failOnSkipped });
         if (scanResult.status === 'ERROR') {
           errors.push(`${root}: ${scanResult.error}`);
         }
@@ -350,7 +351,7 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.window.showErrorMessage(errMsg, 'View Output').then((sel) => {
           if (sel === 'View Output') outputChannel.show(true);
         });
-        if (blockCommits) return;
+        if (blockCommits || failOnSkipped) return;
       }
 
       if (allSkipped.length > 0) {
@@ -361,8 +362,13 @@ export function activate(context: vscode.ExtensionContext) {
       }
 
       if (allFindings.length === 0) {
-        outputChannel.appendLine('✅ All staged changes are clean! No credentials detected.');
-        vscode.window.showInformationMessage('✅ Git staged changes are safe to commit.');
+        if (allSkipped.length > 0) {
+          outputChannel.appendLine(`⚠️  Staged scan completed with warnings: ${allSkipped.length} uninspected file(s) skipped.`);
+          vscode.window.showWarningMessage(`⚠️ Git staged changes scanned with warnings: ${allSkipped.length} uninspected file(s) skipped.`);
+        } else {
+          outputChannel.appendLine('✅ All staged changes are clean! No credentials detected.');
+          vscode.window.showInformationMessage('✅ Git staged changes are safe to commit.');
+        }
         return;
       }
 

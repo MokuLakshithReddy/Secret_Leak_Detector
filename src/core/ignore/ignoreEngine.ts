@@ -47,6 +47,65 @@ export function clearIgnorePatternsCache(): void {
 }
 
 /**
+ * Resolves a trusted base git ref in CI environments.
+ * Strictly avoids self-trust: skips any candidate ref whose commit SHA matches HEAD.
+ */
+export function resolveCIBaseRef(rootDir: string): string | null {
+  try {
+    const { execFileSync } = require('child_process');
+    const explicitBase =
+      process.env.SLD_BASE_REF ||
+      process.env.GITHUB_BASE_REF ||
+      process.env.CI_MERGE_REQUEST_TARGET_BRANCH_NAME;
+    const beforeSha = process.env.GITHUB_EVENT_BEFORE || process.env.CI_COMMIT_BEFORE_SHA;
+
+    const candidateRefs: string[] = [];
+    if (explicitBase && explicitBase !== '0000000000000000000000000000000000000000') {
+      candidateRefs.push(`origin/${explicitBase}`, `refs/remotes/origin/${explicitBase}`, explicitBase);
+    }
+    if (beforeSha && beforeSha !== '0000000000000000000000000000000000000000') {
+      candidateRefs.push(beforeSha);
+    }
+    if (candidateRefs.length === 0) {
+      candidateRefs.push('HEAD~1');
+    }
+
+    let headSha = '';
+    try {
+      headSha = execFileSync('git', ['rev-parse', 'HEAD'], {
+        cwd: rootDir,
+        encoding: 'utf8',
+        stdio: ['pipe', 'pipe', 'ignore'],
+      }).trim();
+    } catch {}
+
+    for (const ref of candidateRefs) {
+      if (headSha) {
+        try {
+          const resolvedSha = execFileSync('git', ['rev-parse', ref], {
+            cwd: rootDir,
+            encoding: 'utf8',
+            stdio: ['pipe', 'pipe', 'ignore'],
+          }).trim();
+          if (resolvedSha === headSha) {
+            // Points to current unverified commit being scanned; skip self-trust!
+            continue;
+          }
+          return ref;
+        } catch {
+          continue;
+        }
+      } else {
+        return ref;
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Loads .sldignore patterns safely.
  *
  * Anti-Tamper CI Guardrail:
@@ -65,15 +124,10 @@ export function loadIgnorePatterns(rootDir: string): string[] {
   if (isCI) {
     try {
       const { execFileSync } = require('child_process');
-      const baseRef = process.env.GITHUB_BASE_REF || process.env.CI_MERGE_REQUEST_TARGET_BRANCH_NAME;
-      // In CI, only trust base branch refs. NEVER fall back to HEAD or working tree.
-      const candidateRefs = baseRef
-        ? [`origin/${baseRef}`, `refs/remotes/origin/${baseRef}`, baseRef]
-        : ['origin/main', 'origin/master'];
-
-      for (const ref of candidateRefs) {
+      const trustedRef = resolveCIBaseRef(rootDir);
+      if (trustedRef) {
         try {
-          const content = execFileSync('git', ['show', `${ref}:.sldignore`], {
+          const content = execFileSync('git', ['show', `${trustedRef}:.sldignore`], {
             cwd: rootDir,
             encoding: 'utf8',
             stdio: ['ignore', 'pipe', 'ignore'],

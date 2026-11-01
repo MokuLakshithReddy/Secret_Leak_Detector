@@ -158,29 +158,6 @@ function cleanCommonDevDirs(home: string): void {
     const parentDir = path.join(home, c);
     recursivelyCleanGitHooks(parentDir, 0, 2);
   }
-
-  // Discover sister user profiles if HOME was switched or executed under another profile
-  try {
-    const userHomesParent = path.dirname(home);
-    if (fs.existsSync(userHomesParent)) {
-      const users = fs.readdirSync(userHomesParent, { withFileTypes: true });
-      for (const u of users) {
-        if (u.isDirectory() && path.join(userHomesParent, u.name) !== home) {
-          const sisterHome = path.join(userHomesParent, u.name);
-          const sldRec = path.join(sisterHome, '.sld', 'installed-hooks.json');
-          if (fs.existsSync(sldRec)) {
-            try {
-              const hooks: string[] = JSON.parse(fs.readFileSync(sldRec, 'utf8'));
-              if (Array.isArray(hooks)) {
-                for (const h of hooks) cleanHook(h);
-              }
-              fs.unlinkSync(sldRec);
-            } catch {}
-          }
-        }
-      }
-    }
-  } catch {}
 }
 
 export function runUninstall(): void {
@@ -246,4 +223,6 @@ export function runUninstall(): void {
   cleanCommonDevDirs(home);
 }
 
-runUninstall();
+if (typeof require !== 'undefined' && require.main === module) {
+  runUninstall();
+}

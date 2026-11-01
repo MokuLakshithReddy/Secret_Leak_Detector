@@ -115,14 +115,22 @@ export class BaselineEngine {
   }
 
   /**
-   * In CI or Git environments, loads baseline from a specific Git ref (e.g. HEAD or origin/main)
-   * to ensure PRs cannot modify the baseline in their working tree to bypass CI checks.
+   * In CI or Git environments, loads baseline from a trusted Git ref (e.g. PR target branch, or push event's prior commit).
+   * Ensures that PRs or pushed commits cannot tamper with .secretleak-baseline.json to bypass checks.
+   *
+   * In CI:
+   *  - For pull_request: loads from trusted PR base (GITHUB_BASE_REF).
+   *  - For push: loads from the push event's previous commit SHA (SLD_BASE_REF / GITHUB_EVENT_BEFORE / HEAD~1).
+   *  - NEVER trusts the current commit (HEAD) as its own baseline.
+   *
+   * Malformed baseline files throw BaselineValidationError (never silently swallowed).
    */
-  public loadBaselineFromGit(gitRef = 'HEAD'): BaselineFile | null {
+  public loadBaselineFromGit(gitRef?: string): BaselineFile | null {
     const { execFileSync } = require('child_process');
     let gitPath = this.baselinePath;
+    let gitRoot = this.workspaceRoot;
     try {
-      const gitRoot = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+      gitRoot = execFileSync('git', ['rev-parse', '--show-toplevel'], {
         cwd: this.workspaceRoot,
         encoding: 'utf8',
         stdio: ['pipe', 'pipe', 'ignore'],
@@ -138,34 +146,82 @@ export class BaselineEngine {
     }
 
     const isCI = !!(process.env.CI || process.env.GITHUB_ACTIONS || process.env.GITLAB_CI);
-    let candidateRefs: string[];
+    let candidateRefs: string[] = [];
+
+    // Get current HEAD sha to ensure we never trust the commit being scanned in CI
+    let headSha = '';
+    try {
+      headSha = execFileSync('git', ['rev-parse', 'HEAD'], {
+        cwd: gitRoot,
+        encoding: 'utf8',
+        stdio: ['pipe', 'pipe', 'ignore'],
+      }).trim();
+    } catch {}
 
     if (isCI) {
-      // In CI, PRs must NEVER fall back to HEAD or working tree to bypass gates.
-      const baseRef = process.env.GITHUB_BASE_REF || process.env.CI_MERGE_REQUEST_TARGET_BRANCH_NAME;
-      candidateRefs = baseRef
-        ? [`origin/${baseRef}`, `refs/remotes/origin/${baseRef}`, baseRef]
-        : ['origin/main', 'origin/master'];
+      const explicitBase =
+        process.env.SLD_BASE_REF ||
+        process.env.GITHUB_BASE_REF ||
+        process.env.CI_MERGE_REQUEST_TARGET_BRANCH_NAME;
+      const beforeSha = process.env.GITHUB_EVENT_BEFORE || process.env.CI_COMMIT_BEFORE_SHA;
+
+      if (explicitBase && explicitBase !== '0000000000000000000000000000000000000000') {
+        candidateRefs.push(`origin/${explicitBase}`, `refs/remotes/origin/${explicitBase}`, explicitBase);
+      }
+      if (beforeSha && beforeSha !== '0000000000000000000000000000000000000000') {
+        candidateRefs.push(beforeSha);
+      }
+
+      if (candidateRefs.length === 0) {
+        candidateRefs.push('HEAD~1');
+      }
     } else {
-      candidateRefs = [
-        gitRef,
-        `origin/${gitRef}`,
-        `refs/remotes/origin/${gitRef}`,
-        'HEAD',
-      ];
+      if (gitRef) {
+        candidateRefs.push(gitRef, `origin/${gitRef}`, `refs/remotes/origin/${gitRef}`);
+      }
+      candidateRefs.push('HEAD');
     }
 
     for (const ref of candidateRefs) {
+      if (isCI && headSha) {
+        try {
+          const resolvedSha = execFileSync('git', ['rev-parse', ref], {
+            cwd: gitRoot,
+            encoding: 'utf8',
+            stdio: ['pipe', 'pipe', 'ignore'],
+          }).trim();
+          if (resolvedSha === headSha) {
+            // Ref points to the newly pushed commit itself; skip self-trust!
+            continue;
+          }
+        } catch {
+          continue;
+        }
+      }
+
+      let data: string | null = null;
       try {
-        const data = execFileSync('git', ['show', `${ref}:${gitPath}`], {
+        data = execFileSync('git', ['show', `${ref}:${gitPath}`], {
+          cwd: gitRoot,
           encoding: 'utf8',
           stdio: ['pipe', 'pipe', 'ignore'],
         });
-        if (data) {
-          const parsed = JSON.parse(data);
-          return validateBaselineSchema(parsed);
+      } catch {
+        // Ref or file not found in ref -> try next candidate ref
+        continue;
+      }
+
+      if (data !== null) {
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(data);
+        } catch (err: any) {
+          throw new BaselineValidationError(
+            `Malformed JSON in baseline file from Git ref '${ref}:${gitPath}': ${err.message}`
+          );
         }
-      } catch {}
+        return validateBaselineSchema(parsed);
+      }
     }
     return null;
   }
@@ -193,17 +249,21 @@ export class BaselineEngine {
     return file;
   }
 
-  public filterAgainstBaseline(currentFindings: SecretFinding[]): {
+  public filterAgainstBaseline(
+    currentFindings: SecretFinding[],
+    options?: { forceFile?: boolean }
+  ): {
     newFindings: SecretFinding[];
     existingFindings: SecretFinding[];
     resolvedCount: number;
     totalBaseline: number;
   } {
+    const isCI = !!(process.env.CI || process.env.GITHUB_ACTIONS || process.env.GITLAB_CI);
     let baseline: BaselineFile | null = null;
-    if (process.env.CI) {
-      // In CI, only load baseline from the base branch ref; NEVER fall back to the working tree
-      const gitRef = process.env.GITHUB_BASE_REF || process.env.CI_MERGE_REQUEST_TARGET_BRANCH_NAME || 'origin/main';
-      baseline = this.loadBaselineFromGit(gitRef);
+
+    if (isCI && !options?.forceFile && !process.env.SLD_ISOLATE_BASELINE_TESTS) {
+      // In CI, load baseline from trusted Git ref (PR base or event's before sha); NEVER fall back to working tree
+      baseline = this.loadBaselineFromGit();
     } else {
       baseline = this.loadBaseline();
     }
