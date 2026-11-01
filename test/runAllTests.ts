@@ -1145,6 +1145,42 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
     fs.rmSync(policyDir, { recursive: true, force: true });
   }
 
+  // --- 27. Release Blockers, ReDoS Bounded PEM & Hygiene ---
+  console.log('\n--- 27. Release Blockers, ReDoS Bounded PEM & Hygiene ---');
+  {
+    // Test 1: media/icon.png magic bytes and size
+    const iconPath = path.join(process.cwd(), 'media', 'icon.png');
+    assert(fs.existsSync(iconPath), 'media/icon.png must exist');
+    const iconBuf = fs.readFileSync(iconPath);
+    assert(iconBuf.length > 1000, 'media/icon.png must not be an LFS pointer');
+    const pngMagic = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    assert(iconBuf.slice(0, 8).equals(pngMagic), 'media/icon.png must start with valid PNG magic bytes');
+
+    // Test 2: Bounded PEM Regex ReDoS Immunity
+    const unclosedHeader = '-----BEGIN RSA PRIVATE KEY-----\nSome payload here\n';
+    const hostileContent = unclosedHeader.repeat(40000); // ~2MB
+    const t0 = Date.now();
+    const hostileFindings = scanContent(hostileContent, 'hostile_unclosed_pem.txt');
+    const elapsedMs = Date.now() - t0;
+    assert(elapsedMs < 1000, 'Bounded PEM scanning must complete in <1000ms (got ' + elapsedMs + 'ms)');
+    assert(hostileFindings.length === 0, 'Unclosed PEM headers must not match without END tag');
+
+    // Test 3: Inline comment suppression
+    const suppressedSnippet = `
+      // sld-ignore
+      const secret1 = "${awsSecret}";
+      const secret2 = "${awsSecret}"; // sld-ignore
+      const secret3 = "${awsSecret}";
+    `;
+    const suppressedFindings = scanContent(suppressedSnippet, 'suppressed.ts');
+    assert(suppressedFindings.length === 1, 'Inline suppression ignores marked lines (expected 1, got ' + suppressedFindings.length + ')');
+
+    // Test 4: CLI --version
+    const cliPath = path.join(process.cwd(), 'dist', 'cli.js');
+    const verRes = cp.spawnSync(process.execPath, [cliPath, '--version'], { encoding: 'utf8' });
+    assert(verRes.stdout.trim() === '1.0.2', 'CLI --version prints valid semantic version (got: ' + verRes.stdout.trim() + ')');
+  }
+
   console.log('\n============================================================');
   console.log(`🎉 TEST SUMMARY: ${passed} PASSED, ${failed} FAILED`);
   console.log('============================================================\n');

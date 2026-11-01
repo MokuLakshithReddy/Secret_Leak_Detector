@@ -3,25 +3,30 @@ import { promisify } from 'util';
 import * as path from 'path';
 import { scanContent } from '../core/scanner/scanner';
 import { SecretFinding } from '../core/types';
+import {
+  loadIgnorePatterns,
+  matchesIgnorePattern,
+  DEFAULT_IGNORE_PATTERNS,
+  BINARY_EXTENSIONS,
+} from '../core/ignore/ignoreEngine';
 
 const execFileAsync = promisify(execFile);
+
+export interface SkippedFile {
+  path: string;
+  reason: string;
+}
 
 export interface StagedScanResult {
   status: 'CLEAN' | 'FINDINGS' | 'ERROR';
   findings: SecretFinding[];
+  skippedFiles?: SkippedFile[];
   error?: string;
   filesScanned?: number;
 }
 
 const GIT_BASE_ARGS = ['-c', 'core.quotepath=false', '--literal-pathspecs'];
-
-function isRenamedOrCopied(status: string): boolean {
-  return status.startsWith('R') || status.startsWith('C');
-}
-
-function isDeleted(status: string): boolean {
-  return status.startsWith('D');
-}
+const MAX_STAGED_FILE_SIZE = 5 * 1024 * 1024; // 5 MB
 
 function getGitTopLevelSync(dir: string): string {
   try {
@@ -40,96 +45,135 @@ async function getGitTopLevelAsync(dir: string): Promise<string> {
   return dir;
 }
 
+interface StagedDiffMeta {
+  filesWithAdditions: Map<string, Set<number>>;
+  binaryFiles: Set<string>;
+}
+
+function parseUnifiedDiff(diffOutput: string): StagedDiffMeta {
+  const filesWithAdditions = new Map<string, Set<number>>();
+  const binaryFiles = new Set<string>();
+
+  const diffChunks = diffOutput.split(/^diff --git /m);
+  for (const chunk of diffChunks) {
+    if (!chunk.trim()) continue;
+    const lines = chunk.split(/\r?\n/);
+    const headerLine = lines[0];
+    const match = headerLine.match(/a\/(.+)\s+b\/(.+)/);
+    if (!match) continue;
+
+    const bPath = match[2].trim().replace(/\\/g, '/');
+    if (bPath === '/dev/null') continue;
+
+    // Check if binary
+    if (chunk.includes('Binary files') || chunk.includes('GIT binary patch')) {
+      binaryFiles.add(bPath);
+      continue;
+    }
+
+    const addedLines = new Set<number>();
+    const hunkRegex = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/gm;
+    let hunkMatch: RegExpExecArray | null;
+    while ((hunkMatch = hunkRegex.exec(chunk)) !== null) {
+      const newStart = parseInt(hunkMatch[1], 10);
+      const newCount = hunkMatch[2] !== undefined ? parseInt(hunkMatch[2], 10) : 1;
+      for (let k = 0; k < newCount; k++) {
+        addedLines.add(newStart + k);
+      }
+    }
+
+    const isRename = chunk.includes('rename to ');
+    if (addedLines.size > 0) {
+      filesWithAdditions.set(bPath, addedLines);
+    } else if (isRename) {
+      filesWithAdditions.set(bPath, new Set([-1]));
+    }
+  }
+
+  return { filesWithAdditions, binaryFiles };
+}
+
 /**
- * Scans Git staged changes for secrets using argument-array Git APIs
- * (no shell interpolation) and NUL-delimited machine-readable output.
- *
- * Runs from the Git root to ensure root-relative paths match index queries
- * even when invoked from a monorepo subfolder.
+ * Fast synchronous staged changes scanner.
+ * Executes a single `git diff --cached -U0` across the entire index,
+ * honors ignore patterns and file size/binary safety, and avoids per-file process forks.
  */
 export function scanStagedChangesSync(workspaceRoot: string): StagedScanResult {
   const gitRoot = getGitTopLevelSync(workspaceRoot);
-  let statusOutput: string;
+  let diffOutput: string;
   try {
-    statusOutput = execFileSync(
+    diffOutput = execFileSync(
       'git',
-      [...GIT_BASE_ARGS, 'diff', '--cached', '-z', '--name-status'],
-      { cwd: gitRoot, encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 }
+      [...GIT_BASE_ARGS, 'diff', '--cached', '-U0'],
+      { cwd: gitRoot, encoding: 'utf8', maxBuffer: 25 * 1024 * 1024 }
     );
-  } catch (listErr: any) {
+  } catch (diffErr: any) {
     return {
       status: 'ERROR',
       findings: [],
-      error: `git diff --cached failed: ${listErr.message || String(listErr)}`,
+      error: `git diff --cached failed: ${diffErr.message || String(diffErr)}`,
     };
   }
 
-  const parts = statusOutput.split('\0').filter(Boolean);
+  const { filesWithAdditions, binaryFiles } = parseUnifiedDiff(diffOutput);
+  const ignorePatterns = [...DEFAULT_IGNORE_PATTERNS, ...loadIgnorePatterns(gitRoot)];
   const allFindings: SecretFinding[] = [];
+  const skippedFiles: SkippedFile[] = [];
   let filesScanned = 0;
 
-  for (let i = 0; i < parts.length; ) {
-    const status = parts[i];
-    const oldPath = parts[i + 1];
-    let relPath = oldPath;
-    let step = 2;
+  for (const [relPath, addedLines] of filesWithAdditions.entries()) {
+    const ext = path.extname(relPath).toLowerCase();
 
-    if (isRenamedOrCopied(status) && parts[i + 2] !== undefined) {
-      relPath = parts[i + 2];
-      step = 3;
+    // Check ignore patterns (.sldignore and defaults)
+    if (ignorePatterns.some((pattern) => matchesIgnorePattern(relPath, pattern))) {
+      continue;
     }
-    i += step;
 
-    const normalizedRelPath = relPath.replace(/\\/g, '/');
-    if (normalizedRelPath === '/dev/null') continue;
-    if (isDeleted(status)) continue;
+    // Check binary file
+    if (binaryFiles.has(relPath) || BINARY_EXTENSIONS.has(ext)) {
+      skippedFiles.push({ path: relPath, reason: 'Binary file skipped' });
+      continue;
+    }
+
+    // Check size before reading blob to avoid ENOBUFS
+    let fileSize = 0;
+    try {
+      const sizeStr = execFileSync(
+        'git',
+        [...GIT_BASE_ARGS, 'cat-file', '-s', `:${relPath}`],
+        { cwd: gitRoot, encoding: 'utf8' }
+      ).trim();
+      fileSize = parseInt(sizeStr, 10) || 0;
+    } catch {
+      // If cat-file fails (e.g. unreadable blob), skip safely
+      skippedFiles.push({ path: relPath, reason: 'Could not inspect blob size' });
+      continue;
+    }
+
+    if (fileSize > MAX_STAGED_FILE_SIZE) {
+      skippedFiles.push({
+        path: relPath,
+        reason: `File size (${(fileSize / (1024 * 1024)).toFixed(1)}MB) exceeds 5MB limit`,
+      });
+      continue;
+    }
 
     let stagedBlob: string;
     try {
       stagedBlob = execFileSync(
         'git',
-        [...GIT_BASE_ARGS, 'show', `:${normalizedRelPath}`],
-        { cwd: gitRoot, encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 }
+        [...GIT_BASE_ARGS, 'show', `:${relPath}`],
+        { cwd: gitRoot, encoding: 'utf8', maxBuffer: MAX_STAGED_FILE_SIZE + 1024 }
       );
     } catch (blobErr: any) {
-      return {
-        status: 'ERROR',
-        findings: allFindings,
-        error: `Could not read staged blob for '${normalizedRelPath}': ${blobErr.message || String(blobErr)}`,
-        filesScanned,
-      };
+      skippedFiles.push({ path: relPath, reason: `Unreadable staged blob: ${blobErr.message}` });
+      continue;
     }
 
-    const addedLineNumbers = new Set<number>();
-    try {
-      const diffForFile = execFileSync(
-        'git',
-        [...GIT_BASE_ARGS, 'diff', '--cached', '-U0', '--', normalizedRelPath],
-        { cwd: gitRoot, encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 }
-      );
-      const hunkRegex = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/gm;
-      let hunkMatch: RegExpExecArray | null;
-      while ((hunkMatch = hunkRegex.exec(diffForFile)) !== null) {
-        const newStart = parseInt(hunkMatch[1], 10);
-        const newCount = hunkMatch[2] !== undefined ? parseInt(hunkMatch[2], 10) : 1;
-        for (let k = 0; k < newCount; k++) {
-          addedLineNumbers.add(newStart + k);
-        }
-      }
-    } catch (diffErr: any) {
-      return {
-        status: 'ERROR',
-        findings: allFindings,
-        error: `Could not determine staged diff for '${normalizedRelPath}': ${diffErr.message || String(diffErr)}`,
-        filesScanned,
-      };
-    }
-
-    if (addedLineNumbers.size === 0) continue;
-
-    const fileFindings = scanContent(stagedBlob, normalizedRelPath, { workspaceRoot: gitRoot });
+    const fileFindings = scanContent(stagedBlob, relPath, { workspaceRoot: gitRoot });
+    const matchAll = addedLines.has(-1);
     for (const f of fileFindings) {
-      if (addedLineNumbers.has(f.line)) {
+      if (matchAll || addedLines.has(f.line)) {
         allFindings.push(f);
       }
     }
@@ -137,10 +181,10 @@ export function scanStagedChangesSync(workspaceRoot: string): StagedScanResult {
   }
 
   if (allFindings.length > 0) {
-    return { status: 'FINDINGS', findings: allFindings, filesScanned };
+    return { status: 'FINDINGS', findings: allFindings, skippedFiles, filesScanned };
   }
 
-  return { status: 'CLEAN', findings: [], filesScanned };
+  return { status: 'CLEAN', findings: [], skippedFiles, filesScanned };
 }
 
 /**
@@ -148,89 +192,78 @@ export function scanStagedChangesSync(workspaceRoot: string): StagedScanResult {
  */
 export async function scanStagedChangesAsync(workspaceRoot: string): Promise<StagedScanResult> {
   const gitRoot = await getGitTopLevelAsync(workspaceRoot);
-  let statusOutput: string;
+  let diffOutput: string;
   try {
     const { stdout } = await execFileAsync(
       'git',
-      [...GIT_BASE_ARGS, 'diff', '--cached', '-z', '--name-status'],
-      { cwd: gitRoot, encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 }
+      [...GIT_BASE_ARGS, 'diff', '--cached', '-U0'],
+      { cwd: gitRoot, encoding: 'utf8', maxBuffer: 25 * 1024 * 1024 }
     );
-    statusOutput = stdout;
-  } catch (listErr: any) {
+    diffOutput = stdout;
+  } catch (diffErr: any) {
     return {
       status: 'ERROR',
       findings: [],
-      error: `git diff --cached failed: ${listErr.message || String(listErr)}`,
+      error: `git diff --cached failed: ${diffErr.message || String(diffErr)}`,
     };
   }
 
-  const parts = statusOutput.split('\0').filter(Boolean);
+  const { filesWithAdditions, binaryFiles } = parseUnifiedDiff(diffOutput);
+  const ignorePatterns = [...DEFAULT_IGNORE_PATTERNS, ...loadIgnorePatterns(gitRoot)];
   const allFindings: SecretFinding[] = [];
+  const skippedFiles: SkippedFile[] = [];
   let filesScanned = 0;
 
-  for (let i = 0; i < parts.length; ) {
-    const status = parts[i];
-    const oldPath = parts[i + 1];
-    let relPath = oldPath;
-    let step = 2;
+  for (const [relPath, addedLines] of filesWithAdditions.entries()) {
+    const ext = path.extname(relPath).toLowerCase();
 
-    if (isRenamedOrCopied(status) && parts[i + 2] !== undefined) {
-      relPath = parts[i + 2];
-      step = 3;
+    if (ignorePatterns.some((pattern) => matchesIgnorePattern(relPath, pattern))) {
+      continue;
     }
-    i += step;
 
-    const normalizedRelPath = relPath.replace(/\\/g, '/');
-    if (normalizedRelPath === '/dev/null') continue;
-    if (isDeleted(status)) continue;
+    if (binaryFiles.has(relPath) || BINARY_EXTENSIONS.has(ext)) {
+      skippedFiles.push({ path: relPath, reason: 'Binary file skipped' });
+      continue;
+    }
+
+    let fileSize = 0;
+    try {
+      const { stdout: sizeStr } = await execFileAsync(
+        'git',
+        [...GIT_BASE_ARGS, 'cat-file', '-s', `:${relPath}`],
+        { cwd: gitRoot, encoding: 'utf8' }
+      );
+      fileSize = parseInt(sizeStr.trim(), 10) || 0;
+    } catch {
+      skippedFiles.push({ path: relPath, reason: 'Could not inspect blob size' });
+      continue;
+    }
+
+    if (fileSize > MAX_STAGED_FILE_SIZE) {
+      skippedFiles.push({
+        path: relPath,
+        reason: `File size (${(fileSize / (1024 * 1024)).toFixed(1)}MB) exceeds 5MB limit`,
+      });
+      continue;
+    }
 
     let stagedBlob: string;
     try {
       const { stdout: blobOut } = await execFileAsync(
         'git',
-        [...GIT_BASE_ARGS, 'show', `:${normalizedRelPath}`],
-        { cwd: gitRoot, encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 }
+        [...GIT_BASE_ARGS, 'show', `:${relPath}`],
+        { cwd: gitRoot, encoding: 'utf8', maxBuffer: MAX_STAGED_FILE_SIZE + 1024 }
       );
       stagedBlob = blobOut;
     } catch (blobErr: any) {
-      return {
-        status: 'ERROR',
-        findings: allFindings,
-        error: `Could not read staged blob for '${normalizedRelPath}': ${blobErr.message || String(blobErr)}`,
-        filesScanned,
-      };
+      skippedFiles.push({ path: relPath, reason: `Unreadable staged blob: ${blobErr.message}` });
+      continue;
     }
 
-    const addedLineNumbers = new Set<number>();
-    try {
-      const { stdout: diffOut } = await execFileAsync(
-        'git',
-        [...GIT_BASE_ARGS, 'diff', '--cached', '-U0', '--', normalizedRelPath],
-        { cwd: gitRoot, encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 }
-      );
-      const hunkRegex = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/gm;
-      let hunkMatch: RegExpExecArray | null;
-      while ((hunkMatch = hunkRegex.exec(diffOut)) !== null) {
-        const newStart = parseInt(hunkMatch[1], 10);
-        const newCount = hunkMatch[2] !== undefined ? parseInt(hunkMatch[2], 10) : 1;
-        for (let k = 0; k < newCount; k++) {
-          addedLineNumbers.add(newStart + k);
-        }
-      }
-    } catch (diffErr: any) {
-      return {
-        status: 'ERROR',
-        findings: allFindings,
-        error: `Could not determine staged diff for '${normalizedRelPath}': ${diffErr.message || String(diffErr)}`,
-        filesScanned,
-      };
-    }
-
-    if (addedLineNumbers.size === 0) continue;
-
-    const fileFindings = scanContent(stagedBlob, normalizedRelPath, { workspaceRoot: gitRoot });
+    const fileFindings = scanContent(stagedBlob, relPath, { workspaceRoot: gitRoot });
+    const matchAll = addedLines.has(-1);
     for (const f of fileFindings) {
-      if (addedLineNumbers.has(f.line)) {
+      if (matchAll || addedLines.has(f.line)) {
         allFindings.push(f);
       }
     }
@@ -238,8 +271,8 @@ export async function scanStagedChangesAsync(workspaceRoot: string): Promise<Sta
   }
 
   if (allFindings.length > 0) {
-    return { status: 'FINDINGS', findings: allFindings, filesScanned };
+    return { status: 'FINDINGS', findings: allFindings, skippedFiles, filesScanned };
   }
 
-  return { status: 'CLEAN', findings: [], filesScanned };
+  return { status: 'CLEAN', findings: [], skippedFiles, filesScanned };
 }

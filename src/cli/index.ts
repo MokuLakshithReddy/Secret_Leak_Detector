@@ -14,9 +14,19 @@ import { SecretFinding, Risk } from '../core/types';
 import { scanStagedChangesSync } from '../git/stagedScanner';
 import { GitService } from '../git/gitService';
 import { DEFAULT_FAIL_ON, resolveFailOn, shouldBlock, isRiskTier } from '../core/policy';
+import {
+  matchesIgnorePattern,
+  loadIgnorePatterns,
+  BINARY_EXTENSIONS,
+} from '../core/ignore/ignoreEngine';
 
 const args = process.argv.slice(2);
 const command = args[0] || 'help';
+
+if (command === '--version' || command === '-v' || args.includes('--version') || args.includes('-v')) {
+  console.log('1.0.2');
+  process.exit(0);
+}
 
 /** Operational error: exits with code 2 to distinguish from findings (exit 1) and success (exit 0) */
 function fail(msg: string): never {
@@ -680,88 +690,6 @@ async function runHook(cmdArgs: string[], cwd: string) {
   }
 }
 
-const BINARY_EXTENSIONS = new Set([
-  '.lock', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.ico',
-  '.mp4', '.mov', '.avi', '.mkv', '.mp3', '.wav', '.pdf',
-  '.zip', '.tar', '.gz', '.tgz', '.7z', '.iso', '.bin',
-  '.exe', '.dll', '.so', '.dylib', '.woff', '.woff2', '.ttf', '.eot',
-  '.parquet', '.arrow', '.h5', '.pkl', '.onnx', '.vsix',
-]);
-
-function loadIgnorePatterns(cwd: string): string[] {
-  if (process.env.CI) {
-    try {
-      const { execFileSync } = require('child_process');
-      const baseRef = process.env.GITHUB_BASE_REF || process.env.CI_MERGE_REQUEST_TARGET_BRANCH_NAME || 'HEAD';
-      const gitIgnoreData = execFileSync('git', ['show', `${baseRef}:.sldignore`], {
-        cwd,
-        encoding: 'utf8',
-        stdio: ['pipe', 'pipe', 'ignore'],
-      });
-      return gitIgnoreData
-        .split(/\r?\n/)
-        .map((l: string) => l.trim())
-        .filter((l: string) => l && !l.startsWith('#'));
-    } catch {}
-  }
-
-  const ignoreFile = path.join(cwd, '.sldignore');
-  if (fs.existsSync(ignoreFile)) {
-    try {
-      return fs
-        .readFileSync(ignoreFile, 'utf8')
-        .split(/\r?\n/)
-        .map((l) => l.trim())
-        .filter((l) => l && !l.startsWith('#'));
-    } catch {}
-  }
-  return [];
-}
-
-function matchesIgnorePattern(relPath: string, pattern: string): boolean {
-  const normRel = relPath.replace(/\\/g, '/').replace(/^\/+/, '');
-  let normPat = pattern.trim().replace(/\\/g, '/');
-  if (!normPat || normPat.startsWith('#')) return false;
-
-  const isDirOnly = normPat.endsWith('/');
-  if (isDirOnly) {
-    normPat = normPat.slice(0, -1);
-  }
-
-  // Exact relative path match
-  if (normRel === normPat) return true;
-
-  // Directory prefix match: e.g. "dist" matches "dist/bundle.js"
-  if (normRel.startsWith(normPat + '/')) return true;
-
-  // Wildcard glob match: *.ts, test/**, etc.
-  if (normPat.includes('*') || normPat.includes('?')) {
-    if (!normPat.includes('/')) {
-      const filename = path.basename(normRel);
-      const regexStr = '^' + normPat
-        .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-        .replace(/\*/g, '.*')
-        .replace(/\?/g, '.') + '$';
-      return new RegExp(regexStr).test(filename);
-    } else {
-      const regexStr = '^' + normPat
-        .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-        .replace(/\*\*/g, '.*')
-        .replace(/\*/g, '[^/]*')
-        .replace(/\?/g, '[^/]') + '$';
-      return new RegExp(regexStr).test(normRel);
-    }
-  }
-
-  // Exact segment match: e.g. "env" matches segment "env" in "config/env/file"
-  // but does NOT match substring "prod.env" or "app.ts"!
-  const segments = normRel.split('/');
-  if (!normPat.includes('/')) {
-    return segments.includes(normPat);
-  }
-
-  return false;
-}
 
 function collectFiles(
   currentPath: string,

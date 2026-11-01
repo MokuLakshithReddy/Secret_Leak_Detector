@@ -19,17 +19,48 @@ export const SLD_HOOK_MARKER = '# [SLD_HOOK_MANAGED]';
  */
 export function buildPreCommitHook(
   failOn: Risk = DEFAULT_FAIL_ON,
-  cliPath?: string
+  cliPath?: string,
+  nodePath?: string,
+  blockCommits = true
 ): string {
   const threshold = (RISK_LEVELS as readonly string[]).includes(failOn) ? failOn : DEFAULT_FAIL_ON;
   const pinnedCli = cliPath ? cliPath.replace(/\\/g, '/') : '';
   const escapedCli = pinnedCli ? pinnedCli.replace(/'/g, `'\\''`) : '';
+  const pinnedNode = nodePath ? nodePath.replace(/\\/g, '/') : '';
+  const escapedNode = pinnedNode ? pinnedNode.replace(/'/g, `'\\''`) : '';
+
+  const nodeResolution = escapedNode
+    ? `# Resolved Node.js executable
+if [ -x '${escapedNode}' ]; then
+  NODE_CMD='${escapedNode}'
+elif command -v node >/dev/null 2>&1; then
+  NODE_CMD='node'
+else
+  NODE_CMD=''
+fi`
+    : `# Resolve Node.js from PATH
+if command -v node >/dev/null 2>&1; then
+  NODE_CMD='node'
+elif [ -x '/usr/local/bin/node' ]; then
+  NODE_CMD='/usr/local/bin/node'
+elif [ -x '/opt/homebrew/bin/node' ]; then
+  NODE_CMD='/opt/homebrew/bin/node'
+else
+  NODE_CMD=''
+fi`;
 
   const scannerInvocation = pinnedCli
     ? `# Scanner pinned to bundled CLI path
 PINNED_CLI='${escapedCli}'
 if [ -n "$PINNED_CLI" ] && [ -f "$PINNED_CLI" ]; then
-  node "$PINNED_CLI" scan --staged --fail-on "$SLD_FAIL_ON"
+  if [ -z "$NODE_CMD" ]; then
+    echo ""
+    echo "❌ COMMIT BLOCKED: Node.js runtime not found on PATH (exit 127)."
+    echo "   The pre-commit hook requires Node.js (>=18) to execute the scanner."
+    echo "   Ensure 'node' is in your PATH or configure your Git client environment."
+    exit 127
+  fi
+  "$NODE_CMD" "$PINNED_CLI" scan --staged --fail-on "$SLD_FAIL_ON"
   SCAN_STATUS=$?
 elif command -v secret-leak-detector >/dev/null 2>&1; then
   secret-leak-detector scan --staged --fail-on "$SLD_FAIL_ON"
@@ -39,11 +70,23 @@ else
   echo "❌ COMMIT BLOCKED (fail-closed): Secret Leak Detector scanner is unavailable."
   echo "   Pinned CLI ($PINNED_CLI) not found and no global CLI available."
   echo "   Staged changes could not be verified secret-free, so the commit was refused."
+  echo ""
+  echo "   Recovery guidance (if Secret Leak Detector was uninstalled):"
+  echo "     rm .git/hooks/pre-commit"
+  echo "     (or restore your original hook from .git/hooks/pre-commit.sld-backup.*)"
+  echo "     git config --unset-all core.hooksPath"
+  echo "   Or reinstall Secret Leak Detector in VS Code."
   exit 2
 fi`
     : `# Scanner determined from environment or global binary (never ./dist/cli.js relative to repo)
 if [ -n "$SLD_CLI_PATH" ] && [ -f "$SLD_CLI_PATH" ]; then
-  node "$SLD_CLI_PATH" scan --staged --fail-on "$SLD_FAIL_ON"
+  if [ -z "$NODE_CMD" ]; then
+    echo ""
+    echo "❌ COMMIT BLOCKED: Node.js runtime not found on PATH (exit 127)."
+    echo "   The pre-commit hook requires Node.js (>=18) to execute the scanner."
+    exit 127
+  fi
+  "$NODE_CMD" "$SLD_CLI_PATH" scan --staged --fail-on "$SLD_FAIL_ON"
   SCAN_STATUS=$?
 elif command -v secret-leak-detector >/dev/null 2>&1; then
   secret-leak-detector scan --staged --fail-on "$SLD_FAIL_ON"
@@ -67,16 +110,29 @@ ${SLD_HOOK_MARKER}
 #
 # Fail-closed: if the scanner cannot be executed, the commit is BLOCKED.
 SLD_FAIL_ON="${threshold}"
+SLD_BLOCK_COMMITS="${blockCommits ? '1' : '0'}"
 
 echo "🔐 [Secret Leak Detector] Inspecting staged changes for credentials..."
+
+${nodeResolution}
 
 ${scannerInvocation}
 
 if [ "$SCAN_STATUS" -eq 1 ]; then
+  if [ "$SLD_BLOCK_COMMITS" = "0" ]; then
+    echo ""
+    echo "⚠️ WARNING: Secret Leak Detector detected credentials in staged files (commit blocking is disabled in settings)."
+  else
+    echo ""
+    echo "❌ COMMIT BLOCKED: Secret Leak Detector detected credentials in staged files!"
+    echo "Please rotate the secret or migrate it to an environment variable."
+    exit 1
+  fi
+elif [ "$SCAN_STATUS" -eq 127 ]; then
   echo ""
-  echo "❌ COMMIT BLOCKED: Secret Leak Detector detected credentials in staged files!"
-  echo "Please rotate the secret or migrate it to an environment variable."
-  exit 1
+  echo "❌ COMMIT BLOCKED: Node.js executable not found on PATH (exit 127)."
+  echo "   If using a GUI Git client or nvm, ensure 'node' is available in the shell PATH."
+  exit 2
 elif [ "$SCAN_STATUS" -ne 0 ]; then
   echo ""
   echo "❌ COMMIT BLOCKED (fail-closed): Scanner exited with error ($SCAN_STATUS)."

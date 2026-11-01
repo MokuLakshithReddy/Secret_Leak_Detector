@@ -1,14 +1,7 @@
 import * as vscode from 'vscode';
-import * as fs from 'fs';
-import * as path from 'path';
 import { DiagnosticProvider } from './diagnosticProvider';
 import { SecretFinding } from '../core/types';
-import {
-  escapeEnvValue,
-  resolveUniqueEnvVarName,
-  ensureGitignoreProtectsEnv,
-  getLanguageReplacement,
-} from '../core/remediation/remediationEngine';
+import { applyControlledRemediation } from '../core/remediation/remediationEngine';
 
 export class SecretCodeActionProvider implements vscode.CodeActionProvider {
   public static readonly providedCodeActionKinds = [vscode.CodeActionKind.QuickFix];
@@ -102,121 +95,21 @@ export class SecretCodeActionProvider implements vscode.CodeActionProvider {
       return;
     }
 
+    const workspaceRoot = workspaceFolder.uri.fsPath;
     const document = await vscode.workspace.openTextDocument(documentUri);
     if (document.getText(range) !== finding.rawSecret) {
       vscode.window.showErrorMessage('The secret at the target location has changed or was already removed.');
       return;
     }
 
-    const workspaceRoot = workspaceFolder.uri.fsPath;
-    const envPath = path.join(workspaceRoot, '.env');
-
-    // 1. Generate suggested environment variable name
-    let suggestedName = finding.remediation?.envVarName;
-    if (!suggestedName) {
-      if (finding.type.includes('AWS Access Key')) suggestedName = 'AWS_ACCESS_KEY_ID';
-      else if (finding.type.includes('AWS Secret')) suggestedName = 'AWS_SECRET_ACCESS_KEY';
-      else if (finding.type.includes('GitHub')) suggestedName = 'GITHUB_TOKEN';
-      else if (finding.type.includes('OpenAI')) suggestedName = 'OPENAI_API_KEY';
-      else if (finding.type.includes('Anthropic')) suggestedName = 'ANTHROPIC_API_KEY';
-      else if (finding.type.includes('Stripe')) suggestedName = 'STRIPE_SECRET_KEY';
-      else if (finding.type.includes('Slack')) suggestedName = 'SLACK_TOKEN';
-      else if (finding.type.includes('Database')) suggestedName = 'DATABASE_URL';
-      else {
-        suggestedName = `${finding.provider.replace(/[^a-zA-Z0-9]/g, '_').toUpperCase()}_API_KEY`;
-      }
-    }
-
-    // 2. Read existing .env if present and determine unique non-colliding variable name
-    let existingEnvContent = '';
-    let hadExistingEnv = false;
-    if (fs.existsSync(envPath)) {
-      hadExistingEnv = true;
-      try {
-        existingEnvContent = fs.readFileSync(envPath, 'utf8');
-      } catch (err) {
-        vscode.window.showErrorMessage(`Failed to read .env file: ${err}`);
-        return;
-      }
-    }
-
-    const { varName, isReused } = resolveUniqueEnvVarName(
-      existingEnvContent,
-      suggestedName,
-      finding.rawSecret
-    );
-
-    // 3. Ensure .gitignore protects .env BEFORE any credentials are saved to disk
-    try {
-      ensureGitignoreProtectsEnv(workspaceRoot);
-    } catch (err: any) {
-      vscode.window.showErrorMessage(`Failed to verify .gitignore security: ${err.message || err}`);
+    // Atomic, transactional remediation: snapshots source and .env, ensures .gitignore,
+    // writes .env with 0600 mode FIRST, updates source, and rolls back cleanly on any failure.
+    const result = applyControlledRemediation(finding, workspaceRoot);
+    if (!result.success) {
+      vscode.window.showErrorMessage(`Remediation aborted: ${result.message}`);
       return;
     }
 
-    // 4. Check for enclosing quotes to replace quotes too (avoid producing "process.env.X" string literal)
-    let editRange = range;
-    let quoteWrapped = false;
-    if (range.start.character > 0) {
-      const beforePos = range.start.translate(0, -1);
-      const afterPos = range.end.translate(0, 1);
-      const charBefore = document.getText(new vscode.Range(beforePos, range.start));
-      const charAfter = document.getText(new vscode.Range(range.end, afterPos));
-      if ((charBefore === '"' && charAfter === '"') || (charBefore === "'" && charAfter === "'")) {
-        editRange = new vscode.Range(beforePos, afterPos);
-        quoteWrapped = true;
-      }
-    }
-
-    const replacement = getLanguageReplacement(documentUri.fsPath, varName);
-    const edit = new vscode.WorkspaceEdit();
-    edit.replace(documentUri, editRange, replacement);
-
-    const editSuccess = await vscode.workspace.applyEdit(edit);
-    if (!editSuccess) {
-      vscode.window.showErrorMessage(
-        'Failed to modify source document. Remediation aborted with zero file alterations.'
-      );
-      return;
-    }
-
-    // 5. If source file was successfully updated, write escaped value to .env with restricted permissions (0600)
-    const escapedSecret = escapeEnvValue(finding.rawSecret);
-    const envLine = `${varName}="${escapedSecret}"\n`;
-
-    try {
-      if (!isReused) {
-        if (!hadExistingEnv) {
-          fs.writeFileSync(envPath, envLine, { mode: 0o600, encoding: 'utf8' });
-        } else {
-          const prefix = existingEnvContent.endsWith('\n') || existingEnvContent.length === 0 ? '' : '\n';
-          fs.appendFileSync(envPath, `${prefix}${envLine}`, { mode: 0o600, encoding: 'utf8' });
-        }
-      }
-
-      // Update .env.example
-      const envExamplePath = path.join(workspaceRoot, '.env.example');
-      const exampleLine = `${varName}=your_${varName.toLowerCase()}_here\n`;
-      if (!fs.existsSync(envExamplePath) || !fs.readFileSync(envExamplePath, 'utf8').includes(varName)) {
-        const exContent = fs.existsSync(envExamplePath) ? fs.readFileSync(envExamplePath, 'utf8') : '';
-        const exPrefix = exContent.endsWith('\n') || exContent.length === 0 ? '' : '\n';
-        fs.appendFileSync(envExamplePath, `${exPrefix}${exampleLine}`, 'utf8');
-      }
-    } catch (err) {
-      // Rollback source code change using the post-edit range
-      const after = new vscode.Range(editRange.start, editRange.start.translate(0, replacement.length));
-      const rollbackEdit = new vscode.WorkspaceEdit();
-      rollbackEdit.replace(documentUri, after, quoteWrapped ? `"${finding.rawSecret}"` : finding.rawSecret);
-      await vscode.workspace.applyEdit(rollbackEdit);
-
-      vscode.window.showErrorMessage(
-        `Failed to write to .env: ${err}. Document edit was safely rolled back.`
-      );
-      return;
-    }
-
-    vscode.window.showInformationMessage(
-      `✅ Moved ${finding.type} to .env (${varName}) and verified .gitignore protection!`
-    );
+    vscode.window.showInformationMessage(`🛡️ ${result.message}`);
   }
 }

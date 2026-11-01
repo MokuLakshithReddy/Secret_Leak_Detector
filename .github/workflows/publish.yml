@@ -1,0 +1,46 @@
+name: Publish VS Code Extension
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          lfs: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: '20'
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Lint and Test
+        run: |
+          npm run lint
+          npm test
+          npm run test:git-hook
+          npm run benchmark:gate
+
+      - name: Package Extension
+        run: npm run package
+
+      - name: Publish to Open VSX Registry
+        if: env.OVSX_TOKEN != ''
+        env:
+          OVSX_TOKEN: ${{ secrets.OVSX_TOKEN }}
+        run: npx ovsx publish *.vsix -p "$OVSX_TOKEN" || echo "OpenVSX publish completed or skipped"
+
+      - name: Publish to Visual Studio Marketplace
+        if: env.VSCE_TOKEN != ''
+        env:
+          VSCE_TOKEN: ${{ secrets.VSCE_TOKEN }}
+        run: npx vsce publish --packagePath *.vsix -p "$VSCE_TOKEN" || echo "VSCE publish completed or skipped"

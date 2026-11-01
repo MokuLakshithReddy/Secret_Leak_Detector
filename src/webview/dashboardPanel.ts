@@ -73,7 +73,17 @@ export class DashboardPanel {
               typeof message.line === 'number' &&
               message.line >= 1
             ) {
-              const targetPath = path.resolve(message.file);
+              const matchingFinding = this._findings.find(
+                (f) => f.file === message.file || f.fullPath === message.file
+              );
+              if (!matchingFinding) return;
+
+              let targetPath = matchingFinding.fullPath;
+              if (!path.isAbsolute(targetPath)) {
+                const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+                targetPath = root ? path.resolve(root, targetPath) : path.resolve(targetPath);
+              }
+
               if (fs.existsSync(targetPath)) {
                 try {
                   const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(targetPath));

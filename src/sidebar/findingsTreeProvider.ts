@@ -65,18 +65,20 @@ export class FindingsTreeProvider implements vscode.TreeDataProvider<TreeItem> {
       const risk = element.contextValue as Risk;
       const matching = this.findings.filter((f) => f.risk === risk);
 
+      const redact = vscode.workspace.getConfiguration('secretLeakDetector').get<boolean>('redactSecrets', true);
       const items = matching.map((f) => {
         const item = new TreeItem(
           `${f.type}`,
           vscode.TreeItemCollapsibleState.None
         );
+        const secretDisplay = redact ? f.redactedSecret : f.rawSecret;
         item.description = `${f.file}:${f.line}`;
         item.tooltip = new vscode.MarkdownString(
           `**${f.type}** (${f.provider})\n\n` +
           `- **Risk:** ${f.risk}\n` +
           `- **Confidence:** ${f.confidence}%\n` +
           `- **Entropy:** ${f.entropy} bits/char\n` +
-          `- **Secret:** \`${f.redactedSecret}\`\n\n` +
+          `- **Secret:** \`${secretDisplay}\`\n\n` +
           `*Suggested Fix: ${f.remediation?.replacementCode || f.remediation?.envVarName || 'Migrate to .env'}*`
         );
         item.iconPath = new vscode.ThemeIcon('key');

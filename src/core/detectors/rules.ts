@@ -371,7 +371,7 @@ export const CORE_RULES: RuleDefinition[] = [
     id: 'private-key',
     name: 'Cryptographic Private Key (PEM)',
     provider: 'Cryptography',
-    pattern: /(-----BEGIN (?:[A-Z0-9_-]+ )*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?-----END (?:[A-Z0-9_-]+ )*PRIVATE KEY(?: BLOCK)?-----)/g,
+    pattern: /(-----BEGIN (?:[A-Z0-9_-]+ )*PRIVATE KEY(?: BLOCK)?-----(?:(?!-----BEGIN)[\s\S]){1,8192}?-----END (?:[A-Z0-9_-]+ )*PRIVATE KEY(?: BLOCK)?-----)/g,
     baseConfidence: 100,
     baseRiskWeight: 100,
     signals: [

@@ -156,6 +156,20 @@ async function buildAll() {
   });
   console.log('Build completed: dist/cli.js');
 
+  // Build Uninstall script
+  await esbuild.build({
+    entryPoints: ['src/uninstall.ts'],
+    bundle: true,
+    outfile: 'dist/uninstall.js',
+    format: 'cjs',
+    platform: 'node',
+    target: 'node18',
+    sourcemap: false,
+    minify: isProduction,
+    logLevel: 'info',
+  });
+  console.log('Build completed: dist/uninstall.js');
+
   if (isCliOnly) return;
 
   // Build Extension

@@ -19,7 +19,7 @@ The document makes four concrete, independently verifiable claims:
 |-------|----------|
 | SLD detects realistic fake credentials | `demo/` — block-and-remediate fixture repo |
 | SLD ignores high-entropy non-secrets (low FP rate) | `evaluation/datasets/heldOutCorpus.ts` |
-| Core detector logic is covered by 219 automated tests | `test/runAllTests.ts` |
+| Core detector logic is covered by 226 automated tests | `test/runAllTests.ts` |
 | Pre-commit hook *actually* blocks commits | `test/integration/gitHookScenarios.test.ts` |
 
 ---
@@ -169,7 +169,7 @@ with the output of `npm run benchmark:heldout` and your Node.js + OS version.
 
 ### Overview
 
-`test/runAllTests.ts` contains **219 tests** across 26 sections. It is the
+`test/runAllTests.ts` contains **226 tests** across 26 sections. It is the
 primary regression guard run on every CI push/PR.
 
 ### Run
@@ -279,7 +279,7 @@ git clone https://github.com/MokuLakshithReddy/Secret_Leak_Detector.git
 cd Secret_Leak_Detector
 npm ci
 npm run build
-npm test                     # 219 tests
+npm test                     # 226 tests
 npm run benchmark:heldout    # confusion matrix
 npm run benchmark:gate       # 520-fixture regression gate
 npm run test:git-hook        # commit blocking
@@ -348,7 +348,7 @@ Follow these steps on your own machine to produce independent verification:
    ```bash
    npm test
    ```
-   Expected: final line reads `TEST SUMMARY: 219 PASSED, 0 FAILED`.
+   Expected: final line reads `TEST SUMMARY: 226 PASSED, 0 FAILED`.
 
 5. **Run the held-out evaluation**
    ```bash

@@ -1,10 +1,10 @@
-# ?? Secret Leak Detector
+# 🛡️ Secret Leak Detector
 
 [![Visual Studio Code](https://img.shields.io/badge/VS%20Code-v1.85+-blue.svg?logo=visualstudiocode)](https://code.visualstudio.com/)
-[![CI Status](https://img.shields.io/badge/CI-passing-brightgreen.svg)]()
-[![Tests](https://img.shields.io/badge/tests-219%20passed%20%7C%20100%25-brightgreen.svg)]()
-[![Benchmark F1](https://img.shields.io/badge/benchmark%20F1-100%25-brightgreen.svg)]()
-[![Corpus](https://img.shields.io/badge/corpus-1%2C000%20cases-blueviolet.svg)]()
+[![CI Status](https://github.com/MokuLakshithReddy/Secret_Leak_Detector/actions/workflows/secret-leak-detector.yml/badge.svg)](https://github.com/MokuLakshithReddy/Secret_Leak_Detector/actions)
+[![Tests](https://img.shields.io/badge/tests-226%20passed%20%7C%20100%25-brightgreen.svg)]()
+[![Benchmark F1](https://img.shields.io/badge/benchmark%20F1-100%25-brightgreen.svg)](docs/VALIDATION.md)
+[![Corpus](https://img.shields.io/badge/corpus-1%2C000%20synthetic%20%2B%20100%20curated-blueviolet.svg)](docs/VALIDATION.md)
 [![Precision](https://img.shields.io/badge/precision-100%25-00e5b0.svg)]()
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
@@ -310,7 +310,7 @@ Secret Leak Detector is engineered against 6 primary security threats:
 
 ## ?? Testing & Verification
 
-Run the comprehensive security engineering test suite (219 unit, integration, AST, risk, and regression tests):
+Run the comprehensive security engineering test suite (226 unit, integration, AST, risk, and regression tests):
 
 ```bash
 npm test

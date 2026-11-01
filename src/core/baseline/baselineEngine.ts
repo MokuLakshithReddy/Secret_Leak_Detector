@@ -116,20 +116,31 @@ export class BaselineEngine {
    * to ensure PRs cannot modify the baseline in their working tree to bypass CI checks.
    */
   public loadBaselineFromGit(gitRef = 'HEAD'): BaselineFile | null {
-    try {
-      const { execFileSync } = require('child_process');
-      const gitPath = path.isAbsolute(this.baselinePath)
-        ? path.basename(this.baselinePath)
-        : this.baselinePath;
-      const data = execFileSync('git', ['show', `${gitRef}:${gitPath}`], {
-        encoding: 'utf8',
-        stdio: ['pipe', 'pipe', 'ignore'],
-      });
-      const parsed = JSON.parse(data);
-      return validateBaselineSchema(parsed);
-    } catch {
-      return null;
+    const gitPath = path.isAbsolute(this.baselinePath)
+      ? path.basename(this.baselinePath)
+      : this.baselinePath;
+
+    const candidateRefs = [
+      gitRef,
+      `origin/${gitRef}`,
+      `refs/remotes/origin/${gitRef}`,
+      'HEAD',
+    ];
+
+    const { execFileSync } = require('child_process');
+    for (const ref of candidateRefs) {
+      try {
+        const data = execFileSync('git', ['show', `${ref}:${gitPath}`], {
+          encoding: 'utf8',
+          stdio: ['pipe', 'pipe', 'ignore'],
+        });
+        if (data) {
+          const parsed = JSON.parse(data);
+          return validateBaselineSchema(parsed);
+        }
+      } catch {}
     }
+    return null;
   }
 
   public saveBaseline(findings: SecretFinding[]): BaselineFile {
@@ -142,10 +153,19 @@ export class BaselineEngine {
       firstSeen: f.detectedAt,
     }));
 
+    let pkgVersion = '1.0.2';
+    try {
+      const pkgPath = path.resolve(__dirname, '../../../package.json');
+      if (fs.existsSync(pkgPath)) {
+        const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+        if (pkg.version) pkgVersion = pkg.version;
+      }
+    } catch {}
+
     const file: BaselineFile = {
       version: 1,
       generatedAt: new Date().toISOString(),
-      generator: 'Secret Leak Detector v1.0.2',
+      generator: `Secret Leak Detector v${pkgVersion}`,
       findings: baselineFindings,
     };
 

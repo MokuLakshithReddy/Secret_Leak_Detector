@@ -2,6 +2,7 @@ node_modules/
 dist/*
 !dist/extension.js
 !dist/cli.js
+!dist/uninstall.js
 build/
 *.vsix
 tools/

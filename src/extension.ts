@@ -6,10 +6,13 @@ import { SecretCodeActionProvider } from './diagnostics/codeActionProvider';
 import { FindingsTreeProvider, OverviewTreeProvider } from './sidebar/findingsTreeProvider';
 import { DashboardPanel } from './webview/dashboardPanel';
 import { GitService } from './git/gitService';
-import { SecretFinding } from './core/types';
-import { DEFAULT_FAIL_ON, meetsThreshold } from './core/policy';
+import { SecretFinding, Risk } from './core/types';
+import { DEFAULT_FAIL_ON, meetsThreshold, resolveFailOn } from './core/policy';
+import { scanContent, ScannerOptions } from './core/scanner/scanner';
+import { BINARY_EXTENSIONS } from './core/ignore/ignoreEngine';
 
 let outputChannel: vscode.OutputChannel;
+const changeDebounceTimers = new Map<string, NodeJS.Timeout>();
 
 export function activate(context: vscode.ExtensionContext) {
   outputChannel = vscode.window.createOutputChannel('Secret Leak Detector');
@@ -33,13 +36,17 @@ export function activate(context: vscode.ExtensionContext) {
   const findingsTree = new FindingsTreeProvider();
   const overviewTree = new OverviewTreeProvider();
 
-  vscode.window.registerTreeDataProvider('secret-leak-detector.findingsView', findingsTree);
-  vscode.window.registerTreeDataProvider('secret-leak-detector.overviewView', overviewTree);
+  context.subscriptions.push(
+    vscode.window.registerTreeDataProvider('secret-leak-detector.findingsView', findingsTree)
+  );
+  context.subscriptions.push(
+    vscode.window.registerTreeDataProvider('secret-leak-detector.overviewView', overviewTree)
+  );
 
-  // Workspace Root & Git Service
-  const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-  const workspaceRoot = workspaceFolder ? workspaceFolder.uri.fsPath : process.cwd();
-  const gitService = new GitService(workspaceRoot);
+  // Primary workspace root
+  const firstFolder = vscode.workspace.workspaceFolders?.[0];
+  const primaryRoot = firstFolder ? firstFolder.uri.fsPath : process.cwd();
+  const gitService = new GitService(primaryRoot, (msg) => outputChannel.appendLine(msg));
 
   // Sync findings to Tree Providers and Dashboard
   diagnosticProvider.onFindingsChanged((findings) => {
@@ -53,7 +60,7 @@ export function activate(context: vscode.ExtensionContext) {
   // Configuration accessor helper
   const getConfig = () => vscode.workspace.getConfiguration('secretLeakDetector');
 
-  // Apply and listen to configuration changes (minEntropy, persist ignores)
+  // Apply and listen to configuration changes
   function applyConfiguration() {
     const config = getConfig();
     const minEntropy = config.get<number>('minEntropy');
@@ -63,11 +70,44 @@ export function activate(context: vscode.ExtensionContext) {
   }
   applyConfiguration();
 
-  // Re-pin pre-commit hook if the bundled CLI path changed due to extension update
-  const bundledCli = path.join(context.extensionPath, 'dist', 'cli.js');
-  if (fs.existsSync(bundledCli)) {
-    gitService.ensureHookIsPinned(bundledCli).catch(() => {});
+  // Stable CLI management under globalStorageUri (survives extension version upgrades)
+  let activeCliPath = path.join(context.extensionPath, 'dist', 'cli.js');
+  try {
+    const globalStorage = context.globalStorageUri.fsPath;
+    if (!fs.existsSync(globalStorage)) {
+      fs.mkdirSync(globalStorage, { recursive: true });
+    }
+    const stableCli = path.join(globalStorage, 'cli.js');
+    if (fs.existsSync(activeCliPath)) {
+      fs.copyFileSync(activeCliPath, stableCli);
+      activeCliPath = stableCli;
+    }
+  } catch {}
+
+  // Re-pin pre-commit hooks in all workspace folders that are Git repositories
+  async function pinHooksInAllFolders(cli: string) {
+    const folders = vscode.workspace.workspaceFolders || [];
+    const blockCommits = getConfig().get<boolean>('blockGitCommits', true);
+    const configuredFailOn = resolveFailOn(getConfig().get<string>('failOn', DEFAULT_FAIL_ON));
+    for (const folder of folders) {
+      const gs = new GitService(folder.uri.fsPath, (msg) => outputChannel.appendLine(msg));
+      if (await gs.isGitRepo()) {
+        await gs.ensureHookIsPinned(cli, process.execPath, blockCommits).catch(() => {});
+      }
+    }
   }
+
+  if (fs.existsSync(activeCliPath)) {
+    pinHooksInAllFolders(activeCliPath).catch(() => {});
+  }
+
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeWorkspaceFolders(async () => {
+      if (fs.existsSync(activeCliPath)) {
+        await pinHooksInAllFolders(activeCliPath).catch(() => {});
+      }
+    })
+  );
 
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
@@ -80,7 +120,7 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
-  // Real-time Scanning on open, per-document debounced change, and save
+  // Real-time scanning
   if (vscode.window.activeTextEditor) {
     diagnosticProvider.scanDocument(vscode.window.activeTextEditor.document);
   }
@@ -101,7 +141,6 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
-  const changeDebounceTimers = new Map<string, NodeJS.Timeout>();
   context.subscriptions.push(
     vscode.workspace.onDidChangeTextDocument((event) => {
       if (!getConfig().get<boolean>('enableRealtimeScanning', true)) return;
@@ -122,41 +161,75 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
-  // Command: Scan Entire Workspace
+  context.subscriptions.push(
+    vscode.workspace.onDidRenameFiles((event) => {
+      event.files.forEach((f) => diagnosticProvider.renameDocument(f.oldUri, f.newUri));
+    })
+  );
+
+  // Command: Scan Entire Workspace (Non-blocking, batch read, progress & cancellation)
   context.subscriptions.push(
     vscode.commands.registerCommand('secret-leak-detector.scanWorkspace', async () => {
       await vscode.window.withProgress(
         {
           location: vscode.ProgressLocation.Notification,
           title: '🔐 Scanning workspace for secret leaks...',
-          cancellable: false,
+          cancellable: true,
         },
-        async (progress) => {
+        async (progress, token) => {
           const excludeGlobs = getConfig().get<string[]>('excludeGlobs', []);
-          const excludePattern = `{${excludeGlobs.join(',')}}`;
+          const excludePattern = excludeGlobs.length > 0 ? `{${excludeGlobs.join(',')}}` : undefined;
 
           const MAX_SCAN_FILES = 1000;
           const files = await vscode.workspace.findFiles('**/*', excludePattern, MAX_SCAN_FILES);
+          const batchMap = new Map<string, SecretFinding[]>();
           let allFindings: SecretFinding[] = [];
           let scannedCount = 0;
           let skippedCount = 0;
 
-          for (const file of files) {
+          const total = files.length;
+          for (let i = 0; i < total; i++) {
+            if (token.isCancellationRequested) {
+              vscode.window.showInformationMessage('Secret Leak Detector: Workspace scan was cancelled.');
+              return;
+            }
+
+            const file = files[i];
+            const ext = path.extname(file.fsPath).toLowerCase();
+            if (BINARY_EXTENSIONS.has(ext)) {
+              skippedCount++;
+              continue;
+            }
+
             try {
               const stat = await vscode.workspace.fs.stat(file);
-              // Skip files larger than 5MB to preserve editor responsiveness
               if (stat.size > 5 * 1024 * 1024) {
                 skippedCount++;
                 continue;
               }
-              const doc = await vscode.workspace.openTextDocument(file);
-              const findings = diagnosticProvider.scanDocument(doc);
-              allFindings.push(...findings);
+              const bytes = await vscode.workspace.fs.readFile(file);
+              const text = Buffer.from(bytes).toString('utf8');
+              const workspaceFolder = vscode.workspace.getWorkspaceFolder(file);
+              const scanOpts: ScannerOptions = {
+                workspaceRoot: workspaceFolder ? workspaceFolder.uri.fsPath : undefined,
+                minEntropyThreshold: getConfig().get<number>('minEntropy'),
+              };
+              const fileFindings = scanContent(text, file.fsPath, scanOpts);
+              batchMap.set(file.fsPath, fileFindings);
+              allFindings.push(...fileFindings);
               scannedCount++;
             } catch {
               skippedCount++;
             }
+
+            progress.report({
+              message: `${scannedCount}/${total} files scanned`,
+              increment: (1 / (total || 1)) * 100,
+            });
           }
+
+          // Atomic batch update to findings and diagnostics
+          diagnosticProvider.setBatchFindings(batchMap);
 
           const isCapped = files.length >= MAX_SCAN_FILES;
           let notice = `Scanned ${scannedCount} files.`;
@@ -167,7 +240,9 @@ export function activate(context: vscode.ExtensionContext) {
             notice += ` (${skippedCount} large or binary files skipped)`;
           }
 
-          if (allFindings.length === 0) {
+          if (scannedCount === 0) {
+            vscode.window.showWarningMessage(`⚠️ Workspace scan complete: 0 files were scanned. ${notice}`);
+          } else if (allFindings.length === 0) {
             vscode.window.showInformationMessage(
               `✅ Scan complete: ${notice} No secrets or credentials detected!`
             );
@@ -192,7 +267,7 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
-  // Command: Scan Staged Changes (Fail-Closed Security Gate)
+  // Command: Scan Staged Changes
   context.subscriptions.push(
     vscode.commands.registerCommand('secret-leak-detector.scanStaged', async () => {
       outputChannel.clear();
@@ -200,21 +275,28 @@ export function activate(context: vscode.ExtensionContext) {
       outputChannel.show(true);
 
       const blockCommits = getConfig().get<boolean>('blockGitCommits', true);
+      const configuredFailOn = resolveFailOn(getConfig().get<string>('failOn', DEFAULT_FAIL_ON));
       const scanResult = await gitService.scanStagedChanges();
 
       if (scanResult.status === 'ERROR') {
         outputChannel.appendLine(`❌ [Secret Leak Detector] Scan error: ${scanResult.error}`);
-        if (blockCommits) {
-          vscode.window.showErrorMessage(
-            `❌ COMMIT GATE BLOCKED: Git security scan failed (${scanResult.error}). Failing closed for safety.`,
-            'View Output'
-          );
-        } else {
-          vscode.window.showWarningMessage(
-            `⚠️ Git scan encountered an error: ${scanResult.error}`
-          );
-        }
+        const errMsg = blockCommits
+          ? `❌ COMMIT GATE BLOCKED: Git security scan failed (${scanResult.error}). Failing closed for safety.`
+          : `⚠️ Git scan encountered an error: ${scanResult.error}`;
+
+        vscode.window.showErrorMessage(errMsg, 'View Output').then((sel) => {
+          if (sel === 'View Output') {
+            outputChannel.show(true);
+          }
+        });
         return;
+      }
+
+      if (scanResult.skippedFiles && scanResult.skippedFiles.length > 0) {
+        outputChannel.appendLine(`ℹ️  Skipped ${scanResult.skippedFiles.length} binary or oversized file(s):`);
+        for (const s of scanResult.skippedFiles) {
+          outputChannel.appendLine(`   • ${s.path}: ${s.reason}`);
+        }
       }
 
       if (scanResult.status === 'CLEAN') {
@@ -223,11 +305,8 @@ export function activate(context: vscode.ExtensionContext) {
         return;
       }
 
-      // Findings detected
       const findings = scanResult.findings;
-      // Single project policy: only findings at or above DEFAULT_FAIL_ON block a
-      // commit. Lower tiers are surfaced but never gate.
-      const blocking = findings.filter((f) => meetsThreshold(f.risk, DEFAULT_FAIL_ON));
+      const blocking = findings.filter((f) => meetsThreshold(f.risk, configuredFailOn));
       const terminalMessage = gitService.formatTerminalBlockedMessage(
         blocking.length > 0 ? blocking : findings
       );
@@ -235,14 +314,16 @@ export function activate(context: vscode.ExtensionContext) {
 
       const willBlock = blockCommits && blocking.length > 0;
       const msg = willBlock
-        ? `❌ COMMIT BLOCKED: ${blocking.length} secret(s) at or above ${DEFAULT_FAIL_ON} detected in staged changes!`
-        : `⚠️ WARNING: ${findings.length} secret(s) detected in staged changes (none block at the ${DEFAULT_FAIL_ON} threshold).`;
+        ? `❌ COMMIT BLOCKED: ${blocking.length} secret(s) at or above ${configuredFailOn} detected in staged changes!`
+        : `⚠️ WARNING: ${findings.length} secret(s) detected in staged changes (none block at the ${configuredFailOn} threshold).`;
 
       vscode.window
         .showErrorMessage(msg, 'Open Dashboard', 'View Output')
         .then((sel) => {
           if (sel === 'Open Dashboard') {
             DashboardPanel.createOrShow(context.extensionUri, findings);
+          } else if (sel === 'View Output') {
+            outputChannel.show(true);
           }
         });
     })
@@ -258,7 +339,9 @@ export function activate(context: vscode.ExtensionContext) {
   // Command: Install Git Pre-Commit Hook
   context.subscriptions.push(
     vscode.commands.registerCommand('secret-leak-detector.installGitHook', async () => {
-      const result = await gitService.installPreCommitHook();
+      const blockCommits = getConfig().get<boolean>('blockGitCommits', true);
+      const configuredFailOn = resolveFailOn(getConfig().get<string>('failOn', DEFAULT_FAIL_ON));
+      const result = await gitService.installPreCommitHook(activeCliPath, process.execPath, blockCommits, configuredFailOn);
       if (result.success) {
         vscode.window.showInformationMessage(`🛡️ ${result.message}`);
       } else {
@@ -279,7 +362,7 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
-  // Command: Ignore Finding (False Positive suppression with palette selection and persistence)
+  // Command: Ignore Finding (False Positive suppression)
   context.subscriptions.push(
     vscode.commands.registerCommand('secret-leak-detector.ignoreFinding', async (findingId?: string) => {
       let targetId = findingId;
@@ -304,6 +387,29 @@ export function activate(context: vscode.ExtensionContext) {
       const currentIgnores = diagnosticProvider.getIgnoredFindings();
       await context.workspaceState.update('ignoredFindings', currentIgnores);
       vscode.window.showInformationMessage(`🛡️ Finding marked as false-positive and suppressed.`);
+    })
+  );
+
+  // Command: Unignore Finding (Restore suppressed finding)
+  context.subscriptions.push(
+    vscode.commands.registerCommand('secret-leak-detector.unignoreFinding', async () => {
+      const ignored = diagnosticProvider.getIgnoredFindings();
+      if (ignored.length === 0) {
+        vscode.window.showInformationMessage('No suppressed findings to restore.');
+        return;
+      }
+      const picked = await vscode.window.showQuickPick(
+        ignored.map((id) => ({ label: id })),
+        { placeHolder: 'Select a suppressed finding to restore' }
+      );
+      if (!picked) return;
+      const updated = ignored.filter((id) => id !== picked.label);
+      diagnosticProvider.setIgnoredFindings(updated);
+      await context.workspaceState.update('ignoredFindings', updated);
+      if (vscode.window.activeTextEditor) {
+        diagnosticProvider.scanDocument(vscode.window.activeTextEditor.document);
+      }
+      vscode.window.showInformationMessage(`🛡️ Restored finding '${picked.label}'.`);
     })
   );
 
@@ -332,7 +438,8 @@ export function activate(context: vscode.ExtensionContext) {
 }
 
 export function deactivate() {
-  if (outputChannel) {
-    outputChannel.dispose();
+  for (const timer of changeDebounceTimers.values()) {
+    clearTimeout(timer);
   }
+  changeDebounceTimers.clear();
 }

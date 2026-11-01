@@ -61,6 +61,13 @@ interface DeobfuscationCandidate {
   description: string;
 }
 
+function hasInlineSuppression(currentLine: string, prevLine: string): boolean {
+  const inlineRegex = /(?:\/\/|#|\/\*|--)\s*(?:sld-ignore|secret-leak-ignore)/i;
+  if (inlineRegex.test(currentLine)) return true;
+  const standaloneRegex = /^\s*(?:\/\/|#|\/\*|--)\s*(?:sld-ignore|secret-leak-ignore)(?:\s*\*\/)?\s*$/i;
+  return standaloneRegex.test(prevLine);
+}
+
 export function scanContent(
   rawContent: string,
   filePath: string,
@@ -71,6 +78,7 @@ export function scanContent(
   const rules = opts.rules || CORE_RULES;
   const workspaceRoot = opts.workspaceRoot;
   const fileContext = analyzeFileContext(filePath, workspaceRoot);
+  const contentLines = content.split(/\r?\n/);
   const findings: SecretFinding[] = [];
 
   // Zero-allocation line & column offset index (instantiated lazily on first match)
@@ -140,6 +148,13 @@ export function scanContent(
       // Calculate line and column via binary search on line offsets (0 heap allocation)
       const { line: lineNumber, column: columnNumber } = getPosition(secretIndex);
 
+      // Check for inline suppression comments (e.g. // sld-ignore, # sld-ignore)
+      const currentLineText = contentLines[lineNumber - 1] || '';
+      const prevLineText = lineNumber > 1 ? contentLines[lineNumber - 2] : '';
+      if (hasInlineSuppression(currentLineText, prevLineText)) {
+        continue;
+      }
+
       // Extract lexical context and AST assignment semantics with windowed lines
       const ctxWindow = getContextWindow(lineNumber);
       const lexicalContext = analyzeLexicalContext(ctxWindow.lines, ctxWindow.relativeTargetIdx);
@@ -162,12 +177,14 @@ export function scanContent(
 
       // Check minimum entropy constraint:
       // Structured rules without an entropy requirement are never filtered by global minEntropy.
-      // If a rule defines its own minEntropy, apply max(rule.minEntropy, threshold).
+      // Only apply custom minEntropyThreshold to generic rules; preserve dedicated provider rule floors
       let effectiveMinEntropy: number | undefined;
       if (rule.minEntropy !== undefined) {
-        effectiveMinEntropy = opts.minEntropyThreshold !== undefined
-          ? Math.max(rule.minEntropy, opts.minEntropyThreshold)
-          : rule.minEntropy;
+        if (rule.provider === 'Generic' && opts.minEntropyThreshold !== undefined) {
+          effectiveMinEntropy = opts.minEntropyThreshold;
+        } else {
+          effectiveMinEntropy = rule.minEntropy;
+        }
       }
       if (
         effectiveMinEntropy !== undefined &&
@@ -203,7 +220,7 @@ export function scanContent(
 
       const fileIdPart = getFileIdPart(relativePath);
       const fingerprint = generateFingerprint(rawSecret);
-      const id = `sec_${fingerprint}_${fileIdPart}_${lineNumber}`;
+      const id = `sec_${fingerprint}_${fileIdPart}`;
       const redacted = redactSecret(rawSecret);
 
       const finding: SecretFinding = {
@@ -303,6 +320,12 @@ export function scanContent(
         const rawSecret = ruleMatch[1] || ruleMatch[0];
         const { line: lineNumber, column: columnNumber } = getPosition(candidate.matchOffset);
 
+        const currentLineText = contentLines[lineNumber - 1] || '';
+        const prevLineText = lineNumber > 1 ? contentLines[lineNumber - 2] : '';
+        if (hasInlineSuppression(currentLineText, prevLineText)) {
+          continue;
+        }
+
         const ctxWindow = getContextWindow(lineNumber);
         const lexicalContext = analyzeLexicalContext(ctxWindow.lines, ctxWindow.relativeTargetIdx);
         const astContext = analyzeAstContext(ctxWindow.lines, ctxWindow.relativeTargetIdx, filePath);
@@ -320,9 +343,11 @@ export function scanContent(
 
         let effectiveMinEntropy: number | undefined;
         if (rule.minEntropy !== undefined) {
-          effectiveMinEntropy = opts.minEntropyThreshold !== undefined
-            ? Math.max(rule.minEntropy, opts.minEntropyThreshold)
-            : rule.minEntropy;
+          if (rule.provider === 'Generic' && opts.minEntropyThreshold !== undefined) {
+            effectiveMinEntropy = opts.minEntropyThreshold;
+          } else {
+            effectiveMinEntropy = rule.minEntropy;
+          }
         }
         if (
           effectiveMinEntropy !== undefined &&
@@ -361,7 +386,7 @@ export function scanContent(
 
         const fileIdPart = getFileIdPart(relativePath);
         const fingerprint = generateFingerprint(rawSecret);
-        const id = `sec_${fingerprint}_${fileIdPart}_${lineNumber}`;
+        const id = `sec_${fingerprint}_${fileIdPart}`;
         const redacted = redactSecret(rawSecret);
 
         findings.push({

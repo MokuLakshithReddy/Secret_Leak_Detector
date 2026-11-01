@@ -74,8 +74,8 @@ export class DiagnosticProvider {
     }
 
     const text = document.getText();
-    // Cap real-time document scanning at 2MB to preserve editor responsiveness
-    if (text.length > 2 * 1024 * 1024) {
+    // Cap real-time document scanning at 5MB to preserve editor responsiveness
+    if (text.length > 5 * 1024 * 1024) {
       return [];
     }
     const workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri);
@@ -131,6 +131,67 @@ export class DiagnosticProvider {
     this.diagnosticCollection.set(document.uri, diagnostics);
     this.onFindingsChangedEmitter.fire(this.getAllFindings());
     return findings;
+  }
+
+  public toDiagnostic(finding: SecretFinding): vscode.Diagnostic {
+    const line = Math.max(0, finding.line - 1);
+    const startCol = Math.max(0, finding.column - 1);
+    const startPos = new vscode.Position(line, startCol);
+    const endPos = new vscode.Position(line, startCol + finding.length);
+    const range = new vscode.Range(startPos, endPos);
+
+    let severity = vscode.DiagnosticSeverity.Warning;
+    if (finding.risk === 'CRITICAL' || finding.risk === 'HIGH') {
+      severity = vscode.DiagnosticSeverity.Error;
+    } else if (finding.risk === 'LOW') {
+      severity = vscode.DiagnosticSeverity.Information;
+    }
+
+    const remediationSummary =
+      typeof finding.remediation === 'string'
+        ? finding.remediation
+        : finding.remediation?.steps?.[0] || 'Migrate to .env';
+
+    const diagnostic = new vscode.Diagnostic(
+      range,
+      `[Secret Leak Detector] ${finding.type} detected! Confidence: ${finding.confidence}%. ${remediationSummary}`,
+      severity
+    );
+
+    diagnostic.code = {
+      value: finding.id,
+      target: vscode.Uri.parse('https://github.com/MokuLakshithReddy/Secret_Leak_Detector'),
+    };
+    diagnostic.source = 'Secret Leak Detector';
+    return diagnostic;
+  }
+
+  public setBatchFindings(findingsMap: Map<string, SecretFinding[]>): void {
+    this.diagnosticCollection.clear();
+    this.currentFindings.clear();
+
+    for (const [filePath, fileFindings] of findingsMap.entries()) {
+      const active = fileFindings.filter((f) => !this.ignoredFindings.has(f.id));
+      this.currentFindings.set(filePath, active);
+      if (active.length > 0) {
+        const uri = vscode.Uri.file(filePath);
+        const diags = active.map((f) => this.toDiagnostic(f));
+        this.diagnosticCollection.set(uri, diags);
+      }
+    }
+    this.onFindingsChangedEmitter.fire(this.getAllFindings());
+  }
+
+  public renameDocument(oldUri: vscode.Uri, newUri: vscode.Uri): void {
+    const existing = this.currentFindings.get(oldUri.fsPath);
+    this.removeDocument(oldUri);
+    if (existing && existing.length > 0) {
+      const updated = existing.map((f) => ({ ...f, fullPath: newUri.fsPath, file: newUri.fsPath }));
+      this.currentFindings.set(newUri.fsPath, updated);
+      const diags = updated.map((f) => this.toDiagnostic(f));
+      this.diagnosticCollection.set(newUri, diags);
+      this.onFindingsChangedEmitter.fire(this.getAllFindings());
+    }
   }
 
   public removeDocument(uri: vscode.Uri): void {

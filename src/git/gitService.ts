@@ -2,39 +2,52 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs';
 import * as path from 'path';
-import { SecretFinding } from '../core/types';
-import { scanStagedChangesAsync, scanStagedChangesSync } from './stagedScanner';
+import { SecretFinding, Risk } from '../core/types';
+import {
+  scanStagedChangesAsync,
+  scanStagedChangesSync,
+  StagedScanResult,
+  SkippedFile,
+} from './stagedScanner';
 import { buildPreCommitHook, SLD_HOOK_MARKER } from './preCommitHook';
 import { DEFAULT_FAIL_ON } from '../core/policy';
 
 const execFileAsync = promisify(execFile);
 
 export type GitScanStatus = 'CLEAN' | 'FINDINGS' | 'ERROR';
-
-export interface StagedScanResult {
-  status: GitScanStatus;
-  findings: SecretFinding[];
-  error?: string;
-  filesScanned?: number;
-}
+export { StagedScanResult, SkippedFile };
 
 export class GitService {
   private workspaceRoot: string;
   private cliPath?: string;
+  private onWarn?: (msg: string) => void;
 
-  constructor(workspaceRoot: string, cliPath?: string) {
+  constructor(
+    workspaceRoot: string,
+    cliPathOrWarn?: string | ((msg: string) => void),
+    onWarn?: (msg: string) => void
+  ) {
     this.workspaceRoot = workspaceRoot;
-    if (cliPath && fs.existsSync(cliPath)) {
-      this.cliPath = cliPath;
-    } else if (process.env.SLD_CLI_PATH && fs.existsSync(process.env.SLD_CLI_PATH)) {
-      this.cliPath = process.env.SLD_CLI_PATH;
+    if (typeof cliPathOrWarn === 'function') {
+      this.onWarn = cliPathOrWarn;
+    } else if (cliPathOrWarn && fs.existsSync(cliPathOrWarn)) {
+      this.cliPath = cliPathOrWarn;
+      this.onWarn = onWarn;
     } else {
-      const candidates = [
-        path.resolve(__dirname, 'cli.js'),
-        path.resolve(__dirname, '../cli/index.js'),
-        path.resolve(__dirname, '../../dist/cli.js'),
-      ];
-      this.cliPath = candidates.find((c) => fs.existsSync(c));
+      this.onWarn = onWarn;
+    }
+
+    if (!this.cliPath) {
+      if (process.env.SLD_CLI_PATH && fs.existsSync(process.env.SLD_CLI_PATH)) {
+        this.cliPath = process.env.SLD_CLI_PATH;
+      } else {
+        const candidates = [
+          path.resolve(__dirname, 'cli.js'),
+          path.resolve(__dirname, '../cli/index.js'),
+          path.resolve(__dirname, '../../dist/cli.js'),
+        ];
+        this.cliPath = candidates.find((c) => fs.existsSync(c));
+      }
     }
   }
 
@@ -148,7 +161,12 @@ After fixing:
    * Installs pre-commit hook into the effective Git hooks directory.
    * If an existing hook exists, backs it up with a timestamped name and chains it.
    */
-  public async installPreCommitHook(customCliPath?: string): Promise<{ success: boolean; message: string }> {
+  public async installPreCommitHook(
+    customCliPath?: string,
+    customNodePath?: string,
+    blockCommits = true,
+    failOn: Risk = DEFAULT_FAIL_ON
+  ): Promise<{ success: boolean; message: string }> {
     if (!(await this.isGitRepo())) {
       return { success: false, message: 'Workspace is not a Git repository.' };
     }
@@ -190,10 +208,15 @@ After fixing:
     }
 
     if (/[\/\\](?:_npx|Temp|tmp)[\/\\]/i.test(targetCli)) {
-      console.warn(`⚠️ Warning: Pre-commit hook is pinning a temporary/npx CLI path: '${targetCli}'. This path may be deleted automatically by your system. Consider installing secret-leak-detector globally or locally.`);
+      const warnMsg = `⚠️ Warning: Pre-commit hook is pinning a temporary/npx CLI path: '${targetCli}'. This path may be deleted automatically by your system. Consider installing secret-leak-detector globally or locally.`;
+      if (this.onWarn) {
+        this.onWarn(warnMsg);
+      } else {
+        console.warn(warnMsg);
+      }
     }
 
-    const hookContent = buildPreCommitHook(DEFAULT_FAIL_ON, targetCli);
+    const hookContent = buildPreCommitHook(failOn, targetCli, customNodePath, blockCommits);
 
     try {
       fs.writeFileSync(hookPath, hookContent, { mode: 0o755 });
@@ -206,7 +229,12 @@ After fixing:
   /**
    * Re-pins the pre-commit hook if an extension upgrade has changed the versioned installation path.
    */
-  public async ensureHookIsPinned(currentCliPath: string): Promise<boolean> {
+  public async ensureHookIsPinned(
+    currentCliPath: string,
+    customNodePath?: string,
+    blockCommits = true,
+    failOn: Risk = DEFAULT_FAIL_ON
+  ): Promise<boolean> {
     if (!currentCliPath || !fs.existsSync(currentCliPath)) return false;
     if (!(await this.isGitRepo())) return false;
     const hooksDir = await this.resolveHooksDir();
@@ -219,7 +247,7 @@ After fixing:
 
       const normCurrent = currentCliPath.replace(/\\/g, '/');
       if (!content.includes(normCurrent)) {
-        const res = await this.installPreCommitHook(currentCliPath);
+        const res = await this.installPreCommitHook(currentCliPath, customNodePath, blockCommits, failOn);
         return res.success;
       }
     } catch {

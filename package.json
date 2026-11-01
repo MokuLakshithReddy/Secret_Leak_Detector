@@ -15,7 +15,6 @@
   },
   "categories": [
     "Linters",
-    "SCM Providers",
     "Other"
   ],
   "keywords": [
@@ -31,16 +30,14 @@
   "bin": {
     "secret-leak-detector": "./dist/cli.js"
   },
-  "files": [
-    "dist",
-    "media",
-    "README.md",
-    "LICENSE"
-  ],
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": false,
       "description": "Secret Leak Detector executes git commands and manages pre-commit hooks, requiring a trusted workspace."
+    },
+    "virtualWorkspaces": {
+      "supported": false,
+      "description": "Secret Leak Detector requires access to a local filesystem and Git binary."
     }
   },
   "activationEvents": [
@@ -50,43 +47,48 @@
     "commands": [
       {
         "command": "secret-leak-detector.scanWorkspace",
-        "title": "Secret Leak Detector: Scan Workspace for Secrets",
-        "category": "Security",
+        "title": "Scan Workspace for Secrets",
+        "category": "Secret Leak Detector",
         "icon": "$(search)"
       },
       {
         "command": "secret-leak-detector.scanStaged",
-        "title": "Secret Leak Detector: Scan Git Staged Changes",
-        "category": "Security",
+        "title": "Scan Git Staged Changes",
+        "category": "Secret Leak Detector",
         "icon": "$(git-commit)"
       },
       {
         "command": "secret-leak-detector.openDashboard",
-        "title": "Secret Leak Detector: Open Security Dashboard",
-        "category": "Security",
+        "title": "Open Security Dashboard",
+        "category": "Secret Leak Detector",
         "icon": "$(shield)"
       },
       {
         "command": "secret-leak-detector.installGitHook",
-        "title": "Secret Leak Detector: Install Git Pre-Commit Hook",
-        "category": "Security",
+        "title": "Install Git Pre-Commit Hook",
+        "category": "Secret Leak Detector",
         "icon": "$(check)"
       },
       {
         "command": "secret-leak-detector.uninstallGitHook",
-        "title": "Secret Leak Detector: Uninstall Git Pre-Commit Hook",
-        "category": "Security",
+        "title": "Uninstall Git Pre-Commit Hook",
+        "category": "Secret Leak Detector",
         "icon": "$(trash)"
       },
       {
         "command": "secret-leak-detector.ignoreFinding",
-        "title": "Secret Leak Detector: Ignore Finding as False Positive",
-        "category": "Security"
+        "title": "Ignore Finding as False Positive",
+        "category": "Secret Leak Detector"
+      },
+      {
+        "command": "secret-leak-detector.unignoreFinding",
+        "title": "Restore Suppressed Finding",
+        "category": "Secret Leak Detector"
       },
       {
         "command": "secret-leak-detector.clearFindings",
-        "title": "Secret Leak Detector: Clear Findings",
-        "category": "Security",
+        "title": "Clear All Findings",
+        "category": "Secret Leak Detector",
         "icon": "$(clear-all)"
       }
     ],
@@ -169,6 +171,17 @@
             "**/pnpm-lock.yaml"
           ],
           "description": "File patterns excluded from workspace secret scans."
+        },
+        "secretLeakDetector.failOn": {
+          "type": "string",
+          "enum": [
+            "LOW",
+            "MEDIUM",
+            "HIGH",
+            "CRITICAL"
+          ],
+          "default": "HIGH",
+          "description": "Minimum risk severity that blocks Git commits and triggers blocking gates."
         }
       }
     }
@@ -191,7 +204,8 @@
     "demo": "node esbuild.js --demo && node dist/demo-cli.js",
     "package": "vsce package --no-git-tag-version --no-dependencies",
     "benchmark:heldout": "npx ts-node --project tsconfig.json evaluation/datasets/heldOutCorpus.ts",
-    "test:git-hook": "npx ts-node --project tsconfig.json test/integration/gitHookScenarios.test.ts"
+    "test:git-hook": "npx ts-node --project tsconfig.json test/integration/gitHookScenarios.test.ts",
+    "vscode:uninstall": "node ./dist/uninstall.js"
   },
   "devDependencies": {
     "@types/node": "^20.11.24",
@@ -200,5 +214,13 @@
     "esbuild": "^0.20.1",
     "typescript": "^5.3.3",
     "ts-node": "^10.9.2"
+  },
+  "bugs": {
+    "url": "https://github.com/MokuLakshithReddy/Secret_Leak_Detector/issues"
+  },
+  "homepage": "https://github.com/MokuLakshithReddy/Secret_Leak_Detector#readme",
+  "galleryBanner": {
+    "color": "#1e1e1e",
+    "theme": "dark"
   }
 }
