@@ -90,7 +90,7 @@ export class VerificationEngine {
       };
     }
 
-    const inHistory = !!(gitExposure.isPresentInHistory || finding.gitExposure?.isPresentInHistory);
+    const inHistory = !!(gitExposure.isPresentInHistory === true || finding.gitExposure?.isPresentInHistory === true);
 
     if (inHistory) {
       const commitSha =

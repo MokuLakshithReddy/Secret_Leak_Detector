@@ -331,6 +331,8 @@ export class GitHistoryEngine {
             } catch (readErr: any) {
               throw new Error(`Failed to read untracked candidate file '${file}': ${readErr?.message || readErr}`);
             }
+          } else {
+            throw new Error(`Candidate untracked file disappeared during inspection: '${file}'`);
           }
         }
       } catch (err: any) {
@@ -375,6 +377,8 @@ export class GitHistoryEngine {
             } catch (readErr: any) {
               throw new Error(`Failed to read tracked candidate file '${file}': ${readErr?.message || readErr}`);
             }
+          } else {
+            throw new Error(`Candidate tracked file disappeared during inspection: '${file}'`);
           }
         }
       } catch (err: any) {
@@ -583,7 +587,7 @@ export class GitHistoryEngine {
         const hasMatches = searchResult.commitShas.length > 0;
         return {
           isPresentInHead: 'UNKNOWN',
-          isPresentInHistory: hasMatches,
+          isPresentInHistory: hasMatches ? true : 'UNKNOWN',
           isPresentInWorkingTree: 'UNKNOWN',
           isSecretInWorkingTree: 'UNKNOWN',
           exposureDurationDays: 0,

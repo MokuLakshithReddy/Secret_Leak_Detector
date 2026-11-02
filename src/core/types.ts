@@ -84,7 +84,7 @@ export interface GitExposure {
   lastModifiedCommit?: GitCommitInfo;
   removedCommit?: GitCommitInfo;
   isPresentInHead: boolean | 'UNKNOWN';
-  isPresentInHistory: boolean;
+  isPresentInHistory: boolean | 'UNKNOWN';
   isPresentInWorkingTree?: boolean | 'UNKNOWN';
   isSecretInWorkingTree?: boolean | 'UNKNOWN';
   exposureDurationDays: number;

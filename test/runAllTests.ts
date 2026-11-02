@@ -2521,6 +2521,40 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
         assert(headFailTrace.isPresentInHistory === true, 'traceSecret preserves isPresentInHistory true when secret is confirmed in history');
         assert(headFailTrace.searchStatus === 'SEARCH_INCOMPLETE', 'traceSecret searchStatus is SEARCH_INCOMPLETE when HEAD inspection fails');
         assert(headFailTrace.statusDescription.includes('INCOMPLETE HEAD VERIFICATION'), 'traceSecret notes INCOMPLETE HEAD VERIFICATION instead of claiming absent from HEAD');
+
+        // 17. Search failure with 0 matches returns isPresentInHistory 'UNKNOWN'
+        class TotalFailureEngine extends GitHistoryEngine {
+          public override async findCommitsContainingSecretResult(secret: string, maxCommits = 0): Promise<any> {
+            return {
+              status: 'SEARCH_INCOMPLETE',
+              commitShas: [],
+              error: 'Simulated git pack corruption',
+              isPartialHistory: false,
+            };
+          }
+        }
+        const totalFailEngine = new TotalFailureEngine(sec40Repo);
+        const totalFailTrace = await totalFailEngine.traceSecret(metaSecret);
+        assert(totalFailTrace.isPresentInHistory === 'UNKNOWN', 'traceSecret sets isPresentInHistory to UNKNOWN when search fails without discovered matches');
+        assert(totalFailTrace.isPresentInHead === 'UNKNOWN', 'traceSecret sets isPresentInHead to UNKNOWN on incomplete search');
+
+        // 18. Timeline branch reachability query failure sets isPushedToRemote 'UNKNOWN' and does not fabricate 'main'
+        const timelineWithFailHistory = new GitTimelineEngine(sec40Repo, headFailureEngine);
+        const timelineReportHeadFail = await timelineWithFailHistory.buildTimeline(metaSecret, 'ghp_****');
+        assert(timelineReportHeadFail.currentStatus === 'SEARCH_INCOMPLETE', 'buildTimeline returns SEARCH_INCOMPLETE when isSecretInHead throws in timeline loop');
+        assert(timelineReportHeadFail.events.length > 0, 'buildTimeline preserves available events even when isSecretInHead throws');
+        assert(timelineReportHeadFail.timelineAscii.includes('HEAD Verification:  INCOMPLETE'), 'buildTimeline ASCII notes incomplete HEAD verification');
+
+        // 19. Disappearing candidate file in working tree throws error and sets isSecretInWorkingTree 'UNKNOWN'
+        class DisappearingCandidateEngine extends GitHistoryEngine {
+          public override async isSecretInWorkingTree(secret: string): Promise<boolean> {
+            throw new Error("Candidate untracked file disappeared during inspection: 'disappeared.txt'");
+          }
+        }
+        const disappearingEngine = new DisappearingCandidateEngine(sec40Repo);
+        const disappearingTrace = await disappearingEngine.traceSecret(fromHex('6768705f646973617070656172696e67746f6b656e3132333435363738393061626364'));
+        assert(disappearingTrace.isSecretInWorkingTree === 'UNKNOWN', 'traceSecret sets isSecretInWorkingTree to UNKNOWN when candidate file disappears');
+        assert(disappearingTrace.searchStatus === 'ERROR', 'traceSecret searchStatus is ERROR when working tree inspection throws on disappearing file');
       } finally {
         try {
           fs.rmSync(sec40Repo, { recursive: true, force: true });
