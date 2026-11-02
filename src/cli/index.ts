@@ -126,7 +126,8 @@ Commands:
 
   hook install           Install standalone pre-commit hook in .git/hooks/pre-commit
                          Options:
-                           --strict           Enforce strict enterprise security: block on skipped files & disallow inline ignore
+                           --strict           Enforce strict enterprise security: block on skipped files (default: enabled)
+                           --allow-skipped    Allow warnings instead of blocking on uninspected binary files (relaxed mode)
                            --allow-self-heal  Allow hook to auto-remove/restore if pinned CLI is uninstalled (default: fail-closed)
                            --fail-on <tier>   Set blocking tier threshold (default: HIGH)
                            --no-inline-ignore Disallow inline // sld-ignore suppression comments
@@ -838,7 +839,8 @@ async function runHook(cmdArgs: string[], cwd: string) {
   const gitService = new GitService(cwd);
 
   if (subCommand === 'install') {
-    const strict = cmdArgs.includes('--strict') || cmdArgs.includes('--fail-on-skipped');
+    const relaxed = cmdArgs.includes('--relaxed') || cmdArgs.includes('--allow-skipped') || cmdArgs.includes('--ignore-skipped');
+    const strict = !relaxed;
     const allowSelfHeal = cmdArgs.includes('--allow-self-heal');
     const noInline = !cmdArgs.includes('--allow-inline-ignore');
     const failOnIdx = cmdArgs.indexOf('--fail-on');
@@ -848,18 +850,17 @@ async function runHook(cmdArgs: string[], cwd: string) {
     if (!result.success) {
       fail(`Error: ${result.message}`);
     }
-    if (strict) {
-      try {
-        execFileSync('git', ['config', 'secret-leak-detector.strict', 'true'], { cwd, stdio: 'ignore' });
-        execFileSync('git', ['config', 'secret-leak-detector.fail-on-skipped', 'true'], { cwd, stdio: 'ignore' });
-      } catch {}
-    }
+    try {
+      execFileSync('git', ['config', 'secret-leak-detector.strict', strict ? 'true' : 'false'], { cwd, stdio: 'ignore' });
+      execFileSync('git', ['config', 'secret-leak-detector.fail-on-skipped', strict ? 'true' : 'false'], { cwd, stdio: 'ignore' });
+    } catch {}
     console.log(`✅ ${result.message}`);
     console.log(
       `   Severity policy (single source: src/core/policy.ts): blocks ${failOn} and above; ` +
         `fails closed when the scanner cannot run.`
     );
-    if (strict) console.log(`   Strict mode: enabled (--fail-on-skipped)`);
+    if (strict) console.log(`   Strict security: enabled by default (fails closed on uninspected files)`);
+    if (!strict) console.log(`   Relaxed mode: enabled (warnings on skipped files)`);
     if (allowSelfHeal) console.log(`   Self-heal recovery: enabled (--allow-self-heal)`);
     if (noInline) console.log(`   Inline suppression comments: disallowed (--no-inline-ignore)`);
   } else if (subCommand === 'uninstall') {

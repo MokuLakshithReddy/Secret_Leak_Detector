@@ -301,22 +301,27 @@ export async function runGitHookIntegrationTests(): Promise<void> {
     console.log('');
   }
 
-  // ── Test group 11: Binary commit allowed & scoped src/dist/ scan ──────────
+  // ── Test group 11: Binary commit strict fail-closed default & relaxed opt-out ──
   if (bash) {
-    console.log('── Test group 11: Binary commit allowed & scoped src/dist/ scan ──');
+    console.log('── Test group 11: Binary commit strict fail-closed default & relaxed opt-out ──');
     const group11Repo = createTempRepo();
     installHook(group11Repo, cliPath);
 
-    // 1. Commit containing only binary file (logo.png) + clean file succeeds
+    // 1. By default (strict mode), commit containing uninspected binary file (logo.png) is BLOCKED
     const pngHeader = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00]);
     fs.writeFileSync(path.join(group11Repo, 'logo.png'), pngHeader);
     fs.writeFileSync(path.join(group11Repo, 'doc.txt'), 'clean document\n', 'utf8');
     execFileSync('git', ['add', 'logo.png', 'doc.txt'], { cwd: group11Repo, stdio: 'pipe' });
 
-    const binCommit = tryCommit(group11Repo, 'add binary logo');
-    assert(binCommit.status === 0, 'Binary logo.png commit allowed (warning only, not blocked)');
+    const binCommitStrict = tryCommit(group11Repo, 'add binary logo strict');
+    assert(binCommitStrict.status !== 0, 'Binary logo.png commit blocked by default strict hook (fail-closed)');
 
-    // 2. Commit containing secret in src/dist/token.ts is BLOCKED (scoped exclude does not skip src/dist)
+    // 2. When opted into relaxed mode via git config, binary file commit succeeds
+    execFileSync('git', ['config', 'secret-leak-detector.ignore-skipped', 'true'], { cwd: group11Repo, stdio: 'pipe' });
+    const binCommitRelaxed = tryCommit(group11Repo, 'add binary logo relaxed');
+    assert(binCommitRelaxed.status === 0, 'Binary logo.png commit allowed when explicitly configured relaxed');
+
+    // 3. Commit containing secret in src/dist/token.ts is BLOCKED (scoped exclude does not skip src/dist)
     const srcDistDir = path.join(group11Repo, 'src', 'dist');
     fs.mkdirSync(srcDistDir, { recursive: true });
     const awsKey = synth(['AK', 'IA', '1234567890SRCSEC']);

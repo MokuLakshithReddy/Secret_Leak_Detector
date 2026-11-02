@@ -23,7 +23,7 @@ export function buildPreCommitHook(
   nodePath?: string,
   blockCommits = true,
   disallowInline = true,
-  failOnSkipped = false,
+  failOnSkipped = true,
   allowSelfHeal = false
 ): string {
   const threshold = (RISK_LEVELS as readonly string[]).includes(failOn) ? failOn : DEFAULT_FAIL_ON;
@@ -191,8 +191,10 @@ if [ "$SLD_IGNORE_SKIPPED" = "1" ] || [ "$(git config --bool secret-leak-detecto
 fi
 
 FAIL_ON_SKIPPED=""
-if [ "$SLD_FAIL_ON_SKIPPED" = "1" ] || [ "$SLD_FAIL_ON_SKIPPED_DEFAULT" = "1" ] || [ "$SLD_STRICT" = "1" ] || [ "$(git config --bool secret-leak-detector.fail-on-skipped 2>/dev/null)" = "true" ] || [ "$(git config --bool secret-leak-detector.strict 2>/dev/null)" = "true" ]; then
-  FAIL_ON_SKIPPED="--fail-on-skipped"
+if [ "$SLD_IGNORE_SKIPPED" != "1" ] && [ "$(git config --bool secret-leak-detector.ignore-skipped 2>/dev/null)" != "true" ] && [ "$(git config --bool secret-leak-detector.strict 2>/dev/null)" != "false" ] && [ "$(git config --bool secret-leak-detector.fail-on-skipped 2>/dev/null)" != "false" ]; then
+  if [ "$SLD_FAIL_ON_SKIPPED" = "1" ] || [ "$SLD_FAIL_ON_SKIPPED_DEFAULT" = "1" ] || [ "$SLD_STRICT" = "1" ] || [ "$(git config --bool secret-leak-detector.fail-on-skipped 2>/dev/null)" = "true" ] || [ "$(git config --bool secret-leak-detector.strict 2>/dev/null)" = "true" ]; then
+    FAIL_ON_SKIPPED="--fail-on-skipped"
+  fi
 fi
 
 ${nodeResolution}

@@ -219,7 +219,7 @@ After fixing:
     blockCommits = true,
     failOn: Risk = DEFAULT_FAIL_ON,
     disallowInline = true,
-    failOnSkipped = false,
+    failOnSkipped = true,
     allowSelfHeal = false
   ): Promise<{ success: boolean; message: string }> {
     if (!(await this.isGitRepo())) {
@@ -329,7 +329,7 @@ After fixing:
     blockCommits = true,
     failOn: Risk = DEFAULT_FAIL_ON,
     disallowInline = true,
-    failOnSkipped = false,
+    failOnSkipped = true,
     allowSelfHeal = false
   ): Promise<boolean> {
     if (!currentCliPath || !fs.existsSync(currentCliPath)) return false;
