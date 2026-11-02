@@ -65,9 +65,12 @@ export function redactSecret(secret: string): string {
  */
 export function generateFingerprint(secret: string, customSalt?: string, workspaceRoot?: string): string {
   const salt = resolveSalt(customSalt, workspaceRoot);
+  // Canonicalize line endings (CRLF -> LF) to ensure deterministic fingerprints
+  // for multiline secrets (e.g. PEM private keys) across Windows, macOS, and Linux.
+  const canonicalSecret = secret.replace(/\r\n/g, '\n');
   return crypto
     .createHmac('sha256', salt)
-    .update(secret)
+    .update(canonicalSecret)
     .digest('hex')
     .substring(0, 16);
 }

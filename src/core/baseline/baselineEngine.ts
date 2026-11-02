@@ -1,7 +1,9 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import * as crypto from 'crypto';
 import { SecretFinding, BaselineFile, BaselineFinding } from '../types';
 import { getPackageVersion } from '../version';
+import { resolveSalt } from '../redactor/redactor';
 
 export const DEFAULT_BASELINE_FILENAME = '.secretleak-baseline.json';
 
@@ -119,7 +121,7 @@ export class BaselineEngine {
    * Ensures that PRs or pushed commits cannot tamper with .secretleak-baseline.json to bypass checks.
    *
    * In CI:
-   *  - For pull_request: loads from trusted PR base (GITHUB_BASE_REF).
+   *  - For pull_request: loads from trusted PR base (GITHUB_BASE_REF / origin/main).
    *  - For push: loads from the push event's previous commit SHA (SLD_BASE_REF / GITHUB_EVENT_BEFORE / HEAD~1).
    *  - NEVER trusts the current commit (HEAD) as its own baseline.
    *
@@ -299,8 +301,30 @@ export class BaselineEngine {
 
     for (const finding of currentFindings) {
       const normFile = normalizeBaselinePath(finding.file);
-      const key = `${normFile}:${finding.fingerprint}`;
-      const match = baselineByFileAndFp.get(key);
+      let key = `${normFile}:${finding.fingerprint}`;
+      let match = baselineByFileAndFp.get(key);
+
+      // Backwards compatibility for multiline secrets:
+      // If no match with canonical fingerprint, try alternative line endings (CRLF/LF)
+      // in case the trusted baseline was generated prior to CRLF/LF canonicalization.
+      if (!match && finding.rawSecret && (finding.rawSecret.includes('\n') || finding.rawSecret.includes('\r'))) {
+        const salt = resolveSalt(undefined, this.workspaceRoot);
+        const crlfSecret = finding.rawSecret.replace(/\r?\n/g, '\r\n');
+        const crlfFp = crypto.createHmac('sha256', salt).update(crlfSecret).digest('hex').substring(0, 16);
+        const crlfKey = `${normFile}:${crlfFp}`;
+        if (baselineByFileAndFp.has(crlfKey)) {
+          match = baselineByFileAndFp.get(crlfKey);
+          key = crlfKey;
+        } else {
+          const lfSecret = finding.rawSecret.replace(/\r?\n/g, '\n');
+          const lfFp = crypto.createHmac('sha256', salt).update(lfSecret).digest('hex').substring(0, 16);
+          const lfKey = `${normFile}:${lfFp}`;
+          if (baselineByFileAndFp.has(lfKey)) {
+            match = baselineByFileAndFp.get(lfKey);
+            key = lfKey;
+          }
+        }
+      }
 
       if (match) {
         finding.status = 'BASELINE';
