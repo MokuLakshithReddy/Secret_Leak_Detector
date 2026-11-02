@@ -38,6 +38,8 @@ export function activate(context: vscode.ExtensionContext) {
   const findingsTree = new FindingsTreeProvider();
   const overviewTree = new OverviewTreeProvider();
 
+  context.subscriptions.push(findingsTree);
+  context.subscriptions.push(overviewTree);
   context.subscriptions.push(
     vscode.window.registerTreeDataProvider('secret-leak-detector.findingsView', findingsTree)
   );
@@ -199,6 +201,10 @@ export function activate(context: vscode.ExtensionContext) {
   // Command: Scan Entire Workspace (Non-blocking, batch read, progress & cancellation)
   context.subscriptions.push(
     vscode.commands.registerCommand('secret-leak-detector.scanWorkspace', async () => {
+      if (!vscode.workspace.workspaceFolders || vscode.workspace.workspaceFolders.length === 0) {
+        vscode.window.showWarningMessage('Please open a workspace folder or repository to scan for secrets.');
+        return;
+      }
       await vscode.window.withProgress(
         {
           location: vscode.ProgressLocation.Notification,
@@ -306,6 +312,12 @@ export function activate(context: vscode.ExtensionContext) {
   // Command: Scan Staged Changes (multi-root & subfolder aware)
   context.subscriptions.push(
     vscode.commands.registerCommand('secret-leak-detector.scanStaged', async () => {
+      const folders = vscode.workspace.workspaceFolders || [];
+      if (folders.length === 0) {
+        vscode.window.showWarningMessage('Please open a Git repository in VS Code to scan staged changes.');
+        return;
+      }
+
       outputChannel.clear();
       outputChannel.appendLine('🔐 [Secret Leak Detector] Scanning Git staged changes...');
       outputChannel.show(true);
@@ -315,7 +327,6 @@ export function activate(context: vscode.ExtensionContext) {
       const ignoreSkipped = getConfig().get<boolean>('ignoreSkipped', true);
       const failOnSkipped = getConfig().get<boolean>('failOnSkipped', false);
 
-      const folders = vscode.workspace.workspaceFolders || [];
       const gitRoots = new Set<string>();
       for (const folder of folders) {
         const gs = new GitService(folder.uri.fsPath);
@@ -324,7 +335,8 @@ export function activate(context: vscode.ExtensionContext) {
         }
       }
       if (gitRoots.size === 0) {
-        gitRoots.add(primaryRoot);
+        vscode.window.showWarningMessage('None of the opened workspace folders are Git repositories.');
+        return;
       }
 
       const allFindings: SecretFinding[] = [];
@@ -406,6 +418,11 @@ export function activate(context: vscode.ExtensionContext) {
   // Command: Install Git Pre-Commit Hook
   context.subscriptions.push(
     vscode.commands.registerCommand('secret-leak-detector.installGitHook', async () => {
+      const folders = vscode.workspace.workspaceFolders || [];
+      if (folders.length === 0) {
+        vscode.window.showWarningMessage('Please open a Git repository in VS Code before installing the pre-commit hook.');
+        return;
+      }
       const blockCommits = getConfig().get<boolean>('blockGitCommits', true);
       const configuredFailOn = resolveFailOn(getConfig().get<string>('failOn', DEFAULT_FAIL_ON));
       const disallowInline = getConfig().get<boolean>('disallowInlineIgnore', true);
@@ -432,7 +449,9 @@ export function activate(context: vscode.ExtensionContext) {
             fs.writeFileSync(hooksRecordPath, JSON.stringify(existingHooks, null, 2), 'utf8');
           }
           recordInstalledHook(hookFile);
-        } catch {}
+        } catch (err: any) {
+          outputChannel.appendLine(`[Registry] Error updating hooks record: ${err?.message || err}`);
+        }
         vscode.window.showInformationMessage(`🛡️ ${result.message}`);
       } else {
         vscode.window.showErrorMessage(`Failed to install hook: ${result.message}`);
@@ -443,6 +462,11 @@ export function activate(context: vscode.ExtensionContext) {
   // Command: Install Git Pre-Commit Hook (Strict)
   context.subscriptions.push(
     vscode.commands.registerCommand('secret-leak-detector.installGitHookStrict', async () => {
+      const folders = vscode.workspace.workspaceFolders || [];
+      if (folders.length === 0) {
+        vscode.window.showWarningMessage('Please open a Git repository in VS Code before installing the pre-commit hook.');
+        return;
+      }
       const blockCommits = getConfig().get<boolean>('blockGitCommits', true);
       const configuredFailOn = resolveFailOn(getConfig().get<string>('failOn', DEFAULT_FAIL_ON));
       const result = await gitService.installPreCommitHook(
@@ -467,7 +491,9 @@ export function activate(context: vscode.ExtensionContext) {
             fs.writeFileSync(hooksRecordPath, JSON.stringify(existingHooks, null, 2), 'utf8');
           }
           recordInstalledHook(hookFile);
-        } catch {}
+        } catch (err: any) {
+          outputChannel.appendLine(`[Registry] Error updating hooks record: ${err?.message || err}`);
+        }
         vscode.window.showInformationMessage(`🛡️ ${result.message} (Strict Mode: Fail on Skipped & No Inline Ignore)`);
       } else {
         vscode.window.showErrorMessage(`Failed to install hook: ${result.message}`);
@@ -478,6 +504,11 @@ export function activate(context: vscode.ExtensionContext) {
   // Command: Uninstall Git Pre-Commit Hook
   context.subscriptions.push(
     vscode.commands.registerCommand('secret-leak-detector.uninstallGitHook', async () => {
+      const folders = vscode.workspace.workspaceFolders || [];
+      if (folders.length === 0) {
+        vscode.window.showWarningMessage('Please open a Git repository in VS Code before uninstalling the pre-commit hook.');
+        return;
+      }
       const hookFile = await gitService.getHookPath();
       const result = await gitService.uninstallPreCommitHook();
       if (result.success) {
@@ -491,7 +522,9 @@ export function activate(context: vscode.ExtensionContext) {
             }
           }
           unrecordInstalledHook(hookFile);
-        } catch {}
+        } catch (err: any) {
+          outputChannel.appendLine(`[Registry] Error updating hooks record: ${err?.message || err}`);
+        }
         vscode.window.showInformationMessage(`🛡️ ${result.message}`);
       } else {
         vscode.window.showErrorMessage(`Failed to uninstall hook: ${result.message}`);

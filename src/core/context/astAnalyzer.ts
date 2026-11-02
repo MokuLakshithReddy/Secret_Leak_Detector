@@ -4,6 +4,8 @@
  * to inspect BinaryExpressions (env fallbacks), PropertyAssignments, ObjectLiterals,
  * and CallExpressions, with seamless multi-language lexical fallbacks.
  */
+import * as fs from 'fs';
+import * as path from 'path';
 
 export interface AstAssignmentContext {
   variablePath?: string;
@@ -17,40 +19,94 @@ export interface AstAssignmentContext {
 const SENSITIVE_PROPERTY_REGEX = /(?:api_?key|secret|token|password|auth|credential|access_?key|private_?key)/i;
 const LOGGING_REGEX = /(?:console\.(?:log|warn|error|info|debug)|logger\.|print\(|logging\.)/i;
 
-// Dynamic import of TypeScript compiler API to avoid bundle bloat
+// Shared lazy-loaded TypeScript compiler reference (loads dist/ast-parser.js or typescript)
 let tsCompiler: any = null;
-try {
-  tsCompiler = require('typescript');
-} catch {
-  tsCompiler = null;
+
+export function getTsCompiler(): any {
+  if (tsCompiler) return tsCompiler;
+  try {
+    const adjacent = path.join(__dirname, 'ast-parser.js');
+    if (fs.existsSync(adjacent)) {
+      tsCompiler = require(adjacent);
+      return tsCompiler;
+    }
+  } catch {}
+
+  try {
+    const distFallback = path.join(__dirname, '../../dist/ast-parser.js');
+    if (fs.existsSync(distFallback)) {
+      tsCompiler = require(distFallback);
+      return tsCompiler;
+    }
+  } catch {}
+
+  try {
+    tsCompiler = require('typescript');
+    return tsCompiler;
+  } catch {}
+
+  return null;
+}
+
+/**
+ * Creates and parses a TypeScript SourceFile once per file scan, allowing
+ * all candidate findings to query AST syntax trees without re-parsing overhead.
+ */
+export function createSourceFile(content: string, filePath?: string): any | null {
+  const ts = getTsCompiler();
+  if (!ts) return null;
+  const isJsTs = !filePath || /\.[jt]sx?$|\.m[jt]s$|\.c[jt]s$/i.test(filePath);
+  if (!isJsTs) return null;
+  try {
+    return ts.createSourceFile(
+      filePath || 'eval_target.tsx',
+      content,
+      ts.ScriptTarget.Latest,
+      /* setParentNodes */ true,
+      ts.ScriptKind.TSX
+    );
+  } catch {
+    return null;
+  }
 }
 
 export function analyzeAstContext(
   contentLines: string[],
   targetLineZeroBased: number,
-  filePath?: string
+  filePath?: string,
+  cachedSourceFile?: any,
+  fileLineZeroBased?: number
 ): AstAssignmentContext {
   const line = contentLines[targetLineZeroBased] || '';
 
   // 1. Try real TypeScript Compiler AST Parser if available and file is JS/TS
-  if (tsCompiler) {
+  const ts = getTsCompiler();
+  if (ts) {
     const isJsTs = !filePath || /\.[jt]sx?$|\.m[jt]s$|\.c[jt]s$/i.test(filePath);
     if (isJsTs) {
-      let targetContent: string;
-      let relativeLine: number;
-      if (contentLines.length > 60) {
-        const startIdx = Math.max(0, targetLineZeroBased - 30);
-        const endIdx = Math.min(contentLines.length, targetLineZeroBased + 30);
-        targetContent = contentLines.slice(startIdx, endIdx).join('\n');
-        relativeLine = targetLineZeroBased - startIdx;
+      if (cachedSourceFile) {
+        const lineIdx = fileLineZeroBased !== undefined ? fileLineZeroBased : targetLineZeroBased;
+        const astResult = analyzeSourceFileNode(cachedSourceFile, lineIdx);
+        if (astResult) {
+          return astResult;
+        }
       } else {
-        targetContent = contentLines.join('\n');
-        relativeLine = targetLineZeroBased;
-      }
+        let targetContent: string;
+        let relativeLine: number;
+        if (contentLines.length > 60) {
+          const startIdx = Math.max(0, targetLineZeroBased - 30);
+          const endIdx = Math.min(contentLines.length, targetLineZeroBased + 30);
+          targetContent = contentLines.slice(startIdx, endIdx).join('\n');
+          relativeLine = targetLineZeroBased - startIdx;
+        } else {
+          targetContent = contentLines.join('\n');
+          relativeLine = targetLineZeroBased;
+        }
 
-      const astResult = analyzeWithTypeScriptCompiler(targetContent, relativeLine);
-      if (astResult) {
-        return astResult;
+        const astResult = analyzeWithTypeScriptCompiler(targetContent, relativeLine);
+        if (astResult) {
+          return astResult;
+        }
       }
     }
   }
@@ -59,20 +115,13 @@ export function analyzeAstContext(
   return analyzeLexicalAstFallback(line);
 }
 
-function analyzeWithTypeScriptCompiler(
-  fullContent: string,
+function analyzeSourceFileNode(
+  sourceFile: any,
   targetLineZeroBased: number
 ): AstAssignmentContext | null {
   try {
-    const ts = tsCompiler;
-    const sourceFile = ts.createSourceFile(
-      'eval_target.tsx',
-      fullContent,
-      ts.ScriptTarget.Latest,
-      /* setParentNodes */ true,
-      ts.ScriptKind.TSX
-    );
-
+    const ts = getTsCompiler();
+    if (!ts) return null;
     const lineStarts: number[] = sourceFile.getLineStarts();
     if (targetLineZeroBased >= lineStarts.length) return null;
 
@@ -80,7 +129,7 @@ function analyzeWithTypeScriptCompiler(
     const lineEndPos =
       targetLineZeroBased + 1 < lineStarts.length
         ? lineStarts[targetLineZeroBased + 1] - 1
-        : fullContent.length;
+        : sourceFile.text?.length || 0;
 
     let foundContext: AstAssignmentContext | null = null;
 
@@ -183,6 +232,15 @@ function analyzeWithTypeScriptCompiler(
   } catch {
     return null;
   }
+}
+
+function analyzeWithTypeScriptCompiler(
+  fullContent: string,
+  targetLineZeroBased: number
+): AstAssignmentContext | null {
+  const sourceFile = createSourceFile(fullContent);
+  if (!sourceFile) return null;
+  return analyzeSourceFileNode(sourceFile, targetLineZeroBased);
 }
 
 function analyzeLexicalAstFallback(line: string): AstAssignmentContext {

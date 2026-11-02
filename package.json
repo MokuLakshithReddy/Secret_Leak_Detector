@@ -159,7 +159,7 @@
         "secretLeakDetector.redactSecrets": {
           "type": "boolean",
           "default": true,
-          "description": "Mask credential values in the UI and terminal to avoid secondary leaks."
+          "description": "Mask credential values in the UI, tree views, tooltips, and terminal to avoid secondary leaks. Disabling this setting displays raw unmasked secrets in tree tooltips and findings views."
         },
         "secretLeakDetector.excludeGlobs": {
           "type": "array",

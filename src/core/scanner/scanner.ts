@@ -4,7 +4,7 @@ import * as crypto from 'crypto';
 import { SecretFinding, ScanResult, RuleDefinition } from '../types';
 import { CORE_RULES } from '../detectors/rules';
 import { analyzeFileContext, analyzeLexicalContext } from '../context/contextAnalyzer';
-import { analyzeAstContext } from '../context/astAnalyzer';
+import { analyzeAstContext, createSourceFile } from '../context/astAnalyzer';
 import { buildEvidenceModel } from '../evidence/evidenceEngine';
 import { calculateRiskAssessment } from '../risk/riskEngine';
 import { buildRemediationPlan } from '../remediation/remediationEngine';
@@ -20,6 +20,7 @@ export interface ScannerOptions {
   ignoreSkipped?: boolean;
   failOnSkipped?: boolean;
   maxFileSize?: number;
+  cachedSourceFile?: any;
 }
 
 function getFileIdPart(relativePath: string): string {
@@ -106,6 +107,10 @@ export function scanContent(
   const rawLines = rawContent.split(/\r?\n/);
   const findings: SecretFinding[] = [];
 
+  // Parse SourceFile once per document to avoid repeated AST creation in rule loop
+  const isJsTs = !filePath || /\.[jt]sx?$|\.m[jt]s$|\.c[jt]s$/i.test(filePath);
+  const parsedSourceFile = opts.cachedSourceFile || (isJsTs ? createSourceFile(rawContent, filePath) : null);
+
   // Zero-allocation line & column offset index (instantiated lazily on first match)
   let lineOffsets: number[] | null = null;
   function getLineOffsets(): number[] {
@@ -183,7 +188,7 @@ export function scanContent(
       // Extract lexical context and AST assignment semantics with windowed lines
       const ctxWindow = getContextWindow(lineNumber);
       const lexicalContext = analyzeLexicalContext(ctxWindow.lines, ctxWindow.relativeTargetIdx);
-      const astContext = analyzeAstContext(ctxWindow.lines, ctxWindow.relativeTargetIdx, filePath);
+      const astContext = analyzeAstContext(ctxWindow.lines, ctxWindow.relativeTargetIdx, filePath, parsedSourceFile, lineNumber - 1);
 
       // Build Evidence Model & calculate confidence
       const evidenceResult = buildEvidenceModel(
@@ -365,7 +370,7 @@ export function scanContent(
 
         const ctxWindow = getContextWindow(lineNumber);
         const lexicalContext = analyzeLexicalContext(ctxWindow.lines, ctxWindow.relativeTargetIdx);
-        const astContext = analyzeAstContext(ctxWindow.lines, ctxWindow.relativeTargetIdx, filePath);
+        const astContext = analyzeAstContext(ctxWindow.lines, ctxWindow.relativeTargetIdx, filePath, parsedSourceFile, lineNumber - 1);
 
         const evidenceResult = buildEvidenceModel(
           rule,

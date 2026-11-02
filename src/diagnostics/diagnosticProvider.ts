@@ -1,11 +1,13 @@
 import * as vscode from 'vscode';
 import { scanContent, ScannerOptions } from '../core/scanner/scanner';
+import { createSourceFile } from '../core/context/astAnalyzer';
 import { SecretFinding } from '../core/types';
 
 export class DiagnosticProvider {
   private diagnosticCollection: vscode.DiagnosticCollection;
   private currentFindings: Map<string, SecretFinding[]> = new Map();
   private ignoredFindings: Set<string> = new Set();
+  private documentAstCache = new Map<string, { version: number; sourceFile: any }>();
   private onFindingsChangedEmitter = new vscode.EventEmitter<SecretFinding[]>();
   public readonly onFindingsChanged = this.onFindingsChangedEmitter.event;
   private minEntropy?: number;
@@ -33,6 +35,7 @@ export class DiagnosticProvider {
   public clear(): void {
     this.diagnosticCollection.clear();
     this.currentFindings.clear();
+    this.documentAstCache.clear();
     this.onFindingsChangedEmitter.fire([]);
   }
 
@@ -81,9 +84,25 @@ export class DiagnosticProvider {
     const workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri);
     const workspaceRoot = workspaceFolder ? workspaceFolder.uri.fsPath : undefined;
 
+    let cachedSourceFile: any = null;
+    const cacheEntry = this.documentAstCache.get(document.uri.toString());
+    if (cacheEntry && cacheEntry.version === document.version) {
+      cachedSourceFile = cacheEntry.sourceFile;
+    } else {
+      const isJsTs = /\.[jt]sx?$|\.m[jt]s$|\.c[jt]s$/i.test(document.uri.fsPath);
+      if (isJsTs) {
+        cachedSourceFile = createSourceFile(text, document.uri.fsPath);
+        this.documentAstCache.set(document.uri.toString(), {
+          version: document.version,
+          sourceFile: cachedSourceFile,
+        });
+      }
+    }
+
     const scanOpts: ScannerOptions = {
       workspaceRoot,
       minEntropyThreshold: this.minEntropy,
+      cachedSourceFile,
     };
 
     const allDetected = scanContent(text, document.uri.fsPath, scanOpts);
@@ -209,11 +228,13 @@ export class DiagnosticProvider {
   public removeDocument(uri: vscode.Uri): void {
     this.diagnosticCollection.delete(uri);
     this.currentFindings.delete(uri.fsPath);
+    this.documentAstCache.delete(uri.toString());
     this.onFindingsChangedEmitter.fire(this.getAllFindings());
   }
 
   public dispose(): void {
     this.diagnosticCollection.dispose();
+    this.documentAstCache.clear();
     this.onFindingsChangedEmitter.dispose();
   }
 }
