@@ -6,7 +6,7 @@
 [![Benchmark F1](https://img.shields.io/badge/benchmark%20F1-100%25-brightgreen.svg)](docs/VALIDATION.md)
 [![Corpus](https://img.shields.io/badge/corpus-1%2C000%20synthetic%20%2B%20100%20curated-blueviolet.svg)](docs/VALIDATION.md)
 [![Precision](https://img.shields.io/badge/precision-100%25-00e5b0.svg)]()
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: Proprietary](https://img.shields.io/badge/License-Proprietary-red.svg)](LICENSE)
 
 > **Secret Leak Detector** is a dependable, context-aware credential exposure detection and remediation system for Git repositories and VS Code. It combines multi-signal pattern detection, Shannon entropy analysis, lexical & AST parsing, fail-closed Git commit protection, exposure graph analysis, and transactional remediation to prevent credentials from ever leaking to version control.
 
@@ -360,4 +360,4 @@ npm run build
 
 ## 📄 License
 
-MIT License. Developed for developer-first security engineering.
+Proprietary License. All rights reserved © 2026 Moku Lakshith Reddy. See [LICENSE](LICENSE) for full license terms and conditions.
