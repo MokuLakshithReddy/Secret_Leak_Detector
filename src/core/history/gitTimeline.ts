@@ -47,7 +47,7 @@ export interface GitExposureGraph {
     removedCommit?: string;
     durationDays: number;
     branchesContaminated: string[];
-    isPushedToRemote: boolean;
+    isPushedToRemote: boolean | 'UNKNOWN';
   };
 }
 
@@ -59,7 +59,7 @@ export interface ExposureTimelineReport {
   totalExposureDays: number;
   currentStatus: 'ACTIVE_IN_HEAD' | 'REMOVED_FROM_HEAD_PRESENT_IN_HISTORY' | 'CLEAN_UNCOMMITTED' | 'NOT_FOUND' | 'PARTIAL_HISTORY' | 'SEARCH_INCOMPLETE' | 'ERROR';
   reachableBranches: string[];
-  isPushedToRemote: boolean;
+  isPushedToRemote: boolean | 'UNKNOWN';
   timelineAscii: string;
   graph: GitExposureGraph;
   isPartialHistory?: boolean;
@@ -287,7 +287,10 @@ export class GitTimelineEngine {
     const events: GitTimelineEvent[] = [];
     let firstDate: Date | undefined;
     let allReachableBranches = new Set<string>();
-    let isPushedToRemote = false;
+    let isPushedToRemote: boolean | 'UNKNOWN';
+    let pushedConfirmed = false;
+    let branchLookupFailed = false;
+    let branchLookupError: string | undefined;
 
     for (let i = 0; i < lines.length; i++) {
       const [sha, parentsStr, author, email, dateStr, ...msgParts] = lines[i].split('|');
@@ -308,13 +311,15 @@ export class GitTimelineEngine {
           .map((b) => b.trim().replace(/^[\*\s]+/, ''))
           .filter(Boolean);
       } catch (err: any) {
-        branches = ['main'];
+        branchLookupFailed = true;
+        branchLookupError = err?.message || String(err);
+        branches = [];
       }
 
       branches.forEach((b) => {
         allReachableBranches.add(b);
         if (b.startsWith('remotes/') || b.startsWith('origin/')) {
-          isPushedToRemote = true;
+          pushedConfirmed = true;
         }
       });
 
@@ -330,8 +335,13 @@ export class GitTimelineEngine {
       if (i === 0) {
         eventType = 'INTRODUCED';
       } else if (i === lines.length - 1) {
-        const inHead = await this.gitHistory.isSecretInHead(secret);
-        eventType = inHead ? 'MODIFIED' : 'REMOVED';
+        let inHead: boolean | 'UNKNOWN' = 'UNKNOWN';
+        try {
+          inHead = await this.gitHistory.isSecretInHead(secret);
+        } catch {
+          inHead = 'UNKNOWN';
+        }
+        eventType = inHead === true ? 'MODIFIED' : inHead === false ? 'REMOVED' : 'MODIFIED';
       } else if (isMergeCommit) {
         eventType = 'MERGED_IN';
       }
@@ -350,6 +360,14 @@ export class GitTimelineEngine {
       });
     }
 
+    if (pushedConfirmed) {
+      isPushedToRemote = true;
+    } else if (branchLookupFailed) {
+      isPushedToRemote = 'UNKNOWN';
+    } else {
+      isPushedToRemote = false;
+    }
+
     const lastEvent = events[events.length - 1];
     let isPresentInHead: boolean | 'UNKNOWN' = 'UNKNOWN';
     let headCheckFailed = false;
@@ -361,7 +379,7 @@ export class GitTimelineEngine {
     }
 
     const currentStatus: ExposureTimelineReport['currentStatus'] =
-      (failedTimelineMetadataCount > 0 || headCheckFailed)
+      (failedTimelineMetadataCount > 0 || headCheckFailed || branchLookupFailed)
         ? 'SEARCH_INCOMPLETE'
         : isPresentInHead
         ? 'ACTIVE_IN_HEAD'
@@ -410,6 +428,9 @@ export class GitTimelineEngine {
     }
     if (headCheckFailed) {
       timelineAscii += `HEAD Verification:  INCOMPLETE (operational error during HEAD inspection)\n`;
+    }
+    if (branchLookupFailed) {
+      timelineAscii += `Branch Inspection:  INCOMPLETE (operational error during branch reachability query: ${branchLookupError})\n`;
     }
     if (searchResult.isPartialHistory) {
       timelineAscii += `History Coverage:   PARTIAL (limited to ${maxCommits} commits; earlier history uninspected)\n`;

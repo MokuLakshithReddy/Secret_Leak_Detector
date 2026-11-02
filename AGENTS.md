@@ -20,7 +20,7 @@ src/
   webview/              In-editor Security Dashboard (WebviewPanel, nonce-based CSP)
   engine/               Re-export shims for core modules
   types.ts              Re-export of core/types
-test/                   Comprehensive security engineering test suite (450 tests across unit and hook suites)
+test/                   Comprehensive security engineering test suite (507 tests across core, hook, and manifest suites)
 evaluation/             Multi-scanner benchmarks and real-world corpus
   benchmarks/           Reproducible benchmark runners
   datasets/             Corpus generators and ground-truth labels
@@ -39,7 +39,7 @@ tsconfig.json           TypeScript compiler settings (strict, node target)
 ```bash
 npm run build       # production build of cli + extension
 npm run watch       # watch mode for extension development
-npm test            # build + run all 417 unit/AST/evidence tests across 40 sections (450 tests total including git-hook)
+npm test            # build + run all 457 core unit/AST/evidence tests across 40 sections (507 tests total including git-hook and manifest suites)
 npm run package     # produce secret-leak-detector-x.y.z.vsix
 ```
 

@@ -556,9 +556,13 @@ async function runTrace(cmdArgs: string[], cwd: string) {
   if (exposure.isSecretInWorkingTree === true) wtStatus = 'YES 🚨 (Uncommitted in working tree)';
   else if (exposure.isSecretInWorkingTree === 'UNKNOWN') wtStatus = 'UNKNOWN ⚠️ (Inaccessible / error)';
 
+  let historyStatus = 'NO';
+  if (exposure.isPresentInHistory === true) historyStatus = 'YES ⚠️ (Must be rotated)';
+  else if (exposure.isPresentInHistory === 'UNKNOWN') historyStatus = 'UNKNOWN ⚠️ (Search incomplete / error)';
+
   console.log(`Status:             ${exposure.statusDescription}`);
   console.log(`In Active HEAD:     ${headStatus}`);
-  console.log(`In Git History:     ${exposure.isPresentInHistory ? 'YES ⚠️ (Must be rotated)' : 'NO'}`);
+  console.log(`In Git History:     ${historyStatus}`);
   console.log(`In Working Tree:    ${wtStatus}`);
   console.log(`Exposure Duration:  ${exposure.exposureDurationDays} days`);
   console.log(`Exposed Branches:   ${exposure.branches.length > 0 ? exposure.branches.join(', ') : 'UNKNOWN'}`);
@@ -608,9 +612,13 @@ async function runGraph(cmdArgs: string[], cwd: string) {
     if (report.graph.summary.removedCommit) {
       console.log(`  • Removed In Commit:     ${report.graph.summary.removedCommit.substring(0, 8)}`);
     }
+    let remoteSyncStatus = 'NO';
+    if (report.graph.summary.isPushedToRemote === true) remoteSyncStatus = 'YES (External!)';
+    else if (report.graph.summary.isPushedToRemote === 'UNKNOWN') remoteSyncStatus = 'UNKNOWN ⚠️ (Branch lookup failed)';
+
     console.log(`  • Contaminated Branches: ${report.graph.summary.branchesContaminated.join(', ')}`);
     console.log(`  • Exposure Duration:     ${report.graph.summary.durationDays} days`);
-    console.log(`  • Remote Synchronized:   ${report.graph.summary.isPushedToRemote ? 'YES (External!)' : 'NO'}`);
+    console.log(`  • Remote Synchronized:   ${remoteSyncStatus}`);
     console.log('\nNodes:');
     report.graph.nodes.forEach((n) => {
       console.log(`  [${n.shortHash}] ${n.eventType.padEnd(12)} - ${n.author} (${n.date.substring(0, 10)}) ${n.isHead ? '[HEAD]' : ''}`);
