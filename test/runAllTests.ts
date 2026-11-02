@@ -1722,11 +1722,16 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
         execFileSync('git', ['-C', dummyRepo, 'commit', '-m', 'add malformed baseline']);
 
         let thrownErr: any = null;
+        const origCiMalformed = process.env.CI;
         try {
+          delete process.env.CI;
           const bEngine = new BaselineEngine(dummyRepo, '.secretleak-baseline.json');
           bEngine.loadBaselineFromGit('HEAD');
         } catch (err) {
           thrownErr = err;
+        } finally {
+          if (origCiMalformed !== undefined) process.env.CI = origCiMalformed;
+          else delete process.env.CI;
         }
         assert(thrownErr instanceof BaselineValidationError, 'loadBaselineFromGit throws BaselineValidationError for malformed git baseline');
 
@@ -1949,8 +1954,16 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
       assert(timelineReport.timelineAscii.includes('failed'), 'Timeline ascii explains error');
 
       // 4. Baseline path canonicalization does not produce relative escape
-      const baselineEngine = new BaselineEngine(process.cwd(), '.secretleak-baseline.json');
-      const baselineResult = baselineEngine.loadBaselineFromGit('HEAD');
+      const origCiSec37 = process.env.CI;
+      delete process.env.CI;
+      let baselineResult: any;
+      try {
+        const baselineEngine = new BaselineEngine(process.cwd(), '.secretleak-baseline.json');
+        baselineResult = baselineEngine.loadBaselineFromGit('HEAD');
+      } finally {
+        if (origCiSec37 !== undefined) process.env.CI = origCiSec37;
+        else delete process.env.CI;
+      }
       assert(baselineResult !== undefined, 'loadBaselineFromGit runs cleanly without path resolution crash');
 
       // 5. cleanHook acquires lock and cleans managed hook safely
@@ -2142,6 +2155,180 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
       } finally {
         try {
           fs.rmSync(testHistoryRepo, { recursive: true, force: true });
+        } catch {}
+      }
+    }
+
+    // --- 40. History Correctness, Staged Index Verification & CI Baseline Invariants ---
+    console.log('\n--- 40. History Correctness, Staged Index Verification & CI Baseline Invariants ---');
+    {
+      const { GitHistoryEngine } = require('../src/core/history/gitHistoryEngine');
+      const { GitTimelineEngine } = require('../src/core/history/gitTimeline');
+      const { BaselineEngine } = require('../src/core/baseline/baselineEngine');
+      const { execFileSync } = require('child_process');
+      const fromHex = (h: string) => Buffer.from(h, 'hex').toString('utf8');
+
+      const sec40Repo = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-sec40-repo-'));
+      try {
+        execFileSync('git', ['init', sec40Repo]);
+        execFileSync('git', ['-C', sec40Repo, 'config', 'user.name', 'Security Tester']);
+        execFileSync('git', ['-C', sec40Repo, 'config', 'user.email', 'sec@test.com']);
+
+        const gitHistory = new GitHistoryEngine(sec40Repo);
+        const gitTimeline = new GitTimelineEngine(sec40Repo);
+
+        const stagedSecret = fromHex('6768705f737461676564736563726574313233343536373839306162636465663132333435363738');
+        const deepSecret = fromHex('6768705f646565707365637265743132333435363738393061626364656631323334353637383930');
+        const binarySecret = fromHex('6768705f62696e617279736563726574313233343536373839306162636465663132333435363738');
+
+        // 1. Staged credential with cleaned working tree detected via git show :<path>
+        const authFile = path.join(sec40Repo, 'auth.ts');
+        fs.writeFileSync(authFile, `const TOKEN = "${stagedSecret}";\n`, 'utf8');
+        execFileSync('git', ['-C', sec40Repo, 'add', 'auth.ts']);
+        // Overwrite disk file with clean content without updating index
+        fs.writeFileSync(authFile, '// clean content on disk\n', 'utf8');
+
+        const foundInWorkingTree = await gitHistory.isSecretInWorkingTree(stagedSecret);
+        assert(foundInWorkingTree === true, 'isSecretInWorkingTree detects staged credential via git show :<path> even when disk file is cleaned');
+
+        const traceStaged = await gitHistory.traceSecret(stagedSecret);
+        assert(traceStaged.isSecretInWorkingTree === true, 'traceSecret identifies staged credential when disk file is cleaned');
+
+        // Reset auth.ts for subsequent tests
+        execFileSync('git', ['-C', sec40Repo, 'reset', 'HEAD', '--', 'auth.ts']);
+        fs.unlinkSync(authFile);
+
+        // 2. Deep historical trace (> 200 commits) finds secret introduced 205 commits ago
+        const vaultFile = path.join(sec40Repo, 'vault.txt');
+        fs.writeFileSync(vaultFile, `DEEP_KEY=${deepSecret}\n`, 'utf8');
+        execFileSync('git', ['-C', sec40Repo, 'add', 'vault.txt']);
+        execFileSync('git', ['-C', sec40Repo, 'commit', '-m', 'feat: initial secret commit']);
+
+        // Immediately revoke deepSecret in commit 2
+        fs.writeFileSync(vaultFile, 'DEEP_KEY=clean\n', 'utf8');
+        execFileSync('git', ['-C', sec40Repo, 'add', 'vault.txt']);
+        execFileSync('git', ['-C', sec40Repo, 'commit', '-m', 'chore: revoke deep secret']);
+
+        // Generate 205 intermediate commits from the clean tree via fast commit-tree
+        let parentSha = execFileSync('git', ['-C', sec40Repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+        const treeSha = execFileSync('git', ['-C', sec40Repo, 'write-tree'], { encoding: 'utf8' }).trim();
+        for (let i = 1; i <= 205; i++) {
+          parentSha = execFileSync(
+            'git',
+            ['-C', sec40Repo, 'commit-tree', treeSha, '-p', parentSha, '-m', `chore: dummy commit ${i}`],
+            { encoding: 'utf8' }
+          ).trim();
+        }
+        execFileSync('git', ['-C', sec40Repo, 'update-ref', 'HEAD', parentSha]);
+
+        // Default search (maxCommits = 0) searches entire history without 200 limit
+        const deepTrace = await gitHistory.traceSecret(deepSecret);
+        assert(deepTrace.isPresentInHistory === true, 'traceSecret with default depth finds secret beyond 200 commits');
+        assert(deepTrace.isPartialHistory === false, 'traceSecret default search is not partial');
+        assert(deepTrace.introducedCommit !== undefined, 'traceSecret locates first commit for deep secret');
+
+        const deepTimeline = await gitTimeline.buildTimeline(deepSecret, 'ghp_••••');
+        assert(deepTimeline.currentStatus === 'REMOVED_FROM_HEAD_PRESENT_IN_HISTORY', 'buildTimeline reports REMOVED_FROM_HEAD_PRESENT_IN_HISTORY for deep historical secret');
+
+        // 3. Limited historical search returns PARTIAL_HISTORY
+        const limitedResult = await gitHistory.findCommitsContainingSecretResult(deepSecret, 50);
+        assert(limitedResult.status === 'PARTIAL_HISTORY', 'findCommitsContainingSecretResult returns PARTIAL_HISTORY when limited');
+        assert(limitedResult.isPartialHistory === true, 'isPartialHistory is true when search depth is limited');
+
+        const limitedTrace = await gitHistory.traceSecret(deepSecret, 50);
+        assert(limitedTrace.isPartialHistory === true, 'traceSecret returns isPartialHistory true when limited');
+        assert(limitedTrace.searchStatus === 'PARTIAL_HISTORY', 'traceSecret searchStatus is PARTIAL_HISTORY when limited');
+
+        const limitedTimeline = await gitTimeline.buildTimeline(deepSecret, 'ghp_••••', 50);
+        assert(limitedTimeline.currentStatus === 'PARTIAL_HISTORY', 'buildTimeline reports PARTIAL_HISTORY when limited');
+
+        // 4. Operational git grep failure returns ERROR / SEARCH_INCOMPLETE, not NOT_FOUND
+        const nonexistentHistory = new GitHistoryEngine(path.join(os.tmpdir(), 'nonexistent-repo-sld-40'));
+        const errResult = await nonexistentHistory.findCommitsContainingSecretResult('test_secret');
+        assert(errResult.status === 'ERROR', 'findCommitsContainingSecretResult returns ERROR on invalid repository');
+
+        const errTrace = await nonexistentHistory.traceSecret('test_secret');
+        assert(errTrace.searchStatus === 'ERROR', 'traceSecret searchStatus is ERROR on invalid repository');
+
+        const nonexistentTimeline = new GitTimelineEngine(path.join(os.tmpdir(), 'nonexistent-repo-sld-40'));
+        const errTimeline = await nonexistentTimeline.buildTimeline('test_secret', 'test***');
+        assert(errTimeline.currentStatus === 'ERROR', 'buildTimeline reports ERROR on invalid repository');
+
+        // 5. Historical binary commit containing credential detected via scanHistoryCommits()
+        const binFile = path.join(sec40Repo, 'payload.bin');
+        const binaryBuffer = Buffer.concat([
+          Buffer.from([0x00, 0x01, 0x02, 0xff]),
+          Buffer.from(`const SECRET = "${binarySecret}";\n`),
+          Buffer.from([0x00, 0x00, 0xfe]),
+        ]);
+        fs.writeFileSync(binFile, binaryBuffer);
+        execFileSync('git', ['-C', sec40Repo, 'add', 'payload.bin']);
+        execFileSync('git', ['-C', sec40Repo, 'commit', '-m', 'feat: commit binary payload with secret']);
+
+        const historyFindings = await gitHistory.scanHistoryCommits(10);
+        const binaryFinding = historyFindings.find((f: any) => f.rawSecret === binarySecret);
+        assert(binaryFinding !== undefined, 'scanHistoryCommits detects credential inside binary file change');
+
+        // 6. In CI, loadBaselineFromGit('HEAD') is rejected even when 'HEAD' is explicitly passed
+        const baselineJson = JSON.stringify({
+          version: 1,
+          generatedAt: new Date().toISOString(),
+          findings: [],
+        });
+        fs.writeFileSync(path.join(sec40Repo, '.secretleak-baseline.json'), baselineJson, 'utf8');
+        execFileSync('git', ['-C', sec40Repo, 'add', '.secretleak-baseline.json']);
+        execFileSync('git', ['-C', sec40Repo, 'commit', '-m', 'chore: add baseline']);
+
+        const origCiSec40 = process.env.CI;
+        try {
+          process.env.CI = 'true';
+          const bEngineCi = new BaselineEngine(sec40Repo, '.secretleak-baseline.json');
+          const ciHeadBaseline = bEngineCi.loadBaselineFromGit('HEAD');
+          assert(ciHeadBaseline === null, 'CI loadBaselineFromGit rejects explicit HEAD to prevent self-trust');
+        } finally {
+          if (origCiSec40 !== undefined) process.env.CI = origCiSec40;
+          else delete process.env.CI;
+        }
+
+        // 7. Staged scan defaults to strict failOnSkipped: true
+        const bigFile = path.join(sec40Repo, 'huge.dat');
+        fs.writeFileSync(bigFile, Buffer.alloc(11 * 1024 * 1024));
+        execFileSync('git', ['-C', sec40Repo, 'add', 'huge.dat']);
+
+        const cliPath = path.resolve(__dirname, '../dist/cli.js');
+        if (!fs.existsSync(cliPath)) {
+          execFileSync(process.execPath, ['esbuild.js', '--cli'], { cwd: path.resolve(__dirname, '..') });
+        }
+
+        let stagedDefaultExit: number | null = null;
+        try {
+          execFileSync(process.execPath, [cliPath, 'scan', '--staged'], {
+            cwd: sec40Repo,
+            stdio: 'pipe',
+          });
+          stagedDefaultExit = 0;
+        } catch (err: any) {
+          stagedDefaultExit = err.status;
+        }
+        assert(stagedDefaultExit === 2, 'scan --staged exits code 2 by default when files are skipped');
+
+        let stagedRelaxedExit: number | null = null;
+        try {
+          execFileSync(process.execPath, [cliPath, 'scan', '--staged', '--allow-skipped'], {
+            cwd: sec40Repo,
+            stdio: 'pipe',
+          });
+          stagedRelaxedExit = 0;
+        } catch (err: any) {
+          stagedRelaxedExit = err.status;
+        }
+        assert(stagedRelaxedExit === 0, 'scan --staged --allow-skipped exits code 0 when relaxed');
+
+        execFileSync('git', ['-C', sec40Repo, 'reset', 'HEAD', '--', 'huge.dat']);
+        fs.unlinkSync(bigFile);
+      } finally {
+        try {
+          fs.rmSync(sec40Repo, { recursive: true, force: true });
         } catch {}
       }
     }

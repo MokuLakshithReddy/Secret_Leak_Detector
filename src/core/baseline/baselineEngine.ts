@@ -194,7 +194,7 @@ export class BaselineEngine {
     }
 
     for (const ref of candidateRefs) {
-      if (!gitRef && isCI && headSha) {
+      if (isCI && headSha) {
         try {
           const resolvedSha = execFileSync('git', ['rev-parse', ref], {
             cwd: gitRoot,

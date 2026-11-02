@@ -104,6 +104,8 @@ Commands:
                                               (default: HIGH — see src/core/policy.ts)
                            --exclude <globs>  Comma-separated patterns to exclude from scan
                            --ignore-skipped   Warn instead of failing when large/unreadable files are skipped
+                           --allow-skipped    Alias for --ignore-skipped (relaxed mode for staged scan)
+                           --strict           Fail closed if any file cannot be inspected
 
   history                Scan Git commit history for previously introduced credentials
                          Options:
@@ -144,6 +146,13 @@ async function runScan(cmdArgs: string[], cwd: string) {
   const isJson = cmdArgs.includes('--json');
   const isSarif = cmdArgs.includes('--sarif');
   const isStaged = cmdArgs.includes('--staged');
+  const explicitlyRelaxed =
+    cmdArgs.includes('--ignore-skipped') ||
+    cmdArgs.includes('--allow-skipped') ||
+    cmdArgs.includes('--relaxed') ||
+    process.env.SLD_IGNORE_SKIPPED === '1' ||
+    process.env.SLD_IGNORE_SKIPPED === 'true';
+
   let failOnSkipped =
     cmdArgs.includes('--no-ignore-skipped') ||
     cmdArgs.includes('--fail-on-skipped') ||
@@ -151,42 +160,45 @@ async function runScan(cmdArgs: string[], cwd: string) {
     process.env.SLD_STRICT === '1' ||
     process.env.SLD_FAIL_ON_SKIPPED === '1';
 
-  if (!failOnSkipped) {
-    try {
-      const gitStrict = execFileSync('git', ['config', '--bool', 'secret-leak-detector.strict'], {
-        cwd,
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'ignore'],
-      }).trim();
-      const gitFailOnSkipped = execFileSync('git', ['config', '--bool', 'secret-leak-detector.fail-on-skipped'], {
-        cwd,
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'ignore'],
-      }).trim();
-      if (gitStrict === 'true' || gitFailOnSkipped === 'true') {
-        failOnSkipped = true;
-      }
-    } catch {}
+  let gitStrict: string | undefined;
+  let gitFailOnSkipped: string | undefined;
+  let gitConfigIgnore: string | undefined;
+  try {
+    gitStrict = execFileSync('git', ['config', '--bool', 'secret-leak-detector.strict'], {
+      cwd,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {}
+  try {
+    gitFailOnSkipped = execFileSync('git', ['config', '--bool', 'secret-leak-detector.fail-on-skipped'], {
+      cwd,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {}
+  try {
+    gitConfigIgnore = execFileSync('git', ['config', '--bool', 'secret-leak-detector.ignore-skipped'], {
+      cwd,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {}
+
+  const gitExplicitlyRelaxed =
+    gitStrict === 'false' || gitFailOnSkipped === 'false' || gitConfigIgnore === 'true';
+
+  if (isStaged && !explicitlyRelaxed && !gitExplicitlyRelaxed) {
+    failOnSkipped = true;
+  } else if (!failOnSkipped) {
+    if (gitStrict === 'true' || gitFailOnSkipped === 'true') {
+      failOnSkipped = true;
+    }
   }
+
   let ignoreSkipped =
     !failOnSkipped &&
-    (cmdArgs.includes('--ignore-skipped') ||
-      cmdArgs.includes('--allow-skipped') ||
-      process.env.SLD_IGNORE_SKIPPED === '1' ||
-      process.env.SLD_IGNORE_SKIPPED === 'true');
-
-  if (!ignoreSkipped && !failOnSkipped) {
-    try {
-      const gitConfigIgnore = execFileSync('git', ['config', '--bool', 'secret-leak-detector.ignore-skipped'], {
-        cwd,
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'ignore'],
-      }).trim();
-      if (gitConfigIgnore === 'true') {
-        ignoreSkipped = true;
-      }
-    } catch {}
-  }
+    (explicitlyRelaxed || gitConfigIgnore === 'true');
 
   const baselineIdx = cmdArgs.indexOf('--baseline');
   const baselineFile = baselineIdx !== -1 ? cmdArgs[baselineIdx + 1] : undefined;
