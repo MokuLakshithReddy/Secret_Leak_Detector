@@ -1723,8 +1723,12 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
 
         let thrownErr: any = null;
         const origCiMalformed = process.env.CI;
+        const origGhActionsMalformed = process.env.GITHUB_ACTIONS;
+        const origGitlabMalformed = process.env.GITLAB_CI;
         try {
           delete process.env.CI;
+          delete process.env.GITHUB_ACTIONS;
+          delete process.env.GITLAB_CI;
           const bEngine = new BaselineEngine(dummyRepo, '.secretleak-baseline.json');
           bEngine.loadBaselineFromGit('HEAD');
         } catch (err) {
@@ -1732,6 +1736,10 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
         } finally {
           if (origCiMalformed !== undefined) process.env.CI = origCiMalformed;
           else delete process.env.CI;
+          if (origGhActionsMalformed !== undefined) process.env.GITHUB_ACTIONS = origGhActionsMalformed;
+          else delete process.env.GITHUB_ACTIONS;
+          if (origGitlabMalformed !== undefined) process.env.GITLAB_CI = origGitlabMalformed;
+          else delete process.env.GITLAB_CI;
         }
         assert(thrownErr instanceof BaselineValidationError, 'loadBaselineFromGit throws BaselineValidationError for malformed git baseline');
 
@@ -1955,7 +1963,11 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
 
       // 4. Baseline path canonicalization does not produce relative escape
       const origCiSec37 = process.env.CI;
+      const origGhActionsSec37 = process.env.GITHUB_ACTIONS;
+      const origGitlabSec37 = process.env.GITLAB_CI;
       delete process.env.CI;
+      delete process.env.GITHUB_ACTIONS;
+      delete process.env.GITLAB_CI;
       let baselineResult: any;
       try {
         const baselineEngine = new BaselineEngine(process.cwd(), '.secretleak-baseline.json');
@@ -1963,6 +1975,10 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
       } finally {
         if (origCiSec37 !== undefined) process.env.CI = origCiSec37;
         else delete process.env.CI;
+        if (origGhActionsSec37 !== undefined) process.env.GITHUB_ACTIONS = origGhActionsSec37;
+        else delete process.env.GITHUB_ACTIONS;
+        if (origGitlabSec37 !== undefined) process.env.GITLAB_CI = origGitlabSec37;
+        else delete process.env.GITLAB_CI;
       }
       assert(baselineResult !== undefined, 'loadBaselineFromGit runs cleanly without path resolution crash');
 
