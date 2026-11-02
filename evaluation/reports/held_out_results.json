@@ -4,7 +4,7 @@
   "methodology": {
     "corpusSeparation": "This corpus was created after the detector rules were finalized. No cases from this corpus were used to tune detector thresholds or patterns.",
     "labellingProcess": "Each case was labelled by the author. TP = realistic credential matching a known provider pattern. TN = high-entropy non-secret (hash, UUID, tracking pixel, etc.)",
-    "scannerVersion": "1.0.2",
+    "scannerVersion": "1.0.3",
     "nodeVersion": "v24.19.0",
     "os": "Windows_NT x64",
     "command": "npm run benchmark:heldout",

@@ -1837,6 +1837,56 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
         } catch {}
       }
     }
+
+    // --- 36. Compact JSON, Quoted Auth Header, Hyphenated Keys & Hook Fail-Closed Defaults ---
+    console.log('\n--- 36. Compact JSON, Quoted Auth Header, Hyphenated Keys & Hook Fail-Closed Defaults ---');
+    {
+      const { scanContent } = require('../src/core/scanner/scanner');
+      const { buildPreCommitHook } = require('../src/git/preCommitHook');
+
+      // 1. Compact JSON detection for aws-secret-key, generic-api-key, azure-ad-client-secret, twilio-api-key
+      const compactAws = '{"aws_secret_access_key":"wJalrXUtnFEMI/K7MDENG/bPxRfiCY1234567890"}';
+      const awsFindings = scanContent(compactAws, 'config.json');
+      assert(awsFindings.length === 1 && awsFindings[0].type === 'AWS Secret Access Key', 'Compact JSON detects AWS secret key');
+
+      const compactGeneric = '{"api_key":"my-custom-hyphenated-secret-key-1234567890"}';
+      const genericFindings = scanContent(compactGeneric, 'config.json');
+      assert(genericFindings.length === 1 && genericFindings[0].type === 'Generic API Secret Assignment', 'Compact JSON detects hyphenated generic API key');
+
+      const compactAzureAd = '{"azure_client_secret":"0123456789abcdefghijklmnopqrstuvwx~.-_"}';
+      const azureAdFindings = scanContent(compactAzureAd, 'config.json');
+      assert(azureAdFindings.length === 1 && azureAdFindings[0].type === 'Azure Active Directory Client Secret', 'Compact JSON detects Azure AD client secret');
+
+      const compactTwilio = '{"twilio_auth_token":"0123456789abcdef0123456789abcdef"}';
+      const twilioFindings = scanContent(compactTwilio, 'config.json');
+      assert(twilioFindings.length === 1 && twilioFindings[0].type === 'Twilio Auth Token / API Secret', 'Compact JSON detects Twilio auth token');
+
+      // 2. Quoted Authorization header bearer token
+      const quotedBearer = '{"Authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.doNotShareSecrets1234567890"}';
+      const bearerFindings = scanContent(quotedBearer, 'req.json');
+      assert(bearerFindings.length === 1 && bearerFindings[0].type === 'Authorization Bearer Token', 'Quoted Authorization header detects Bearer token');
+
+      // 3. Password assignment: admin-Xk29!fQ7rLmZ vs standalone admin
+      const adminSecret = 'password = "admin-Xk29!fQ7rLmZ"';
+      const adminFindings = scanContent(adminSecret, 'app.ts');
+      assert(adminFindings.length === 1 && adminFindings[0].type === 'Password in Source Code', 'password = "admin-Xk29!fQ7rLmZ" is detected as real password');
+
+      const adminPlaceholder = 'password = "admin"';
+      const placeholderFindings = scanContent(adminPlaceholder, 'app.ts');
+      assert(placeholderFindings.length === 0, 'password = "admin" is correctly suppressed as placeholder');
+
+      // 4. Default hook strictly fails closed on missing extension CLI (without self-healing)
+      const extensionCliPath = '/Users/test/.vscode/extensions/sld/dist/cli.js';
+      const defaultHook = buildPreCommitHook(undefined, extensionCliPath);
+      assert(defaultHook.includes('SLD_ALLOW_SELF_HEAL_DEFAULT="0"'), 'Default hook sets SLD_ALLOW_SELF_HEAL_DEFAULT to 0');
+      assert(defaultHook.includes('ALLOW_SELF_HEAL=0'), 'Default hook initializes ALLOW_SELF_HEAL to 0');
+      assert(defaultHook.includes('COMMIT BLOCKED (fail-closed)'), 'Hook fail-closed error printed when CLI is missing');
+
+      // 5. Explicit allowSelfHeal opt-in configures self-healing hook
+      const selfHealHook = buildPreCommitHook(undefined, extensionCliPath, undefined, true, true, false, true);
+      assert(selfHealHook.includes('SLD_ALLOW_SELF_HEAL_DEFAULT="1"'), 'Self-heal hook sets SLD_ALLOW_SELF_HEAL_DEFAULT to 1');
+      assert(selfHealHook.includes('ALLOW_SELF_HEAL=1'), 'Self-heal hook enables recovery branch');
+    }
   }
 
   console.log('\n============================================================');
