@@ -234,7 +234,8 @@ export function applyControlledRemediation(
     }
 
     originalFileContent = fsModule.readFileSync(targetFile, 'utf8');
-    if (!originalFileContent.includes(finding.rawSecret)) {
+    const secretToSearch = finding.sourceExpression || finding.rawSecret;
+    if (!originalFileContent.includes(secretToSearch) && !originalFileContent.includes(finding.rawSecret)) {
       return {
         success: false,
         message: 'Secret no longer found in target file (may have already been modified).',
@@ -297,9 +298,10 @@ export function applyControlledRemediation(
 
     // 5. Replace secret literal in source file, stripping enclosing quotes so replacementCode is evaluated
     let newContent = originalFileContent;
-    const doubleQuoted = `"${finding.rawSecret}"`;
-    const singleQuoted = `'${finding.rawSecret}'`;
-    const backtickQuoted = `\`${finding.rawSecret}\``;
+    const targetExpr = finding.sourceExpression || finding.rawSecret;
+    const doubleQuoted = `"${targetExpr}"`;
+    const singleQuoted = `'${targetExpr}'`;
+    const backtickQuoted = `\`${targetExpr}\``;
 
     if (newContent.includes(doubleQuoted)) {
       newContent = newContent.replace(new RegExp(escapeRegExp(doubleQuoted), 'g'), replacementCode);
@@ -307,6 +309,8 @@ export function applyControlledRemediation(
       newContent = newContent.replace(new RegExp(escapeRegExp(singleQuoted), 'g'), replacementCode);
     } else if (newContent.includes(backtickQuoted)) {
       newContent = newContent.replace(new RegExp(escapeRegExp(backtickQuoted), 'g'), replacementCode);
+    } else if (newContent.includes(targetExpr)) {
+      newContent = newContent.replace(new RegExp(escapeRegExp(targetExpr), 'g'), replacementCode);
     } else {
       newContent = newContent.replace(new RegExp(escapeRegExp(finding.rawSecret), 'g'), replacementCode);
     }

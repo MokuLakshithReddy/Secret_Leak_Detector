@@ -23,12 +23,18 @@ export function cleanHook(hookPath: string): boolean {
         try {
           const stat = fs.statSync(lockPath);
           if (Date.now() - stat.mtimeMs > 10000) {
-            fs.unlinkSync(lockPath);
+            try {
+              fs.unlinkSync(lockPath);
+            } catch {}
             fs.writeFileSync(lockPath, String(process.pid), { flag: 'wx' });
             acquiredLock = true;
           }
         } catch {}
       }
+    }
+
+    if (!acquiredLock) {
+      return false;
     }
 
     const content = fs.readFileSync(hookPath, 'utf8');

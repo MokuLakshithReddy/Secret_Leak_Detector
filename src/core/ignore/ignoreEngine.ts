@@ -30,6 +30,8 @@ export const DEFAULT_IGNORE_PATTERNS = [
   '.git/**',
   'dist/**',
   'build/**',
+  '.vscode-test/**',
+  '**/.vscode-test/**',
   'package-lock.json',
   '**/package-lock.json',
   'pnpm-lock.yaml',

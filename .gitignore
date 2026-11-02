@@ -35,3 +35,6 @@ demo/tmp-fixture-repo/
 # User private salt & local hook records
 .sld/
 .sld/salt
+
+# VS Code extension host test cache
+.vscode-test/

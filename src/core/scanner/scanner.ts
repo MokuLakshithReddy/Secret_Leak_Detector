@@ -27,6 +27,21 @@ function getFileIdPart(relativePath: string): string {
   return crypto.createHash('sha256').update(relativePath.replace(/\\/g, '/')).digest('hex').slice(0, 8);
 }
 
+export function extractSecretMatch(match: RegExpExecArray): { secret: string; offset: number } {
+  let capturedSecret: string | undefined = (match as any).groups?.secret;
+  if (capturedSecret === undefined) {
+    for (let i = 1; i < match.length; i++) {
+      if (match[i] !== undefined) {
+        capturedSecret = match[i];
+        break;
+      }
+    }
+  }
+  const secret = capturedSecret !== undefined ? capturedSecret : match[0];
+  const off = capturedSecret !== undefined ? match[0].indexOf(capturedSecret) : 0;
+  return { secret, offset: off >= 0 ? off : 0 };
+}
+
 interface LineMap {
   text: string;
   origLine: number[];
@@ -172,9 +187,8 @@ export function scanContent(
     let match: RegExpExecArray | null;
 
     while ((match = rule.pattern.exec(content)) !== null) {
-      const rawSecret = match[1] !== undefined ? match[1] : match[0];
-      const secretOffset = match[1] !== undefined ? match[0].indexOf(match[1]) : 0;
-      const secretIndex = match.index + (secretOffset >= 0 ? secretOffset : 0);
+      const { secret: rawSecret, offset: secretOffset } = extractSecretMatch(match);
+      const secretIndex = match.index + secretOffset;
 
       // Calculate line and column via binary search on line offsets (0 heap allocation)
       const { line: lineNumber, column: columnNumber } = getPosition(secretIndex);
@@ -364,7 +378,7 @@ export function scanContent(
       let ruleMatch: RegExpExecArray | null;
 
       while ((ruleMatch = rule.pattern.exec(candidate.combined)) !== null) {
-        const rawSecret = ruleMatch[1] || ruleMatch[0];
+        const { secret: rawSecret } = extractSecretMatch(ruleMatch);
         const { line: lineNumber, column: columnNumber } = getPosition(candidate.matchOffset);
 
         const currentLineText = rawLines[lineNumber - 1] || '';
