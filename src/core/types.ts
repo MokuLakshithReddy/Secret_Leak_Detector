@@ -83,13 +83,13 @@ export interface GitExposure {
   introducedCommit?: GitCommitInfo;
   lastModifiedCommit?: GitCommitInfo;
   removedCommit?: GitCommitInfo;
-  isPresentInHead: boolean;
+  isPresentInHead: boolean | 'UNKNOWN';
   isPresentInHistory: boolean;
-  isPresentInWorkingTree?: boolean;
-  isSecretInWorkingTree?: boolean;
+  isPresentInWorkingTree?: boolean | 'UNKNOWN';
+  isSecretInWorkingTree?: boolean | 'UNKNOWN';
   exposureDurationDays: number;
   branches: string[];
-  isRemote: boolean;
+  isRemote: boolean | 'UNKNOWN';
   statusDescription: string;
   commitCount?: number;
   isPartialHistory?: boolean;

@@ -544,12 +544,25 @@ async function runTrace(cmdArgs: string[], cwd: string) {
   console.log('\n============================================================');
   console.log('📊 GIT PROVENANCE & BLAST RADIUS TRACE');
   console.log('============================================================');
+  let headStatus = 'UNKNOWN ⚠️ (Could not verify HEAD)';
+  if (exposure.isPresentInHead === true) headStatus = 'YES 🚨';
+  else if (exposure.isPresentInHead === false) headStatus = 'NO (Deleted from HEAD)';
+
+  let remoteStatus = 'UNKNOWN ⚠️ (Could not verify remote tracking)';
+  if (exposure.isRemote === true) remoteStatus = 'YES (External exposure!)';
+  else if (exposure.isRemote === false) remoteStatus = 'Local only';
+
+  let wtStatus = 'Clean';
+  if (exposure.isSecretInWorkingTree === true) wtStatus = 'YES 🚨 (Uncommitted in working tree)';
+  else if (exposure.isSecretInWorkingTree === 'UNKNOWN') wtStatus = 'UNKNOWN ⚠️ (Inaccessible / error)';
+
   console.log(`Status:             ${exposure.statusDescription}`);
-  console.log(`In Active HEAD:     ${exposure.isPresentInHead ? 'YES 🚨' : 'NO (Deleted from HEAD)'}`);
+  console.log(`In Active HEAD:     ${headStatus}`);
   console.log(`In Git History:     ${exposure.isPresentInHistory ? 'YES ⚠️ (Must be rotated)' : 'NO'}`);
+  console.log(`In Working Tree:    ${wtStatus}`);
   console.log(`Exposure Duration:  ${exposure.exposureDurationDays} days`);
-  console.log(`Exposed Branches:   ${exposure.branches.join(', ')}`);
-  console.log(`Remote Pushed:      ${exposure.isRemote ? 'YES (External exposure!)' : 'Local only'}`);
+  console.log(`Exposed Branches:   ${exposure.branches.length > 0 ? exposure.branches.join(', ') : 'UNKNOWN'}`);
+  console.log(`Remote Pushed:      ${remoteStatus}`);
   if (exposure.isPartialHistory) {
     console.log(`⚠️  Warning:          Search depth was limited; earlier history was not inspected.`);
   }

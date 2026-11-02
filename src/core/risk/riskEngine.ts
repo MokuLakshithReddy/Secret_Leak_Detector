@@ -64,13 +64,13 @@ export function calculateRiskAssessment(
   let gitDesc = 'Found in local uncommitted working tree';
 
   if (gitExposure) {
-    if (gitExposure.isRemote) {
+    if (gitExposure.isRemote === true) {
       gitScore = 20;
       gitDesc = 'Pushed to remote repository branch (external exposure risk)';
     } else if (gitExposure.isPresentInHistory) {
       gitScore = 16;
       gitDesc = `Committed to Git history across ${gitExposure.branches.length || 1} branch(es) (${gitExposure.exposureDurationDays} days exposure)`;
-    } else if (gitExposure.isPresentInHead) {
+    } else if (gitExposure.isPresentInHead === true || gitExposure.isPresentInHead === 'UNKNOWN') {
       gitScore = 12;
       gitDesc = 'Committed in current HEAD commit';
     }
@@ -109,12 +109,14 @@ export function computeBlastRadius(riskScore: number, gitExposure?: GitExposure)
   const factors: string[] = [];
   let score = Math.round(riskScore * 0.5);
 
-  const workingTreeExposed = gitExposure ? gitExposure.isPresentInHead : true;
+  const workingTreeExposed = gitExposure
+    ? (gitExposure.isPresentInHead === true || gitExposure.isPresentInHead === 'UNKNOWN')
+    : true;
   const gitHistoryExposed = gitExposure ? gitExposure.isPresentInHistory : false;
   const commitCount = gitExposure?.commitCount ?? (gitExposure?.isPresentInHistory ? 1 : 0);
   const branches = gitExposure?.branches || ['main'];
   const branchCount = branches.length;
-  const remoteExposed = gitExposure?.isRemote || false;
+  const remoteExposed = gitExposure?.isRemote === true;
   const exposureDurationDays = gitExposure?.exposureDurationDays || 0;
 
   if (workingTreeExposed) {
