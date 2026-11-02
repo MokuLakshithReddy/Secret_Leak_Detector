@@ -28,7 +28,7 @@ import { getPackageVersion } from '../core/version';
 const args = process.argv.slice(2);
 const command = args[0] || 'help';
 
-if (command === '--version' || command === '-v' || args.includes('--version') || args.includes('-v')) {
+if (command === '--version' || command === '-v' || command === 'version' || args.includes('--version') || args.includes('-v')) {
   console.log(getPackageVersion());
   process.exit(0);
 }
