@@ -1,3 +1,4 @@
+import * as os from 'os';
 import * as path from 'path';
 import { runTests } from '@vscode/test-electron';
 
@@ -10,13 +11,16 @@ async function main() {
 
     // The path to test runner script
     const extensionTestsPath = path.resolve(__dirname, '../../dist/test/vscode-integration/suite/index.js');
+    const cachePath = process.env.VSCODE_TEST_CACHE_PATH || path.join(os.tmpdir(), '.vscode-test-cache');
 
     console.log('Starting real VS Code Extension Host tests via @vscode/test-electron...');
     console.log(`Extension development path: ${extensionDevelopmentPath}`);
     console.log(`Extension test runner:     ${extensionTestsPath}`);
+    console.log(`VS Code test cache:        ${cachePath}`);
 
     // Download VS Code and execute real extension host integration tests
     await runTests({
+      cachePath,
       extensionDevelopmentPath,
       extensionTestsPath,
       launchArgs: [
