@@ -1,6 +1,6 @@
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { GitHistoryEngine } from './gitHistoryEngine';
+import { GitHistoryEngine, GitSearchResult } from './gitHistoryEngine';
 
 // execFile (argument array) keeps untrusted values out of a shell, preventing
 // command injection via the credential being traced.
@@ -57,11 +57,12 @@ export interface ExposureTimelineReport {
   firstIntroducedDate?: string;
   removalDate?: string;
   totalExposureDays: number;
-  currentStatus: 'ACTIVE_IN_HEAD' | 'REMOVED_FROM_HEAD_PRESENT_IN_HISTORY' | 'CLEAN_UNCOMMITTED' | 'NOT_FOUND' | 'PARTIAL_HISTORY' | 'ERROR';
+  currentStatus: 'ACTIVE_IN_HEAD' | 'REMOVED_FROM_HEAD_PRESENT_IN_HISTORY' | 'CLEAN_UNCOMMITTED' | 'NOT_FOUND' | 'PARTIAL_HISTORY' | 'SEARCH_INCOMPLETE' | 'ERROR';
   reachableBranches: string[];
   isPushedToRemote: boolean;
   timelineAscii: string;
   graph: GitExposureGraph;
+  isPartialHistory?: boolean;
 }
 
 export class GitTimelineEngine {
@@ -75,6 +76,8 @@ export class GitTimelineEngine {
 
   public async buildTimeline(secret: string, redactedSecret: string, maxCommits = 0): Promise<ExposureTimelineReport> {
     const lines: string[] = [];
+    let searchResult: GitSearchResult | undefined;
+    let commitShas: string[] = [];
 
     try {
       const isGit = await this.gitHistory.isGitRepo();
@@ -82,32 +85,38 @@ export class GitTimelineEngine {
         throw new Error(`Directory is not a Git repository: ${this.workspaceRoot}`);
       }
 
-      const searchResult = await this.gitHistory.findCommitsContainingSecretResult(secret, maxCommits);
+      searchResult = await this.gitHistory.findCommitsContainingSecretResult(secret, maxCommits);
+      commitShas = searchResult.commitShas;
 
       if (searchResult.status === 'ERROR' || searchResult.status === 'SEARCH_INCOMPLETE') {
+        const matchesNote =
+          searchResult.commitShas.length > 0
+            ? ` (${searchResult.commitShas.length} matching commit(s) discovered before failure)`
+            : '';
         return {
           secretRedacted: redactedSecret,
           events: [],
           totalExposureDays: 0,
-          currentStatus: 'ERROR',
+          currentStatus: searchResult.status,
           reachableBranches: [],
           isPushedToRemote: false,
-          timelineAscii: `Git history search was incomplete: ${searchResult.error || 'operational failure'}`,
+          timelineAscii: `Git history search was incomplete: ${searchResult.error || 'operational failure'}${matchesNote}`,
           graph: {
             nodes: [],
             edges: [],
             summary: {
-              totalExposedCommits: 0,
-              introducedCommit: '',
+              totalExposedCommits: searchResult.commitShas.length,
+              introducedCommit: searchResult.commitShas[0] || '',
               durationDays: 0,
               branchesContaminated: [],
               isPushedToRemote: false,
             },
           },
+          isPartialHistory: searchResult.isPartialHistory,
         };
       }
 
-      const commitShas = searchResult.commitShas;
+      commitShas = searchResult.commitShas;
       if (commitShas.length === 0) {
         const inWorkingTree = await this.gitHistory.isSecretInWorkingTree(secret);
         if (inWorkingTree) {
@@ -220,6 +229,29 @@ export class GitTimelineEngine {
     }
 
     if (lines.length === 0) {
+      if (commitShas.length > 0) {
+        return {
+          secretRedacted: redactedSecret,
+          events: [],
+          totalExposureDays: 0,
+          currentStatus: 'SEARCH_INCOMPLETE',
+          reachableBranches: [],
+          isPushedToRemote: false,
+          timelineAscii: `Credential was detected in ${commitShas.length} commit(s), but commit metadata retrieval failed.`,
+          graph: {
+            nodes: [],
+            edges: [],
+            summary: {
+              totalExposedCommits: commitShas.length,
+              introducedCommit: commitShas[0] || '',
+              durationDays: 0,
+              branchesContaminated: [],
+              isPushedToRemote: false,
+            },
+          },
+          isPartialHistory: searchResult.isPartialHistory,
+        };
+      }
       return {
         secretRedacted: redactedSecret,
         events: [],
@@ -239,6 +271,7 @@ export class GitTimelineEngine {
             isPushedToRemote: false,
           },
         },
+        isPartialHistory: searchResult.isPartialHistory,
       };
     }
 
@@ -353,6 +386,9 @@ export class GitTimelineEngine {
 
     timelineAscii += '═'.repeat(68) + '\n';
     timelineAscii += `Current Status:     ${currentStatus}\n`;
+    if (searchResult.isPartialHistory) {
+      timelineAscii += `History Coverage:   PARTIAL (limited to ${maxCommits} commits; earlier history uninspected)\n`;
+    }
     timelineAscii += `Total Exposure:     ${totalExposureDays} days\n`;
     const nodes: GitGraphNode[] = events.map((ev, idx) => ({
       id: ev.commitSha,
@@ -408,6 +444,7 @@ export class GitTimelineEngine {
       isPushedToRemote,
       timelineAscii,
       graph,
+      isPartialHistory: searchResult.isPartialHistory,
     };
   }
 }

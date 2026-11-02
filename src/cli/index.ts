@@ -550,6 +550,9 @@ async function runTrace(cmdArgs: string[], cwd: string) {
   console.log(`Exposure Duration:  ${exposure.exposureDurationDays} days`);
   console.log(`Exposed Branches:   ${exposure.branches.join(', ')}`);
   console.log(`Remote Pushed:      ${exposure.isRemote ? 'YES (External exposure!)' : 'Local only'}`);
+  if (exposure.isPartialHistory) {
+    console.log(`⚠️  Warning:          Search depth was limited; earlier history was not inspected.`);
+  }
 
   if (exposure.introducedCommit) {
     console.log(`Introduced By:      ${exposure.introducedCommit.author} <${exposure.introducedCommit.sha.substring(0, 7)}>`);
@@ -566,6 +569,9 @@ async function runTimeline(cmdArgs: string[], cwd: string) {
   const redacted = redactSecret(secret);
   const timelineEngine = new GitTimelineEngine(cwd);
   const report = await timelineEngine.buildTimeline(secret, redacted);
+  if (report.isPartialHistory) {
+    console.warn('⚠️  Warning: History search was limited; earlier commits were not inspected.\n');
+  }
   console.log(report.timelineAscii);
 }
 
