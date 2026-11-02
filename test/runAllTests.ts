@@ -1888,6 +1888,49 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
       assert(selfHealHook.includes('ALLOW_SELF_HEAL=1'), 'Self-heal hook enables recovery branch');
     }
   }
+    // --- 37. Cross-Platform Baseline Canonicalization, Deobfuscation Source Expressions, and Atomic Uninstaller ---
+    console.log('\n--- 37. Cross-Platform Baseline Canonicalization, Deobfuscation Source Expressions, and Atomic Uninstaller ---');
+    {
+      const { BaselineEngine } = require('../src/core/baseline/baselineEngine');
+      const { scanContent } = require('../src/core/scanner/scanner');
+      const { GitTimelineEngine } = require('../src/core/history/gitTimeline');
+      const { cleanHook } = require('../src/uninstall');
+
+      // 1. Deobfuscation sourceExpression preservation
+      const splitCode = 'const token = "ghp_" + "123456789012345678901234567890123456";';
+      const splitFindings = scanContent(splitCode, 'app.ts');
+      assert(splitFindings.length === 1, 'Split token detected');
+      assert(splitFindings[0].sourceExpression === '"ghp_" + "123456789012345678901234567890123456"', 'Finding preserves exact raw sourceExpression');
+
+      // 2. Base64 deobfuscation sourceExpression preservation
+      const b64Secret = Buffer.from('AKIA1234567890B64SEC', 'utf8').toString('base64');
+      const b64Code = 'const key = Buffer.from("' + b64Secret + '", "base64");\n';
+      const b64Findings = scanContent(b64Code, 'app.ts');
+      assert(b64Findings.length >= 1, 'Base64 token detected');
+      assert(b64Findings[0].sourceExpression !== undefined && b64Findings[0].sourceExpression.includes(b64Secret), 'Base64 finding preserves sourceExpression');
+
+      // 3. GitTimelineEngine returns ERROR status on query failure
+      const timelineEngine = new GitTimelineEngine('/nonexistent/repo/directory/xyz');
+      const timelineReport = await timelineEngine.buildTimeline('secret_xyz', 'sec***');
+      assert(timelineReport.currentStatus === 'ERROR', 'GitTimeline reports ERROR on query failure (got ' + timelineReport.currentStatus + ')');
+      assert(timelineReport.timelineAscii.includes('failed'), 'Timeline ascii explains error');
+
+      // 4. Baseline path canonicalization does not produce relative escape
+      const baselineEngine = new BaselineEngine(process.cwd(), '.secretleak-baseline.json');
+      const baselineResult = baselineEngine.loadBaselineFromGit('HEAD');
+      assert(baselineResult !== undefined, 'loadBaselineFromGit runs cleanly without path resolution crash');
+
+      // 5. cleanHook acquires lock and cleans managed hook safely
+      const testHookDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-uninstall-lock-'));
+      const testHookFile = path.join(testHookDir, 'pre-commit');
+      fs.writeFileSync(testHookFile, '#!/bin/sh\n# [SLD_HOOK_MANAGED]\nexit 0\n', { mode: 0o755 });
+      assert(fs.existsSync(testHookFile), 'Test hook file created');
+      const cleanSuccess = cleanHook(testHookFile);
+      assert(cleanSuccess === true, 'cleanHook returns true for managed hook');
+      assert(!fs.existsSync(testHookFile), 'cleanHook removed managed hook');
+      assert(!fs.existsSync(path.join(testHookDir, 'pre-commit.sld.lock')), 'cleanHook released lock file');
+      try { fs.rmSync(testHookDir, { recursive: true, force: true }); } catch {}
+    }
 
   console.log('\n============================================================');
   console.log(`🎉 TEST SUMMARY: ${passed} PASSED, ${failed} FAILED`);

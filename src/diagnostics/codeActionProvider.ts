@@ -35,9 +35,12 @@ export class SecretCodeActionProvider implements vscode.CodeActionProvider {
 
       if (!finding) continue;
 
-      // Ensure the diagnostic range still matches the detected rawSecret
+      // Ensure the diagnostic range still matches the detected rawSecret or sourceExpression
       const docTextAtRange = document.getText(diagnostic.range);
-      if (docTextAtRange !== finding.rawSecret) {
+      if (
+        docTextAtRange !== finding.rawSecret &&
+        docTextAtRange !== finding.sourceExpression
+      ) {
         continue;
       }
 

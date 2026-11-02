@@ -111,7 +111,7 @@ export function computeBlastRadius(riskScore: number, gitExposure?: GitExposure)
 
   const workingTreeExposed = gitExposure ? gitExposure.isPresentInHead : true;
   const gitHistoryExposed = gitExposure ? gitExposure.isPresentInHistory : false;
-  const commitCount = gitExposure?.isPresentInHistory ? 1 : 0;
+  const commitCount = gitExposure?.commitCount ?? (gitExposure?.isPresentInHistory ? 1 : 0);
   const branches = gitExposure?.branches || ['main'];
   const branchCount = branches.length;
   const remoteExposed = gitExposure?.isRemote || false;

@@ -28,7 +28,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(
     vscode.languages.registerCodeActionsProvider(
-      { scheme: 'file' },
+      [{ scheme: 'file' }, { scheme: 'untitled' }],
       new SecretCodeActionProvider(diagnosticProvider),
       { providedCodeActionKinds: SecretCodeActionProvider.providedCodeActionKinds }
     )
@@ -74,7 +74,7 @@ export function activate(context: vscode.ExtensionContext) {
   }
   applyConfiguration();
 
-  // Stable CLI management under globalStorageUri (survives extension version upgrades)
+  // Stable CLI and AST parser management under globalStorageUri (survives extension version upgrades)
   let activeCliPath = path.join(context.extensionPath, 'dist', 'cli.js');
   try {
     const globalStorage = context.globalStorageUri.fsPath;
@@ -86,6 +86,11 @@ export function activate(context: vscode.ExtensionContext) {
       fs.copyFileSync(activeCliPath, stableCli);
       activeCliPath = stableCli;
     }
+    const astParserSrc = path.join(context.extensionPath, 'dist', 'ast-parser.js');
+    const stableAstParser = path.join(globalStorage, 'ast-parser.js');
+    if (fs.existsSync(astParserSrc)) {
+      fs.copyFileSync(astParserSrc, stableAstParser);
+    }
   } catch {}
 
   // Re-pin pre-commit hooks in all workspace folders that are Git repositories
@@ -94,7 +99,9 @@ export function activate(context: vscode.ExtensionContext) {
     const blockCommits = getConfig().get<boolean>('blockGitCommits', true);
     const configuredFailOn = resolveFailOn(getConfig().get<string>('failOn', DEFAULT_FAIL_ON));
     const disallowInline = getConfig().get<boolean>('disallowInlineIgnore', true);
-    const failOnSkipped = getConfig().get<boolean>('failOnSkipped', false);
+    const failOnSkipped =
+      getConfig().get<boolean>('strict', false) ||
+      getConfig().get<boolean>('failOnSkipped', false);
 
     const hooksRecordPath = path.join(context.globalStorageUri.fsPath, 'installed-hooks.json');
     let existingHooks: string[] = [];
