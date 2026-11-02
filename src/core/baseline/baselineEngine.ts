@@ -158,7 +158,9 @@ export class BaselineEngine {
       }).trim();
     } catch {}
 
-    if (isCI) {
+    if (gitRef) {
+      candidateRefs.push(gitRef);
+    } else if (isCI) {
       const explicitBase =
         process.env.SLD_BASE_REF ||
         process.env.GITHUB_BASE_REF ||
@@ -176,14 +178,11 @@ export class BaselineEngine {
         candidateRefs.push('HEAD~1');
       }
     } else {
-      if (gitRef) {
-        candidateRefs.push(gitRef, `origin/${gitRef}`, `refs/remotes/origin/${gitRef}`);
-      }
       candidateRefs.push('HEAD');
     }
 
     for (const ref of candidateRefs) {
-      if (isCI && headSha) {
+      if (!gitRef && isCI && headSha) {
         try {
           const resolvedSha = execFileSync('git', ['rev-parse', ref], {
             cwd: gitRoot,

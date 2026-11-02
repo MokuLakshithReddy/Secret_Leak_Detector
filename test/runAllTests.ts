@@ -187,12 +187,12 @@ const testFinding = scanContent(`const k = "${synth(['AK', 'IA', '1234567890ABCD
 baselineEngine.saveBaseline([testFinding]);
 assert(baselineEngine.exists(), 'Baseline file created successfully');
 
-const checkFiltered = baselineEngine.filterAgainstBaseline([testFinding]);
+const checkFiltered = baselineEngine.filterAgainstBaseline([testFinding], { forceFile: true });
 assert(checkFiltered.existingFindings.length === 1, 'Known finding filtered into existing findings');
 assert(checkFiltered.newFindings.length === 0, 'Known finding does not trigger new findings in CI');
 
 const newFinding = scanContent(`const g = "${synth(['gh', 'p_', '1234567890abcdefghijklmnopqrstuvwxyz'])}";`, 'gh.ts')[0];
-const checkWithNew = baselineEngine.filterAgainstBaseline([testFinding, newFinding]);
+const checkWithNew = baselineEngine.filterAgainstBaseline([testFinding, newFinding], { forceFile: true });
 assert(checkWithNew.newFindings.length === 1, 'Newly introduced credential detected as new finding');
 assert(checkWithNew.newFindings[0].provider === 'GitHub', 'New finding correctly identifies new secret');
 
@@ -1072,7 +1072,7 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
 
         let filterThrew = false;
         try {
-          engine.filterAgainstBaseline([]);
+          engine.filterAgainstBaseline([], { forceFile: true });
         } catch (err: any) {
           filterThrew = err instanceof BaselineValidationError;
         }
@@ -1134,11 +1134,11 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
       assert(saved.includes('src/win/leak.ts'), 'Baseline stores portable forward-slash paths');
 
       // Same fingerprint, drifted line (e.g. an added import) -> still matched.
-      const res1 = engine.filterAgainstBaseline([mkFinding('src/win/leak.ts', 999, 'FPA')]);
+      const res1 = engine.filterAgainstBaseline([mkFinding('src/win/leak.ts', 999, 'FPA')], { forceFile: true });
       assert(res1.newFindings.length === 0 && res1.existingFindings.length === 1, 'Fingerprint match tolerates line drift across platforms');
 
       // Different fingerprint, but the normalised file:rule:line key still matches.
-      const res2 = engine.filterAgainstBaseline([mkFinding('src/win/leak.ts', 10, 'FPB')]);
+      const res2 = engine.filterAgainstBaseline([mkFinding('src/win/leak.ts', 10, 'FPB')], { forceFile: true });
       assert(res2.newFindings.length === 1 && res2.existingFindings.length === 0, 'Different secret at same line is not suppressed by baseline');
 
       fs.rmSync(bdir, { recursive: true, force: true });
@@ -1308,12 +1308,12 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
     assert(savedBaseline.findings.length === 2, 'Saved baseline has 2 findings across different files');
 
     // Both findings present -> 0 resolved
-    const statusBoth = baselineEngine.filterAgainstBaseline([mockFindingA, mockFindingB]);
+    const statusBoth = baselineEngine.filterAgainstBaseline([mockFindingA, mockFindingB], { forceFile: true });
     assert(statusBoth.resolvedCount === 0, `Both findings present reports 0 resolved (got ${statusBoth.resolvedCount})`);
     assert(statusBoth.existingFindings.length === 2, 'Both findings classified as existing');
 
     // fileB removed -> 1 resolved
-    const statusOneRemoved = baselineEngine.filterAgainstBaseline([mockFindingA]);
+    const statusOneRemoved = baselineEngine.filterAgainstBaseline([mockFindingA], { forceFile: true });
     assert(statusOneRemoved.resolvedCount === 1, `Removing one file reports 1 resolved (got ${statusOneRemoved.resolvedCount})`);
 
     // Clean up baseline file
@@ -1696,6 +1696,46 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
           thrownErr = err;
         }
         assert(thrownErr instanceof BaselineValidationError, 'loadBaselineFromGit throws BaselineValidationError for malformed git baseline');
+
+        // 2b. CI trusted ref resolution: loadBaselineFromGit() with SLD_BASE_REF
+        const trustedBaselineJson = JSON.stringify({
+          version: 1,
+          generatedAt: new Date().toISOString(),
+          findings: [
+            {
+              id: 'sec_trusted_1',
+              fingerprint: 'fp_trusted_1',
+              ruleId: 'AWS Access Key ID',
+              file: 'file.txt',
+              line: 1,
+            },
+          ],
+        });
+        fs.writeFileSync(path.join(dummyRepo, '.secretleak-baseline.json'), trustedBaselineJson, 'utf8');
+        execFileSync('git', ['-C', dummyRepo, 'add', '.secretleak-baseline.json']);
+        execFileSync('git', ['-C', dummyRepo, 'commit', '-m', 'add trusted baseline']);
+        const trustedSha = execFileSync('git', ['-C', dummyRepo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+
+        // Add a commit on top that corrupts the baseline
+        fs.writeFileSync(path.join(dummyRepo, '.secretleak-baseline.json'), '{ corrupted in head', 'utf8');
+        execFileSync('git', ['-C', dummyRepo, 'add', '.secretleak-baseline.json']);
+        execFileSync('git', ['-C', dummyRepo, 'commit', '-m', 'tampered baseline in head']);
+
+        // Under CI with SLD_BASE_REF pointing to trustedSha, loadBaselineFromGit() loads trustedSha and ignores HEAD
+        const origCi = process.env.CI;
+        try {
+          process.env.CI = 'true';
+          process.env.SLD_BASE_REF = trustedSha;
+          const bEngineCi = new BaselineEngine(dummyRepo, '.secretleak-baseline.json');
+          const loadedTrusted = bEngineCi.loadBaselineFromGit();
+          assert(loadedTrusted !== null, 'CI loadBaselineFromGit loads trusted baseline from SLD_BASE_REF');
+          assert(loadedTrusted?.findings.length === 1, 'CI loadBaselineFromGit contains trusted findings');
+          assert(loadedTrusted?.findings[0].fingerprint === 'fp_trusted_1', 'CI loadBaselineFromGit matched trusted fingerprint');
+        } finally {
+          if (origCi !== undefined) process.env.CI = origCi;
+          else delete process.env.CI;
+          delete process.env.SLD_BASE_REF;
+        }
 
         // 3. Staged multiline PEM key detection when only body lines are staged
         const pemDummy = [
