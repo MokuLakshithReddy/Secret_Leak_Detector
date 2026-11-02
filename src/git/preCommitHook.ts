@@ -84,7 +84,7 @@ else
   # If pinned CLI was in an extension/editor folder that was uninstalled, auto-recover:
   case "$PINNED_CLI" in
     *extensions*|*globalStorage*|*.vscode*|*AppData*|*.config*)
-      if [ "$SLD_STRICT" = "1" ] || [ "$SLD_FAIL_ON_SKIPPED_DEFAULT" = "1" ] || [ "$(git config --bool secret-leak-detector.strict 2>/dev/null)" = "true" ]; then
+      if [ "$SLD_STRICT" = "1" ] || [ "$(git config --bool secret-leak-detector.strict 2>/dev/null)" = "true" ]; then
         echo ""
         echo "❌ COMMIT BLOCKED (strict mode): Secret Leak Detector scanner ($PINNED_CLI) is unavailable."
         exit 2
@@ -214,7 +214,9 @@ elif [ "$SCAN_STATUS" -ne 0 ]; then
   echo "     SLD_IGNORE_SKIPPED=1 git commit"
   echo "     or: git config secret-leak-detector.ignore-skipped true"
   echo "   To configure strict blocking behavior:"
-  echo "     git config secret-leak-detector.strict true (block on skipped)"
+  echo "     secret-leak-detector hook install --strict"
+  echo "     or: git config secret-leak-detector.strict true"
+  echo "   To disable strict blocking behavior:"
   echo "     git config secret-leak-detector.strict false (warn on skipped)"
   exit 2
 fi

@@ -166,11 +166,26 @@ async function buildAll() {
     return;
   }
 
-  // Build CLI
+  // Build Shared AST Parser Bundle (single shared compiler instance)
+  await esbuild.build({
+    entryPoints: ['src/core/context/astParserEntry.ts'],
+    bundle: true,
+    outfile: 'dist/ast-parser.js',
+    format: 'cjs',
+    platform: 'node',
+    target: 'node18',
+    sourcemap: !isProduction,
+    minify: isProduction,
+    logLevel: 'info',
+  });
+  console.log('Build completed: dist/ast-parser.js');
+
+  // Build CLI (externalizes typescript to use shared dist/ast-parser.js)
   await esbuild.build({
     entryPoints: ['src/cli/index.ts'],
     bundle: true,
     outfile: 'dist/cli.js',
+    external: ['typescript'],
     format: 'cjs',
     platform: 'node',
     target: 'node18',
@@ -196,12 +211,12 @@ async function buildAll() {
 
   if (isCliOnly) return;
 
-  // Build Extension
+  // Build Extension (externalizes vscode and typescript to use shared dist/ast-parser.js)
   const extConfig = {
     entryPoints: ['src/extension.ts'],
     bundle: true,
     outfile: 'dist/extension.js',
-    external: ['vscode'],
+    external: ['vscode', 'typescript'],
     format: 'cjs',
     platform: 'node',
     target: 'node18',

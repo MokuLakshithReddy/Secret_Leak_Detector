@@ -649,6 +649,12 @@ async function runBaseline(cmdArgs: string[], cwd: string) {
   }
 
   console.log(`\n📦 Initializing baseline for workspace: ${cwd}`);
+  const privateSaltPath = path.join(cwd, '.sld', 'salt');
+  if (!fs.existsSync(privateSaltPath) && !process.env.SLD_FINGERPRINT_SALT) {
+    console.warn(
+      '⚠️ Notice: The default fingerprint salt is shared between installations. For repositories containing low-entropy credentials, configure a private repository salt (in .sld/salt) and share it securely with your CI environment.'
+    );
+  }
   const baseline = baselineEngine.saveBaseline(findings);
   console.log(`✅ Saved ${baseline.findings.length} findings to ${DEFAULT_BASELINE_FILENAME}.`);
   console.log('Future CI scans will only fail on newly introduced secrets!\n');

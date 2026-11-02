@@ -31,14 +31,18 @@ export function recordInstalledHook(hookPath: string): void {
       try {
         const parsed = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
         if (Array.isArray(parsed)) hooks = parsed.filter((p) => typeof p === 'string');
-      } catch {}
+      } catch (err: any) {
+        console.warn(`[Secret Leak Detector] Warning reading installed hooks registry: ${err?.message || err}`);
+      }
     }
     const norm = path.resolve(hookPath);
     if (!hooks.includes(norm)) {
       hooks.push(norm);
       fs.writeFileSync(registryPath, JSON.stringify(hooks, null, 2), 'utf8');
     }
-  } catch {}
+  } catch (err: any) {
+    console.warn(`[Secret Leak Detector] Warning updating installed hooks registry: ${err?.message || err}`);
+  }
 }
 
 export function unrecordInstalledHook(hookPath: string): void {
@@ -52,7 +56,9 @@ export function unrecordInstalledHook(hookPath: string): void {
         fs.writeFileSync(registryPath, JSON.stringify(updated, null, 2), 'utf8');
       }
     }
-  } catch {}
+  } catch (err: any) {
+    console.warn(`[Secret Leak Detector] Warning unrecording hook from registry: ${err?.message || err}`);
+  }
 }
 
 export class GitService {
@@ -236,42 +242,80 @@ After fixing:
       }
     }
 
-    const hookPath = path.join(hooksDir, 'pre-commit');
-    const timestamp = Date.now();
-    const backupPath = path.join(hooksDir, `pre-commit.sld-backup.${timestamp}`);
-    const latestBackupMarkerPath = path.join(hooksDir, 'pre-commit.sld-backup.latest');
-    const marker = SLD_HOOK_MARKER;
-
-    // If existing hook exists and is not managed by SLD, back it up for chaining
-    if (fs.existsSync(hookPath)) {
-      try {
-        const existingContent = fs.readFileSync(hookPath, 'utf8');
-        if (!existingContent.includes(marker)) {
-          fs.writeFileSync(backupPath, existingContent, { mode: 0o755 });
-          fs.writeFileSync(latestBackupMarkerPath, backupPath, 'utf8');
+    const lockPath = path.join(hooksDir, 'pre-commit.sld.lock');
+    try {
+      fs.writeFileSync(lockPath, String(process.pid), { flag: 'wx' });
+    } catch (err: any) {
+      if (err?.code === 'EEXIST') {
+        try {
+          const stat = fs.statSync(lockPath);
+          if (Date.now() - stat.mtimeMs > 10000) {
+            fs.unlinkSync(lockPath);
+            fs.writeFileSync(lockPath, String(process.pid), { flag: 'wx' });
+          } else {
+            return { success: false, message: 'Another hook operation is currently in progress (lock active).' };
+          }
+        } catch {
+          return { success: false, message: 'Another hook operation is currently in progress (lock active).' };
         }
-      } catch (err) {
-        return { success: false, message: `Could not backup existing hook: ${err}` };
-      }
-    }
-
-    if (/[\/\\](?:_npx|Temp|tmp)[\/\\]/i.test(targetCli)) {
-      const warnMsg = `⚠️ Warning: Pre-commit hook is pinning a temporary/npx CLI path: '${targetCli}'. This path may be deleted automatically by your system. Consider installing secret-leak-detector globally or locally.`;
-      if (this.onWarn) {
-        this.onWarn(warnMsg);
       } else {
-        console.warn(warnMsg);
+        return { success: false, message: `Could not acquire hook lock: ${err?.message || err}` };
       }
     }
-
-    const hookContent = buildPreCommitHook(failOn, targetCli, customNodePath, blockCommits, disallowInline, failOnSkipped);
 
     try {
-      fs.writeFileSync(hookPath, hookContent, { mode: 0o755 });
-      recordInstalledHook(hookPath);
-      return { success: true, message: `Pre-commit hook successfully installed to ${hookPath}` };
-    } catch (err) {
-      return { success: false, message: `Failed to write hook file: ${err}` };
+      const hookPath = path.join(hooksDir, 'pre-commit');
+      const timestamp = Date.now();
+      const backupPath = path.join(hooksDir, `pre-commit.sld-backup.${timestamp}`);
+      const latestBackupMarkerPath = path.join(hooksDir, 'pre-commit.sld-backup.latest');
+      const marker = SLD_HOOK_MARKER;
+
+      // If existing hook exists and is not managed by SLD, back it up atomically for chaining
+      if (fs.existsSync(hookPath)) {
+        try {
+          const stat = fs.statSync(hookPath);
+          const existingMode = stat.mode;
+          const existingContent = fs.readFileSync(hookPath, 'utf8');
+          if (!existingContent.includes(marker)) {
+            const tmpBackup = `${backupPath}.tmp.${process.pid}`;
+            fs.writeFileSync(tmpBackup, existingContent, { mode: existingMode });
+            fs.renameSync(tmpBackup, backupPath);
+
+            const tmpMarker = `${latestBackupMarkerPath}.tmp.${process.pid}`;
+            fs.writeFileSync(tmpMarker, backupPath, 'utf8');
+            fs.renameSync(tmpMarker, latestBackupMarkerPath);
+          }
+        } catch (err) {
+          return { success: false, message: `Could not backup existing hook: ${err}` };
+        }
+      }
+
+      if (/[\/\\](?:_npx|Temp|tmp)[\/\\]/i.test(targetCli)) {
+        const warnMsg = `⚠️ Warning: Pre-commit hook is pinning a temporary/npx CLI path: '${targetCli}'. This path may be deleted automatically by your system. Consider installing secret-leak-detector globally or locally.`;
+        if (this.onWarn) {
+          this.onWarn(warnMsg);
+        } else {
+          console.warn(warnMsg);
+        }
+      }
+
+      const hookContent = buildPreCommitHook(failOn, targetCli, customNodePath, blockCommits, disallowInline, failOnSkipped);
+
+      try {
+        const tmpHook = path.join(hooksDir, `pre-commit.tmp.${process.pid}`);
+        fs.writeFileSync(tmpHook, hookContent, { mode: 0o755 });
+        fs.renameSync(tmpHook, hookPath);
+        recordInstalledHook(hookPath);
+        return { success: true, message: `Pre-commit hook successfully installed to ${hookPath}` };
+      } catch (err) {
+        return { success: false, message: `Failed to write hook file: ${err}` };
+      }
+    } finally {
+      try {
+        if (fs.existsSync(lockPath)) {
+          fs.unlinkSync(lockPath);
+        }
+      } catch {}
     }
   }
 
@@ -329,9 +373,30 @@ After fixing:
     const hooksDir = await this.resolveHooksDir();
     const hookPath = path.join(hooksDir, 'pre-commit');
     const latestBackupMarkerPath = path.join(hooksDir, 'pre-commit.sld-backup.latest');
+    const lockPath = path.join(hooksDir, 'pre-commit.sld.lock');
 
     if (!fs.existsSync(hookPath)) {
       return { success: true, message: 'No pre-commit hook found to uninstall.' };
+    }
+
+    try {
+      fs.writeFileSync(lockPath, String(process.pid), { flag: 'wx' });
+    } catch (err: any) {
+      if (err?.code === 'EEXIST') {
+        try {
+          const stat = fs.statSync(lockPath);
+          if (Date.now() - stat.mtimeMs > 10000) {
+            fs.unlinkSync(lockPath);
+            fs.writeFileSync(lockPath, String(process.pid), { flag: 'wx' });
+          } else {
+            return { success: false, message: 'Another hook operation is currently in progress (lock active).' };
+          }
+        } catch {
+          return { success: false, message: 'Another hook operation is currently in progress (lock active).' };
+        }
+      } else {
+        return { success: false, message: `Could not acquire hook lock: ${err?.message || err}` };
+      }
     }
 
     try {
@@ -355,7 +420,13 @@ After fixing:
           /^pre-commit\.sld-backup\.\d+$/.test(backupFilename) &&
           fs.existsSync(resolvedBackup)
         ) {
-          fs.copyFileSync(resolvedBackup, hookPath);
+          const backupStat = fs.statSync(resolvedBackup);
+          const tmpRestore = path.join(hooksDir, `pre-commit.restore.tmp.${process.pid}`);
+          fs.copyFileSync(resolvedBackup, tmpRestore);
+          try {
+            fs.chmodSync(tmpRestore, backupStat.mode);
+          } catch {}
+          fs.renameSync(tmpRestore, hookPath);
           fs.unlinkSync(resolvedBackup);
           fs.unlinkSync(latestBackupMarkerPath);
           unrecordInstalledHook(hookPath);
@@ -373,6 +444,12 @@ After fixing:
       return { success: true, message: 'Removed Secret Leak Detector pre-commit hook.' };
     } catch (err: any) {
       return { success: false, message: `Failed to uninstall hook: ${err.message}` };
+    } finally {
+      try {
+        if (fs.existsSync(lockPath)) {
+          fs.unlinkSync(lockPath);
+        }
+      } catch {}
     }
   }
 }

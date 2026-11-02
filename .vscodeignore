@@ -20,3 +20,4 @@ dist/**
 !dist/extension.js
 !dist/cli.js
 !dist/uninstall.js
+!dist/ast-parser.js

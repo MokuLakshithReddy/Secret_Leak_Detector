@@ -1,13 +1,17 @@
 import * as vscode from 'vscode';
 import { SecretFinding, Risk } from '../core/types';
 
-export class FindingsTreeProvider implements vscode.TreeDataProvider<TreeItem> {
+export class FindingsTreeProvider implements vscode.TreeDataProvider<TreeItem>, vscode.Disposable {
   private _onDidChangeTreeData: vscode.EventEmitter<TreeItem | undefined | null | void> =
     new vscode.EventEmitter<TreeItem | undefined | null | void>();
   readonly onDidChangeTreeData: vscode.Event<TreeItem | undefined | null | void> =
     this._onDidChangeTreeData.event;
 
   private findings: SecretFinding[] = [];
+
+  public dispose(): void {
+    this._onDidChangeTreeData.dispose();
+  }
 
   public updateFindings(findings: SecretFinding[]): void {
     this.findings = findings;
@@ -115,12 +119,16 @@ export class FindingsTreeProvider implements vscode.TreeDataProvider<TreeItem> {
   }
 }
 
-export class OverviewTreeProvider implements vscode.TreeDataProvider<TreeItem> {
+export class OverviewTreeProvider implements vscode.TreeDataProvider<TreeItem>, vscode.Disposable {
   private _onDidChangeTreeData = new vscode.EventEmitter<TreeItem | undefined | null | void>();
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
 
   private findingsCount = 0;
   private isGit = true;
+
+  public dispose(): void {
+    this._onDidChangeTreeData.dispose();
+  }
 
   public update(count: number, isGit: boolean): void {
     this.findingsCount = count;
