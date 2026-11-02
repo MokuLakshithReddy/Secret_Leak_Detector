@@ -1930,6 +1930,78 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
       assert(!fs.existsSync(testHookFile), 'cleanHook removed managed hook');
       assert(!fs.existsSync(path.join(testHookDir, 'pre-commit.sld.lock')), 'cleanHook released lock file');
       try { fs.rmSync(testHookDir, { recursive: true, force: true }); } catch {}
+
+      // ── Section 38: Uninstaller Lock Race Protection, Capture Group Isolation, and Source Expression Remediation ──
+      console.log('\n--- 38. Uninstaller Lock Race Protection, Capture Group Isolation & Strict Defaults ---');
+
+      // 1. cleanHook aborts cleanly when lock is held by another active process
+      const lockContentionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-lock-contention-'));
+      const activeHookFile = path.join(lockContentionDir, 'pre-commit');
+      const activeLockFile = path.join(lockContentionDir, 'pre-commit.sld.lock');
+      fs.writeFileSync(activeHookFile, '#!/bin/sh\n# [SLD_HOOK_MANAGED]\nexit 0\n', { mode: 0o755 });
+      fs.writeFileSync(activeLockFile, '999999', 'utf8'); // Active lock
+      const lockContentionResult = cleanHook(activeHookFile);
+      assert(lockContentionResult === false, 'cleanHook returns false when lock is held by another active process');
+      assert(fs.existsSync(activeHookFile), 'Hook is not touched when lock cannot be acquired');
+      try { fs.rmSync(lockContentionDir, { recursive: true, force: true }); } catch {}
+
+      // 2. Twilio regex branch 2 properly isolates 32-character hex secret from assignment
+      const twilioCode = 'const auth_token = "0123456789abcdef0123456789abcdef";';
+      const twilioFindings = scanContent(twilioCode, 'auth.js');
+      assert(twilioFindings.length === 1, 'Twilio auth token detected');
+      assert(twilioFindings[0].rawSecret === '0123456789abcdef0123456789abcdef', 'Twilio rawSecret is 32-char token, not assignment string (got ' + twilioFindings[0].rawSecret + ')');
+
+      // 3. applyControlledRemediation handles findings with sourceExpression
+      const remDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-rem-src-expr-'));
+      const remFile = path.join(remDir, 'test.js');
+      fs.writeFileSync(remFile, 'const token = "part1_" + "part2_abcdef1234567890";\n', 'utf8');
+      const fakeFinding: any = {
+        id: 'finding_expr_1',
+        type: 'Generic API Key',
+        provider: 'Generic',
+        rawSecret: 'part1_part2_abcdef1234567890',
+        sourceExpression: '"part1_" + "part2_abcdef1234567890"',
+        redactedSecret: 'part••••••••••••',
+        file: 'test.js',
+        fullPath: remFile,
+        line: 1,
+        column: 15,
+        remediation: { envVarName: 'TEST_API_KEY' },
+      };
+      const remRes = applyControlledRemediation(fakeFinding, remDir);
+      assert(remRes.success === true, 'applyControlledRemediation succeeds with sourceExpression');
+      const remUpdatedContent = fs.readFileSync(remFile, 'utf8');
+      assert(remUpdatedContent.includes('process.env.TEST_API_KEY'), 'Source expression replaced with process.env.TEST_API_KEY');
+      assert(!remUpdatedContent.includes('part1_'), 'Old split parts completely removed');
+      try { fs.rmSync(remDir, { recursive: true, force: true }); } catch {}
+
+      // 4. resolveSalt honors SLD_SALT and SLD_FINGERPRINT_SALT
+      const { resolveSalt } = require('../src/core/redactor/redactor');
+      const origSldSalt = process.env.SLD_SALT;
+      const origSldFps = process.env.SLD_FINGERPRINT_SALT;
+      try {
+        delete process.env.SLD_SALT;
+        process.env.SLD_FINGERPRINT_SALT = 'custom_fps_123';
+        assert(resolveSalt() === 'custom_fps_123', 'resolveSalt honors SLD_FINGERPRINT_SALT');
+        process.env.SLD_SALT = 'custom_salt_456';
+        assert(resolveSalt() === 'custom_salt_456', 'resolveSalt prioritizes SLD_SALT');
+      } finally {
+        if (origSldSalt !== undefined) process.env.SLD_SALT = origSldSalt;
+        else delete process.env.SLD_SALT;
+        if (origSldFps !== undefined) process.env.SLD_FINGERPRINT_SALT = origSldFps;
+        else delete process.env.SLD_FINGERPRINT_SALT;
+      }
+
+      // 5. DEFAULT_IGNORE_PATTERNS includes .vscode-test
+      const { DEFAULT_IGNORE_PATTERNS } = require('../src/core/ignore/ignoreEngine');
+      assert(DEFAULT_IGNORE_PATTERNS.includes('.vscode-test/**'), 'DEFAULT_IGNORE_PATTERNS includes .vscode-test/**');
+      assert(DEFAULT_IGNORE_PATTERNS.includes('**/.vscode-test/**'), 'DEFAULT_IGNORE_PATTERNS includes **/.vscode-test/**');
+
+      // 6. Hook defaults to warning on skipped (0), but strict hook enables failOnSkipped (1)
+      const defaultHook = buildPreCommitHook();
+      assert(defaultHook.includes('SLD_FAIL_ON_SKIPPED_DEFAULT="0"'), 'Default hook defaults failOnSkipped to 0');
+      const strictHook = buildPreCommitHook(undefined, undefined, undefined, true, true, true);
+      assert(strictHook.includes('SLD_FAIL_ON_SKIPPED_DEFAULT="1"'), 'Strict hook sets failOnSkipped to 1');
     }
 
   console.log('\n============================================================');

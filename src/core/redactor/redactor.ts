@@ -9,7 +9,9 @@ const FINGERPRINT_DOMAIN_SALT = 'sld_fingerprint_salt_v1_d8e9f2a1b4c3e7f0';
  */
 export function resolveSalt(customSalt?: string, workspaceRoot?: string): string {
   if (customSalt) return customSalt;
-  if (process.env.SLD_SALT) return process.env.SLD_SALT;
+  if (process.env.SLD_SALT || process.env.SLD_FINGERPRINT_SALT) {
+    return process.env.SLD_SALT || process.env.SLD_FINGERPRINT_SALT!;
+  }
   const root = workspaceRoot || process.cwd();
   try {
     const saltFile = path.join(root, '.sld', 'salt');

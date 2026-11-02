@@ -10,6 +10,34 @@ import { CORE_RULES } from '../detectors/rules';
 // shell. Shell string interpolation here was a command-injection vector.
 const execFileAsync = promisify(execFile);
 
+function parseAddedLineNumbersFromDiff(diffText: string): Set<number> {
+  const addedLines = new Set<number>();
+  const lines = diffText.split('\n');
+  let currentNewLine = 0;
+  let inHunk = false;
+
+  for (const line of lines) {
+    const hunkMatch = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+    if (hunkMatch) {
+      currentNewLine = parseInt(hunkMatch[1], 10);
+      inHunk = true;
+      continue;
+    }
+    if (!inHunk) continue;
+
+    if (line.startsWith('+') && !line.startsWith('+++')) {
+      addedLines.add(currentNewLine);
+      currentNewLine++;
+    } else if (line.startsWith('-') && !line.startsWith('---')) {
+      // old file line; does not advance currentNewLine
+    } else if (line.startsWith(' ') || line === '') {
+      currentNewLine++;
+    }
+  }
+
+  return addedLines;
+}
+
 export class GitHistoryEngine {
   private workspaceRoot: string;
 
@@ -188,6 +216,7 @@ export class GitHistoryEngine {
 
       const findings: SecretFinding[] = [];
       const commitBlocks = stdout.split(/^commit /m);
+      const headCheckCache = new Map<string, boolean>();
 
       for (const block of commitBlocks) {
         if (!block.trim()) continue;
@@ -228,12 +257,34 @@ export class GitHistoryEngine {
               );
               const snapshotFindings = scanContent(fullSnapshot, fileName, { workspaceRoot: this.workspaceRoot });
               if (snapshotFindings.length > 0) {
-                diffFindings = snapshotFindings;
+                const addedLineNumbers = parseAddedLineNumbersFromDiff(diff);
+                const relevant = snapshotFindings.filter((sf) => addedLineNumbers.has(sf.line));
+                if (relevant.length > 0) {
+                  diffFindings = relevant;
+                }
               }
             } catch {}
           }
 
           for (const f of diffFindings) {
+            let isPresentInHead = false;
+            if (headCheckCache.has(f.rawSecret)) {
+              isPresentInHead = headCheckCache.get(f.rawSecret)!;
+            } else {
+              try {
+                const pattern = f.rawSecret.includes('\n') ? f.rawSecret.split('\n')[0] : f.rawSecret;
+                if (pattern.trim()) {
+                  await execFileAsync('git', ['grep', '-F', '-q', '-e', pattern, 'HEAD'], {
+                    cwd: this.workspaceRoot,
+                  });
+                  isPresentInHead = true;
+                }
+              } catch {
+                isPresentInHead = false;
+              }
+              headCheckCache.set(f.rawSecret, isPresentInHead);
+            }
+
             f.gitExposure = {
               introducedCommit: {
                 sha,
@@ -241,7 +292,7 @@ export class GitHistoryEngine {
                 date,
                 message: 'Committed to repository history',
               },
-              isPresentInHead: false, // In history commit
+              isPresentInHead,
               isPresentInHistory: true,
               exposureDurationDays: 1,
               branches: ['history'],

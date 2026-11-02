@@ -666,7 +666,7 @@ async function runBaseline(cmdArgs: string[], cwd: string) {
 
   console.log(`\n📦 Initializing baseline for workspace: ${cwd}`);
   const privateSaltPath = path.join(cwd, '.sld', 'salt');
-  if (!fs.existsSync(privateSaltPath) && !process.env.SLD_FINGERPRINT_SALT) {
+  if (!fs.existsSync(privateSaltPath) && !process.env.SLD_FINGERPRINT_SALT && !process.env.SLD_SALT) {
     console.warn(
       '⚠️ Notice: The default fingerprint salt is shared between installations. For repositories containing low-entropy credentials, configure a private repository salt (in .sld/salt) and share it securely with your CI environment.'
     );
@@ -729,13 +729,18 @@ async function runFix(cmdArgs: string[], cwd: string) {
     }
   }
 
+  let failedCount = 0;
   for (const f of findings) {
     const result = applyControlledRemediation(f, cwd);
     if (result.success) {
       console.log(`✅ Applied fix: ${result.message}`);
     } else {
       console.error(`❌ Failed: ${result.message}`);
+      failedCount++;
     }
+  }
+  if (failedCount > 0) {
+    process.exit(1);
   }
 }
 

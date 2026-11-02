@@ -44,9 +44,13 @@ export class SecretCodeActionProvider implements vscode.CodeActionProvider {
         continue;
       }
 
-      // QuickFix 1: Move to .env
-      const moveToEnvAction = this.createMoveToEnvAction(document, diagnostic.range, finding);
-      actions.push(moveToEnvAction);
+      // QuickFix 1: Move to .env (only for saved workspace files on disk)
+      const hasWorkspaceFolder = !!vscode.workspace.getWorkspaceFolder(document.uri);
+      const isRealFile = !document.isUntitled && document.uri.scheme === 'file';
+      if (hasWorkspaceFolder && isRealFile) {
+        const moveToEnvAction = this.createMoveToEnvAction(document, diagnostic.range, finding);
+        actions.push(moveToEnvAction);
+      }
 
       // QuickFix 2: Ignore this finding (False Positive)
       const ignoreAction = new vscode.CodeAction(
@@ -100,7 +104,9 @@ export class SecretCodeActionProvider implements vscode.CodeActionProvider {
 
     const workspaceRoot = workspaceFolder.uri.fsPath;
     const document = await vscode.workspace.openTextDocument(documentUri);
-    if (document.getText(range) !== finding.rawSecret) {
+    const docTextAtRange = document.getText(range);
+    const expected = finding.sourceExpression || finding.rawSecret;
+    if (docTextAtRange !== expected && docTextAtRange !== finding.rawSecret) {
       vscode.window.showErrorMessage('The secret at the target location has changed or was already removed.');
       return;
     }
