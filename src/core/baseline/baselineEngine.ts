@@ -157,7 +157,7 @@ export class BaselineEngine {
         : this.baselinePath.replace(/\\/g, '/').replace(/^\.?\//, '');
     }
 
-    const isCI = !!(process.env.CI || process.env.GITHUB_ACTIONS || process.env.GITLAB_CI);
+    const isCI = !process.env.SLD_ISOLATE_BASELINE_TESTS && !!(process.env.CI || process.env.GITHUB_ACTIONS || process.env.GITLAB_CI);
     let candidateRefs: string[] = [];
 
     // Get current HEAD sha to ensure we never trust the commit being scanned in CI
@@ -194,7 +194,7 @@ export class BaselineEngine {
     }
 
     for (const ref of candidateRefs) {
-      if (!gitRef && isCI && headSha) {
+      if (isCI && headSha) {
         try {
           const resolvedSha = execFileSync('git', ['rev-parse', ref], {
             cwd: gitRoot,
@@ -269,7 +269,7 @@ export class BaselineEngine {
     resolvedCount: number;
     totalBaseline: number;
   } {
-    const isCI = !!(process.env.CI || process.env.GITHUB_ACTIONS || process.env.GITLAB_CI);
+    const isCI = !process.env.SLD_ISOLATE_BASELINE_TESTS && !!(process.env.CI || process.env.GITHUB_ACTIONS || process.env.GITLAB_CI);
     let baseline: BaselineFile | null = null;
 
     if (isCI && !options?.forceFile && !process.env.SLD_ISOLATE_BASELINE_TESTS) {

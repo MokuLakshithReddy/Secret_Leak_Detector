@@ -57,7 +57,7 @@ export interface ExposureTimelineReport {
   firstIntroducedDate?: string;
   removalDate?: string;
   totalExposureDays: number;
-  currentStatus: 'ACTIVE_IN_HEAD' | 'REMOVED_FROM_HEAD_PRESENT_IN_HISTORY' | 'CLEAN_UNCOMMITTED' | 'NOT_FOUND' | 'ERROR';
+  currentStatus: 'ACTIVE_IN_HEAD' | 'REMOVED_FROM_HEAD_PRESENT_IN_HISTORY' | 'CLEAN_UNCOMMITTED' | 'NOT_FOUND' | 'PARTIAL_HISTORY' | 'ERROR';
   reachableBranches: string[];
   isPushedToRemote: boolean;
   timelineAscii: string;
@@ -73,7 +73,7 @@ export class GitTimelineEngine {
     this.gitHistory = new GitHistoryEngine(workspaceRoot);
   }
 
-  public async buildTimeline(secret: string, redactedSecret: string): Promise<ExposureTimelineReport> {
+  public async buildTimeline(secret: string, redactedSecret: string, maxCommits = 0): Promise<ExposureTimelineReport> {
     const lines: string[] = [];
 
     try {
@@ -82,7 +82,32 @@ export class GitTimelineEngine {
         throw new Error(`Directory is not a Git repository: ${this.workspaceRoot}`);
       }
 
-      const commitShas = await this.gitHistory.findCommitsContainingSecret(secret);
+      const searchResult = await this.gitHistory.findCommitsContainingSecretResult(secret, maxCommits);
+
+      if (searchResult.status === 'ERROR' || searchResult.status === 'SEARCH_INCOMPLETE') {
+        return {
+          secretRedacted: redactedSecret,
+          events: [],
+          totalExposureDays: 0,
+          currentStatus: 'ERROR',
+          reachableBranches: [],
+          isPushedToRemote: false,
+          timelineAscii: `Git history search was incomplete: ${searchResult.error || 'operational failure'}`,
+          graph: {
+            nodes: [],
+            edges: [],
+            summary: {
+              totalExposedCommits: 0,
+              introducedCommit: '',
+              durationDays: 0,
+              branchesContaminated: [],
+              isPushedToRemote: false,
+            },
+          },
+        };
+      }
+
+      const commitShas = searchResult.commitShas;
       if (commitShas.length === 0) {
         const inWorkingTree = await this.gitHistory.isSecretInWorkingTree(secret);
         if (inWorkingTree) {
@@ -102,6 +127,27 @@ export class GitTimelineEngine {
                 introducedCommit: '',
                 durationDays: 0,
                 branchesContaminated: ['working-tree'],
+                isPushedToRemote: false,
+              },
+            },
+          };
+        } else if (searchResult.status === 'PARTIAL_HISTORY') {
+          return {
+            secretRedacted: redactedSecret,
+            events: [],
+            totalExposureDays: 0,
+            currentStatus: 'PARTIAL_HISTORY',
+            reachableBranches: [],
+            isPushedToRemote: false,
+            timelineAscii: `Credential was not found in latest ${maxCommits} commit(s), but repository history search was limited.`,
+            graph: {
+              nodes: [],
+              edges: [],
+              summary: {
+                totalExposedCommits: 0,
+                introducedCommit: '',
+                durationDays: 0,
+                branchesContaminated: [],
                 isPushedToRemote: false,
               },
             },

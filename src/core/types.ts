@@ -85,11 +85,15 @@ export interface GitExposure {
   removedCommit?: GitCommitInfo;
   isPresentInHead: boolean;
   isPresentInHistory: boolean;
+  isPresentInWorkingTree?: boolean;
+  isSecretInWorkingTree?: boolean;
   exposureDurationDays: number;
   branches: string[];
   isRemote: boolean;
   statusDescription: string;
   commitCount?: number;
+  isPartialHistory?: boolean;
+  searchStatus?: 'FOUND' | 'NOT_FOUND' | 'PARTIAL_HISTORY' | 'SEARCH_INCOMPLETE' | 'ERROR';
 }
 
 export interface RemediationPlan {
