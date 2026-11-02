@@ -127,6 +127,7 @@ Commands:
   hook install           Install standalone pre-commit hook in .git/hooks/pre-commit
                          Options:
                            --strict           Enforce strict enterprise security: block on skipped files & disallow inline ignore
+                           --allow-self-heal  Allow hook to auto-remove/restore if pinned CLI is uninstalled (default: fail-closed)
                            --fail-on <tier>   Set blocking tier threshold (default: HIGH)
                            --no-inline-ignore Disallow inline // sld-ignore suppression comments
   hook uninstall         Safely remove pre-commit hook without removing user hooks
@@ -818,11 +819,12 @@ async function runHook(cmdArgs: string[], cwd: string) {
 
   if (subCommand === 'install') {
     const strict = cmdArgs.includes('--strict') || cmdArgs.includes('--fail-on-skipped');
+    const allowSelfHeal = cmdArgs.includes('--allow-self-heal');
     const noInline = !cmdArgs.includes('--allow-inline-ignore');
     const failOnIdx = cmdArgs.indexOf('--fail-on');
     const failOn = failOnIdx !== -1 && isRiskTier(cmdArgs[failOnIdx + 1]) ? resolveFailOn(cmdArgs[failOnIdx + 1]) : DEFAULT_FAIL_ON;
 
-    const result = await gitService.installPreCommitHook(undefined, undefined, true, failOn, noInline, strict);
+    const result = await gitService.installPreCommitHook(undefined, undefined, true, failOn, noInline, strict, allowSelfHeal);
     if (!result.success) {
       fail(`Error: ${result.message}`);
     }
@@ -832,6 +834,7 @@ async function runHook(cmdArgs: string[], cwd: string) {
         `fails closed when the scanner cannot run.`
     );
     if (strict) console.log(`   Strict mode: enabled (--fail-on-skipped)`);
+    if (allowSelfHeal) console.log(`   Self-heal recovery: enabled (--allow-self-heal)`);
     if (noInline) console.log(`   Inline suppression comments: disallowed (--no-inline-ignore)`);
   } else if (subCommand === 'uninstall') {
     const result = await gitService.uninstallPreCommitHook();
@@ -840,7 +843,7 @@ async function runHook(cmdArgs: string[], cwd: string) {
     }
     console.log(`✅ ${result.message}`);
   } else {
-    fail('Usage: secret-leak-detector hook [install|uninstall] [--strict] [--no-inline-ignore] [--fail-on <TIER>]');
+    fail('Usage: secret-leak-detector hook [install|uninstall] [--strict] [--allow-self-heal] [--no-inline-ignore] [--fail-on <TIER>]');
   }
 }
 

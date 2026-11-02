@@ -93,7 +93,7 @@ export function activate(context: vscode.ExtensionContext) {
     const folders = vscode.workspace.workspaceFolders || [];
     const blockCommits = getConfig().get<boolean>('blockGitCommits', true);
     const configuredFailOn = resolveFailOn(getConfig().get<string>('failOn', DEFAULT_FAIL_ON));
-    const disallowInline = getConfig().get<boolean>('disallowInlineIgnore', false);
+    const disallowInline = getConfig().get<boolean>('disallowInlineIgnore', true);
     const failOnSkipped = getConfig().get<boolean>('failOnSkipped', false);
 
     const hooksRecordPath = path.join(context.globalStorageUri.fsPath, 'installed-hooks.json');

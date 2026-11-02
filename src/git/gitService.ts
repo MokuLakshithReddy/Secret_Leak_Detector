@@ -219,7 +219,8 @@ After fixing:
     blockCommits = true,
     failOn: Risk = DEFAULT_FAIL_ON,
     disallowInline = true,
-    failOnSkipped = false
+    failOnSkipped = false,
+    allowSelfHeal = false
   ): Promise<{ success: boolean; message: string }> {
     if (!(await this.isGitRepo())) {
       return { success: false, message: 'Workspace is not a Git repository.' };
@@ -299,7 +300,7 @@ After fixing:
         }
       }
 
-      const hookContent = buildPreCommitHook(failOn, targetCli, customNodePath, blockCommits, disallowInline, failOnSkipped);
+      const hookContent = buildPreCommitHook(failOn, targetCli, customNodePath, blockCommits, disallowInline, failOnSkipped, allowSelfHeal);
 
       try {
         const tmpHook = path.join(hooksDir, `pre-commit.tmp.${process.pid}`);
@@ -328,7 +329,8 @@ After fixing:
     blockCommits = true,
     failOn: Risk = DEFAULT_FAIL_ON,
     disallowInline = true,
-    failOnSkipped = false
+    failOnSkipped = false,
+    allowSelfHeal = false
   ): Promise<boolean> {
     if (!currentCliPath || !fs.existsSync(currentCliPath)) return false;
     if (!(await this.isGitRepo())) return false;
@@ -345,6 +347,7 @@ After fixing:
       const expectedBlockCommits = `SLD_BLOCK_COMMITS="${blockCommits ? '1' : '0'}"`;
       const expectedDisallowInline = `SLD_DISALLOW_INLINE_DEFAULT="${disallowInline ? '1' : '0'}"`;
       const expectedFailOnSkipped = `SLD_FAIL_ON_SKIPPED_DEFAULT="${failOnSkipped ? '1' : '0'}"`;
+      const expectedAllowSelfHeal = `SLD_ALLOW_SELF_HEAL_DEFAULT="${allowSelfHeal ? '1' : '0'}"`;
       const hasElectronNode = content.includes('ELECTRON_RUN_AS_NODE=1');
 
       if (
@@ -353,9 +356,10 @@ After fixing:
         !content.includes(expectedBlockCommits) ||
         !content.includes(expectedDisallowInline) ||
         !content.includes(expectedFailOnSkipped) ||
+        !content.includes(expectedAllowSelfHeal) ||
         !hasElectronNode
       ) {
-        const res = await this.installPreCommitHook(currentCliPath, customNodePath, blockCommits, failOn, disallowInline, failOnSkipped);
+        const res = await this.installPreCommitHook(currentCliPath, customNodePath, blockCommits, failOn, disallowInline, failOnSkipped, allowSelfHeal);
         return res.success;
       }
     } catch {

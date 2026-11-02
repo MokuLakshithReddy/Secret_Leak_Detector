@@ -23,7 +23,8 @@ export function buildPreCommitHook(
   nodePath?: string,
   blockCommits = true,
   disallowInline = true,
-  failOnSkipped = false
+  failOnSkipped = false,
+  allowSelfHeal = false
 ): string {
   const threshold = (RISK_LEVELS as readonly string[]).includes(failOn) ? failOn : DEFAULT_FAIL_ON;
   const pinnedCli = cliPath ? cliPath.replace(/\\/g, '/') : '';
@@ -81,29 +82,31 @@ else
   HOOK_PATH="$(git rev-parse --git-path hooks/pre-commit 2>/dev/null || echo "$0")"
   HOOK_DIR="$(dirname "$HOOK_PATH")"
   LATEST_BACKUP="$HOOK_DIR/pre-commit.sld-backup.latest"
-  # If pinned CLI was in an extension/editor folder that was uninstalled, auto-recover:
+  ALLOW_SELF_HEAL=0
+  if [ "$SLD_ALLOW_SELF_HEAL" = "1" ] || [ "$SLD_SELF_HEAL" = "1" ] || [ "$SLD_ALLOW_SELF_HEAL_DEFAULT" = "1" ] || [ "$(git config --bool secret-leak-detector.allow-self-heal 2>/dev/null)" = "true" ]; then
+    ALLOW_SELF_HEAL=1
+  fi
+
+  # If pinned CLI was in an extension/editor folder that was uninstalled, auto-recover ONLY if self-heal is opted into:
   case "$PINNED_CLI" in
     *extensions*|*globalStorage*|*.vscode*|*AppData*|*.config*)
-      if [ "$SLD_STRICT" = "1" ] || [ "$(git config --bool secret-leak-detector.strict 2>/dev/null)" = "true" ]; then
-        echo ""
-        echo "❌ COMMIT BLOCKED (strict mode): Secret Leak Detector scanner ($PINNED_CLI) is unavailable."
-        exit 2
-      fi
-      echo "⚠️ [Secret Leak Detector] Extension was uninstalled (pinned scanner no longer exists)."
-      if [ -f "$LATEST_BACKUP" ]; then
-        BACKUP_FILE=$(cat "$LATEST_BACKUP" 2>/dev/null)
-        if [ -f "$BACKUP_FILE" ]; then
-          echo "   Restoring original backed-up pre-commit hook..."
-          cp "$BACKUP_FILE" "$HOOK_PATH" 2>/dev/null && rm -f "$LATEST_BACKUP" "$BACKUP_FILE" 2>/dev/null
-          if [ -x "$HOOK_PATH" ]; then
-            exec "$HOOK_PATH" "$@"
+      if [ "$ALLOW_SELF_HEAL" = "1" ]; then
+        echo "⚠️ [Secret Leak Detector] Extension was uninstalled (pinned scanner no longer exists)."
+        if [ -f "$LATEST_BACKUP" ]; then
+          BACKUP_FILE=$(cat "$LATEST_BACKUP" 2>/dev/null)
+          if [ -f "$BACKUP_FILE" ]; then
+            echo "   Restoring original backed-up pre-commit hook..."
+            cp "$BACKUP_FILE" "$HOOK_PATH" 2>/dev/null && rm -f "$LATEST_BACKUP" "$BACKUP_FILE" 2>/dev/null
+            if [ -x "$HOOK_PATH" ]; then
+              exec "$HOOK_PATH" "$@"
+            fi
+            exit 0
           fi
-          exit 0
         fi
+        echo "   Removing stranded pre-commit hook..."
+        rm -f "$HOOK_PATH" "$LATEST_BACKUP" 2>/dev/null
+        exit 0
       fi
-      echo "   Removing stranded pre-commit hook..."
-      rm -f "$HOOK_PATH" "$LATEST_BACKUP" 2>/dev/null
-      exit 0
       ;;
   esac
   echo ""
@@ -116,6 +119,9 @@ else
   fi
   echo "     - Or install CLI globally: npm install -g secret-leak-detector"
   echo "     - Or re-pin hook: open the project in VS Code with Secret Leak Detector installed"
+  echo "     - Or allow self-healing hook removal:"
+  echo "         SLD_ALLOW_SELF_HEAL=1 git commit"
+  echo "         or: git config secret-leak-detector.allow-self-heal true"
   exit 2
 fi`
     : `# Scanner determined from environment or global binary (never ./dist/cli.js relative to repo)
@@ -168,6 +174,7 @@ SLD_FAIL_ON="${threshold}"
 SLD_BLOCK_COMMITS="${blockCommits ? '1' : '0'}"
 SLD_DISALLOW_INLINE_DEFAULT="${disallowInline ? '1' : '0'}"
 SLD_FAIL_ON_SKIPPED_DEFAULT="${failOnSkipped ? '1' : '0'}"
+SLD_ALLOW_SELF_HEAL_DEFAULT="${allowSelfHeal ? '1' : '0'}"
 
 echo "🔐 [Secret Leak Detector] Inspecting staged changes for credentials..."
 
