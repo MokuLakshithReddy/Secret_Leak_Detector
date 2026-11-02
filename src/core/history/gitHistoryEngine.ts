@@ -160,7 +160,9 @@ export class GitHistoryEngine {
           if (content.replace(/\r\n/g, '\n').includes(normSecret)) {
             return true;
           }
-        } catch {}
+        } catch (err: any) {
+          throw new Error(`Failed to inspect candidate blob 'HEAD:${candidateFile}': ${err?.message || err}`);
+        }
       }
       return false;
     } catch (err: any) {
@@ -224,7 +226,9 @@ export class GitHistoryEngine {
             if (stagedContent.replace(/\r\n/g, '\n').includes(normSecret)) {
               return true;
             }
-          } catch {}
+          } catch (err: any) {
+            throw new Error(`Failed to inspect staged blob for '${file}': ${err?.message || err}`);
+          }
         }
       } catch (err: any) {
         if (err && err.code !== 1) throw err;
@@ -274,20 +278,35 @@ export class GitHistoryEngine {
     }
 
     let totalRevCount = 0;
-    try {
-      const { stdout: countOut } = await execFileAsync(
-        'git',
-        ['rev-list', '--all', '--count'],
-        { cwd: this.workspaceRoot, maxBuffer: 10 * 1024 * 1024, encoding: 'utf8' }
-      );
-      totalRevCount = parseInt(countOut.trim(), 10) || 0;
-    } catch {}
+    let countOperationFailed = false;
+    let countError: string | undefined;
+    if (maxCommits > 0) {
+      try {
+        const { stdout: countOut } = await execFileAsync(
+          'git',
+          ['rev-list', '--all', '--count'],
+          { cwd: this.workspaceRoot, maxBuffer: 10 * 1024 * 1024, encoding: 'utf8' }
+        );
+        totalRevCount = parseInt(countOut.trim(), 10) || 0;
+      } catch (err: any) {
+        countOperationFailed = true;
+        countError = err?.message || String(err);
+      }
+    }
 
     const revArgs = ['rev-list', '--all'];
     let isPartialHistory = false;
+    let searchIncomplete = false;
+    let operationalError: string | undefined;
+
     if (maxCommits > 0) {
       revArgs.push('-n', String(maxCommits));
-      if (totalRevCount > maxCommits) {
+      if (countOperationFailed) {
+        // Count operation failed: cannot determine full history depth, so limited search is marked partial & incomplete
+        isPartialHistory = true;
+        searchIncomplete = true;
+        operationalError = `Failed to verify repository commit count: ${countError}`;
+      } else if (totalRevCount > maxCommits) {
         isPartialHistory = true;
       }
     }
@@ -313,8 +332,6 @@ export class GitHistoryEngine {
     }
 
     const pat = createSecurePatternFile(patternLine);
-    let searchIncomplete = false;
-    let operationalError: string | undefined;
     const chunkSize = 40;
     const matchingCommitsSet = new Set<string>();
     const normSecret = secret.replace(/\r\n/g, '\n');
@@ -344,7 +361,10 @@ export class GitHistoryEngine {
                   if (content.replace(/\r\n/g, '\n').includes(normSecret)) {
                     matchingCommitsSet.add(cSha);
                   }
-                } catch {}
+                } catch (showErr: any) {
+                  searchIncomplete = true;
+                  operationalError = `Failed to inspect historical blob '${cSha}:${cPath}': ${showErr?.message || showErr}`;
+                }
               } else {
                 matchingCommitsSet.add(cSha);
               }
@@ -363,19 +383,19 @@ export class GitHistoryEngine {
       pat.cleanup();
     }
 
-    if (matchingCommitsSet.size > 0) {
+    if (searchIncomplete) {
       return {
-        status: 'FOUND',
+        status: 'SEARCH_INCOMPLETE',
         commitShas: Array.from(matchingCommitsSet),
+        error: operationalError,
         isPartialHistory,
       };
     }
 
-    if (searchIncomplete) {
+    if (matchingCommitsSet.size > 0) {
       return {
-        status: 'SEARCH_INCOMPLETE',
-        commitShas: [],
-        error: operationalError,
+        status: 'FOUND',
+        commitShas: Array.from(matchingCommitsSet),
         isPartialHistory,
       };
     }
@@ -437,13 +457,17 @@ export class GitHistoryEngine {
       const searchResult = await this.findCommitsContainingSecretResult(secret, maxCommits);
 
       if (searchResult.status === 'ERROR' || searchResult.status === 'SEARCH_INCOMPLETE') {
+        const hasMatches = searchResult.commitShas.length > 0;
         return {
           isPresentInHead: false,
-          isPresentInHistory: false,
+          isPresentInHistory: hasMatches,
           exposureDurationDays: 0,
           branches: [],
           isRemote: false,
-          statusDescription: `Git history search was incomplete: ${searchResult.error || 'operational error'}`,
+          statusDescription: `Git history search was incomplete: ${searchResult.error || 'operational error'}${
+            hasMatches ? ` (${searchResult.commitShas.length} matching commit(s) discovered before failure)` : ''
+          }`,
+          commitCount: searchResult.commitShas.length,
           searchStatus: searchResult.status,
           isPartialHistory: searchResult.isPartialHistory,
         };
@@ -510,6 +534,8 @@ export class GitHistoryEngine {
       }
 
       const parsedCommits: GitCommitInfo[] = [];
+      let metadataError: string | undefined;
+
       for (const sha of commitShas) {
         try {
           const { stdout: commitInfo } = await execFileAsync(
@@ -526,10 +552,25 @@ export class GitHistoryEngine {
               message: rest.join('|') || '',
             });
           }
-        } catch {}
+        } catch (mErr: any) {
+          metadataError = mErr?.message || String(mErr);
+        }
       }
 
       if (parsedCommits.length === 0) {
+        if (commitShas.length > 0) {
+          return {
+            isPresentInHead: false,
+            isPresentInHistory: true,
+            exposureDurationDays: 0,
+            branches: [],
+            isRemote: false,
+            statusDescription: `Secret detected in ${commitShas.length} commit(s), but commit metadata retrieval failed: ${metadataError || 'git log error'}`,
+            commitCount: commitShas.length,
+            searchStatus: 'SEARCH_INCOMPLETE',
+            isPartialHistory: searchResult.isPartialHistory,
+          };
+        }
         return {
           isPresentInHead: false,
           isPresentInHistory: false,
@@ -589,6 +630,9 @@ export class GitHistoryEngine {
       } else {
         statusDescription = `ACTIVE IN HEAD & COMMITTED (Introduced ${exposureDurationDays} days ago by ${introducedCommit.author} in ${introducedCommit.sha.substring(0, 7)})`;
       }
+      if (searchResult.isPartialHistory) {
+        statusDescription += ` [PARTIAL HISTORY: search depth limited to ${maxCommits} commit(s)]`;
+      }
 
       let inWorkingTree = false;
       try {
@@ -630,7 +674,9 @@ export class GitHistoryEngine {
    */
   public async scanHistoryCommits(maxCommits = 100): Promise<SecretFinding[]> {
     const isGit = await this.isGitRepo();
-    if (!isGit) return [];
+    if (!isGit) {
+      throw new Error(`Target directory is not a Git repository: ${this.workspaceRoot}`);
+    }
 
     try {
       // Get commit diffs across all branches, including merge commits
@@ -662,27 +708,39 @@ export class GitHistoryEngine {
 
         // Extract added lines and files from diff
         const fileDiffs = block.split(/^diff --git /m);
-        for (const diff of fileDiffs) {
+        // Index 0 contains commit metadata / log message prior to first diff --git
+        for (let i = 1; i < fileDiffs.length; i++) {
+          const diff = fileDiffs[i];
           const fileMatch = diff.match(/^[ab]\/(.+?) [ab]\/(.+)/m) || diff.match(/^\+\+\+ b\/(.+)/m);
-          const fileName = fileMatch ? fileMatch[1] : 'history-file';
+          if (!fileMatch) continue;
+          let fileName = (fileMatch[2] || fileMatch[1]).trim();
+          if (fileName.startsWith('"') && fileName.endsWith('"')) {
+            fileName = fileName.slice(1, -1);
+          }
 
           const diffFindings: SecretFinding[] = [];
           const isBinaryDiff = diff.includes('Binary files') || diff.includes('GIT binary patch');
+          const isDeleted = diff.includes('deleted file mode') || diff.includes('+++ /dev/null');
+          const isSubmodule = diff.includes('Subproject commit');
 
           if (isBinaryDiff) {
-            // Retrieve binary blob and decode via content decoder
-            try {
-              const { stdout: binBuf } = await execFileAsync(
-                'git',
-                ['show', `${sha}:${fileName}`],
-                { cwd: this.workspaceRoot, maxBuffer: 15 * 1024 * 1024, encoding: 'buffer' }
-              );
-              const decoded = decodeTextBuffer(binBuf);
-              if (decoded) {
-                const binFindings = scanContent(decoded, fileName, { workspaceRoot: this.workspaceRoot });
-                diffFindings.push(...binFindings);
+            if (!isDeleted && !isSubmodule) {
+              // Retrieve binary blob and decode via content decoder
+              try {
+                const { stdout: binBuf } = await execFileAsync(
+                  'git',
+                  ['show', `${sha}:${fileName}`],
+                  { cwd: this.workspaceRoot, maxBuffer: 15 * 1024 * 1024, encoding: 'buffer' }
+                );
+                const decoded = decodeTextBuffer(binBuf);
+                if (decoded) {
+                  const binFindings = scanContent(decoded, fileName, { workspaceRoot: this.workspaceRoot });
+                  diffFindings.push(...binFindings);
+                }
+              } catch (err: any) {
+                throw new Error(`Failed to inspect binary blob at commit ${sha.substring(0, 8)} for file '${fileName}': ${err?.message || err}`);
               }
-            } catch {}
+            }
           } else {
             const addedLines = diff
               .split('\n')
@@ -698,32 +756,36 @@ export class GitHistoryEngine {
             }
 
             // Unconditionally inspect full snapshot for multiline findings intersecting added lines
-            try {
-              const { stdout: fullSnapshot } = await execFileAsync(
-                'git',
-                ['show', `${sha}:${fileName}`],
-                { cwd: this.workspaceRoot, maxBuffer: 10 * 1024 * 1024, encoding: 'utf8' }
-              );
-              const snapshotFindings = scanContent(fullSnapshot, fileName, { workspaceRoot: this.workspaceRoot });
-              if (snapshotFindings.length > 0) {
-                const addedLineNumbers = parseAddedLineNumbersFromDiff(diff);
-                for (const sf of snapshotFindings) {
-                  const secretLines = sf.rawSecret ? (sf.rawSecret.match(/\n/g) || []).length + 1 : 1;
-                  let intersects = false;
-                  for (let i = 0; i < secretLines; i++) {
-                    if (addedLineNumbers.has(sf.line + i)) {
-                      intersects = true;
-                      break;
+            if (!isDeleted && !isSubmodule) {
+              try {
+                const { stdout: fullSnapshot } = await execFileAsync(
+                  'git',
+                  ['show', `${sha}:${fileName}`],
+                  { cwd: this.workspaceRoot, maxBuffer: 10 * 1024 * 1024, encoding: 'utf8' }
+                );
+                const snapshotFindings = scanContent(fullSnapshot, fileName, { workspaceRoot: this.workspaceRoot });
+                if (snapshotFindings.length > 0) {
+                  const addedLineNumbers = parseAddedLineNumbersFromDiff(diff);
+                  for (const sf of snapshotFindings) {
+                    const secretLines = sf.rawSecret ? (sf.rawSecret.match(/\n/g) || []).length + 1 : 1;
+                    let intersects = false;
+                    for (let i = 0; i < secretLines; i++) {
+                      if (addedLineNumbers.has(sf.line + i)) {
+                        intersects = true;
+                        break;
+                      }
                     }
-                  }
-                  if (intersects) {
-                    if (!diffFindings.some((df) => df.fingerprint === sf.fingerprint)) {
-                      diffFindings.push(sf);
+                    if (intersects) {
+                      if (!diffFindings.some((df) => df.fingerprint === sf.fingerprint)) {
+                        diffFindings.push(sf);
+                      }
                     }
                   }
                 }
+              } catch (err: any) {
+                throw new Error(`Failed to inspect snapshot at commit ${sha.substring(0, 8)} for file '${fileName}': ${err?.message || err}`);
               }
-            } catch {}
+            }
           }
 
           for (const f of diffFindings) {

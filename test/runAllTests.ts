@@ -2342,6 +2342,68 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
 
         execFileSync('git', ['-C', sec40Repo, 'reset', 'HEAD', '--', 'huge.dat']);
         fs.unlinkSync(bigFile);
+
+        // 8. Limited search with matches visibly preserves partial history in trace and timeline
+        const partialSecret = fromHex('6768705f7061727469616c73656372657431323334353637383930616263646531323334');
+        const partialFile = path.join(sec40Repo, 'partial.txt');
+        fs.writeFileSync(partialFile, `KEY=${partialSecret}\n`, 'utf8');
+        execFileSync('git', ['-C', sec40Repo, 'add', 'partial.txt']);
+        execFileSync('git', ['-C', sec40Repo, 'commit', '-m', 'feat: add partial secret']);
+
+        // Add 55 dummy commits so total history exceeds maxCommits=30
+        let pSha = execFileSync('git', ['-C', sec40Repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+        const tSha = execFileSync('git', ['-C', sec40Repo, 'write-tree'], { encoding: 'utf8' }).trim();
+        for (let i = 1; i <= 55; i++) {
+          pSha = execFileSync(
+            'git',
+            ['-C', sec40Repo, 'commit-tree', tSha, '-p', pSha, '-m', `chore: dummy ${i}`],
+            { encoding: 'utf8' }
+          ).trim();
+        }
+        execFileSync('git', ['-C', sec40Repo, 'update-ref', 'HEAD', pSha]);
+
+        // Limited search with match (secret is in all 55 commits because tree unchanged)
+        const partialResult = await gitHistory.findCommitsContainingSecretResult(partialSecret, 30);
+        assert(partialResult.status === 'FOUND', 'findCommitsContainingSecretResult returns FOUND when match in limited window');
+        assert(partialResult.isPartialHistory === true, 'findCommitsContainingSecretResult marks isPartialHistory true');
+
+        const partialTrace = await gitHistory.traceSecret(partialSecret, 30);
+        assert(partialTrace.isPartialHistory === true, 'traceSecret preserves isPartialHistory true when matches exist in limited search');
+        assert(partialTrace.statusDescription.includes('[PARTIAL HISTORY'), 'traceSecret visibly notes partial history in statusDescription');
+
+        const partialTimeline = await gitTimeline.buildTimeline(partialSecret, 'ghp_••••', 30);
+        assert(partialTimeline.isPartialHistory === true, 'buildTimeline preserves isPartialHistory true');
+        assert(partialTimeline.timelineAscii.includes('PARTIAL'), 'buildTimeline visibly displays PARTIAL coverage in ASCII report');
+
+        // 9. Operational blob-reading failure in isSecretInWorkingTree throws operational error
+        let workingTreeThrown = false;
+        try {
+          const corruptEngine = new GitHistoryEngine(path.join(os.tmpdir(), 'nonexistent-wt-dir'));
+          await corruptEngine.isSecretInWorkingTree('dummy_token');
+        } catch (err: any) {
+          workingTreeThrown = true;
+        }
+        assert(workingTreeThrown === true, 'isSecretInWorkingTree throws operational error on failed git execution rather than returning false');
+
+        // 10. Operational blob-reading failure in isSecretInHead throws operational error
+        let inHeadThrown = false;
+        try {
+          const corruptEngine = new GitHistoryEngine(path.join(os.tmpdir(), 'nonexistent-head-dir'));
+          await corruptEngine.isSecretInHead('dummy_token');
+        } catch (err: any) {
+          inHeadThrown = true;
+        }
+        assert(inHeadThrown === true, 'isSecretInHead throws operational error on failed git execution rather than returning false');
+
+        // 11. Historical blob inspection failure in scanHistoryCommits throws descriptive error
+        let scanHistoryThrown = false;
+        try {
+          const corruptEngine = new GitHistoryEngine(path.join(os.tmpdir(), 'nonexistent-hist-dir'));
+          await corruptEngine.scanHistoryCommits(5);
+        } catch (err: any) {
+          scanHistoryThrown = true;
+        }
+        assert(scanHistoryThrown === true, 'scanHistoryCommits throws operational error on failed git execution rather than returning clean []');
       } finally {
         try {
           fs.rmSync(sec40Repo, { recursive: true, force: true });
