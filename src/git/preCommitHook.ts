@@ -81,26 +81,6 @@ else
   HOOK_PATH="$(git rev-parse --git-path hooks/pre-commit 2>/dev/null || echo "$0")"
   HOOK_DIR="$(dirname "$HOOK_PATH")"
   LATEST_BACKUP="$HOOK_DIR/pre-commit.sld-backup.latest"
-  # If pinned CLI was in an extension/editor folder that was uninstalled, auto-remove stranded hook:
-  case "$PINNED_CLI" in
-    *extensions*|*globalStorage*|*.vscode*|*AppData*|*.config*)
-      echo "⚠️ [Secret Leak Detector] Extension was uninstalled (pinned scanner no longer exists)."
-      if [ -f "$LATEST_BACKUP" ]; then
-        BACKUP_FILE=$(cat "$LATEST_BACKUP" 2>/dev/null)
-        if [ -f "$BACKUP_FILE" ]; then
-          echo "   Restoring original backed-up pre-commit hook..."
-          cp "$BACKUP_FILE" "$HOOK_PATH" 2>/dev/null && rm -f "$LATEST_BACKUP" "$BACKUP_FILE" 2>/dev/null
-          if [ -x "$HOOK_PATH" ]; then
-            exec "$HOOK_PATH" "$@"
-          fi
-          exit 0
-        fi
-      fi
-      echo "   Removing stranded pre-commit hook..."
-      rm -f "$HOOK_PATH" "$LATEST_BACKUP" 2>/dev/null
-      exit 0
-      ;;
-  esac
   echo ""
   echo "❌ COMMIT BLOCKED (fail-closed): Secret Leak Detector scanner is unavailable."
   echo "   Pinned CLI ($PINNED_CLI) not found and no global CLI available."

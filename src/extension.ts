@@ -351,7 +351,7 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.window.showErrorMessage(errMsg, 'View Output').then((sel) => {
           if (sel === 'View Output') outputChannel.show(true);
         });
-        if (blockCommits || failOnSkipped) return;
+        return;
       }
 
       if (allSkipped.length > 0) {

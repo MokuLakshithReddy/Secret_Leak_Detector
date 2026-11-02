@@ -12,12 +12,7 @@ export function cleanHook(hookPath: string): boolean {
   if (!fs.existsSync(hookPath)) return false;
   try {
     const content = fs.readFileSync(hookPath, 'utf8');
-    const isSldHook =
-      content.includes(SLD_HOOK_MARKER) ||
-      content.includes('Secret Leak Detector') ||
-      content.includes('secret-leak-detector') ||
-      content.includes('SLD_HOOK_MANAGED') ||
-      content.includes('SLD_FAIL_ON');
+    const isSldHook = content.includes(SLD_HOOK_MARKER);
     if (!isSldHook) return false;
 
     const dir = path.dirname(hookPath);
