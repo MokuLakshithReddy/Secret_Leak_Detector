@@ -228,10 +228,25 @@ async function runScan(cmdArgs: string[], cwd: string) {
   let findings: SecretFinding[] = [];
   let filesScanned = 0;
   const skippedFiles: { file: string; reason: string }[] = [];
-  const disallowInlineIgnore =
+  let disallowInlineIgnore =
+    cmdArgs.includes('--no-inline-ignore') ||
+    cmdArgs.includes('--disallow-inline-ignore') ||
     args.includes('--no-inline-ignore') ||
     args.includes('--disallow-inline-ignore') ||
     process.env.SLD_DISALLOW_INLINE_IGNORE === '1';
+
+  if (!disallowInlineIgnore && !cmdArgs.includes('--allow-inline-ignore') && !args.includes('--allow-inline-ignore')) {
+    try {
+      const gitDisallow = execFileSync('git', ['config', '--bool', 'secret-leak-detector.disallow-inline-ignore'], {
+        cwd,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim();
+      if (gitDisallow === 'true') {
+        disallowInlineIgnore = true;
+      }
+    } catch {}
+  }
 
   if (isStaged) {
     const gitEngine = new GitHistoryEngine(cwd);
@@ -827,6 +842,12 @@ async function runHook(cmdArgs: string[], cwd: string) {
     const result = await gitService.installPreCommitHook(undefined, undefined, true, failOn, noInline, strict, allowSelfHeal);
     if (!result.success) {
       fail(`Error: ${result.message}`);
+    }
+    if (strict) {
+      try {
+        execFileSync('git', ['config', 'secret-leak-detector.strict', 'true'], { cwd, stdio: 'ignore' });
+        execFileSync('git', ['config', 'secret-leak-detector.fail-on-skipped', 'true'], { cwd, stdio: 'ignore' });
+      } catch {}
     }
     console.log(`✅ ${result.message}`);
     console.log(

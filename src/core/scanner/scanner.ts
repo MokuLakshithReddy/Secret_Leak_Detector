@@ -85,6 +85,7 @@ interface DeobfuscationCandidate {
   matchOffset: number;
   matchLength: number;
   description: string;
+  rawSource?: string;
 }
 
 function hasInlineSuppression(currentLine: string, prevLine: string): boolean {
@@ -296,6 +297,7 @@ export function scanContent(
       matchOffset: concatMatch.index,
       matchLength: concatMatch[0].length,
       description: 'Resolved split string concatenation',
+      rawSource: concatMatch[0],
     });
   }
 
@@ -315,6 +317,7 @@ export function scanContent(
         matchOffset: arrayJoinMatch.index,
         matchLength: arrayJoinMatch[0].length,
         description: 'Resolved split array join expression',
+        rawSource: arrayJoinMatch[0],
       });
     }
   }
@@ -328,6 +331,7 @@ export function scanContent(
       matchOffset: templateMatch.index,
       matchLength: templateMatch[0].length,
       description: 'Resolved template literal interpolation',
+      rawSource: templateMatch[0],
     });
   }
 
@@ -348,6 +352,7 @@ export function scanContent(
           matchOffset: b64Match.index,
           matchLength: b64Match[0].length,
           description: 'Resolved base64-encoded credential payload',
+          rawSource: b64Match[0],
         });
       }
     } catch {}
@@ -442,6 +447,7 @@ export function scanContent(
           column: columnNumber,
           length: candidate.matchLength,
           rawSecret,
+          sourceExpression: candidate.rawSource,
           redactedSecret: redacted,
           confidence: Math.min(100, evidenceResult.confidence + 5),
           risk: riskAssessment.tier,

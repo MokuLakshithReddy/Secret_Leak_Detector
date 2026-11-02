@@ -153,6 +153,7 @@ export class GitHistoryEngine {
         branches,
         isRemote,
         statusDescription,
+        commitCount: parsedCommits.length,
       };
     } catch {
       return {
@@ -214,9 +215,23 @@ export class GitHistoryEngine {
 
           if (!addedLines.trim()) continue;
 
-          const diffFindings = scanContent(addedLines, fileName, {
+          let diffFindings = scanContent(addedLines, fileName, {
             workspaceRoot: this.workspaceRoot,
           });
+
+          if (diffFindings.length === 0 && (diff.includes('KEY') || diff.includes('CERTIFICATE') || diff.includes('SECRET') || diff.length > 500)) {
+            try {
+              const { stdout: fullSnapshot } = await execFileAsync(
+                'git',
+                ['show', `${sha}:${fileName}`],
+                { cwd: this.workspaceRoot, maxBuffer: 10 * 1024 * 1024, encoding: 'utf8' }
+              );
+              const snapshotFindings = scanContent(fullSnapshot, fileName, { workspaceRoot: this.workspaceRoot });
+              if (snapshotFindings.length > 0) {
+                diffFindings = snapshotFindings;
+              }
+            } catch {}
+          }
 
           for (const f of diffFindings) {
             f.gitExposure = {

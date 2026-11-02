@@ -10,12 +10,31 @@ const SLD_HOOK_MARKER = '# [SLD_HOOK_MANAGED]';
 
 export function cleanHook(hookPath: string): boolean {
   if (!fs.existsSync(hookPath)) return false;
+  const dir = path.dirname(hookPath);
+  const lockPath = path.join(dir, 'pre-commit.sld.lock');
+  let acquiredLock = false;
+
   try {
+    try {
+      fs.writeFileSync(lockPath, String(process.pid), { flag: 'wx' });
+      acquiredLock = true;
+    } catch (err: any) {
+      if (err?.code === 'EEXIST') {
+        try {
+          const stat = fs.statSync(lockPath);
+          if (Date.now() - stat.mtimeMs > 10000) {
+            fs.unlinkSync(lockPath);
+            fs.writeFileSync(lockPath, String(process.pid), { flag: 'wx' });
+            acquiredLock = true;
+          }
+        } catch {}
+      }
+    }
+
     const content = fs.readFileSync(hookPath, 'utf8');
     const isSldHook = content.includes(SLD_HOOK_MARKER);
     if (!isSldHook) return false;
 
-    const dir = path.dirname(hookPath);
     const latestBackupMarker = path.join(dir, 'pre-commit.sld-backup.latest');
     let restored = false;
 
@@ -41,6 +60,12 @@ export function cleanHook(hookPath: string): boolean {
     return true;
   } catch {
     return false;
+  } finally {
+    if (acquiredLock) {
+      try {
+        if (fs.existsSync(lockPath)) fs.unlinkSync(lockPath);
+      } catch {}
+    }
   }
 }
 
@@ -112,29 +137,23 @@ function cleanWorkspacesFromStorageJson(appData: string, app: string, cleanedLis
   }
 }
 
-function getOtherUserHomes(): string[] {
-  const homes: string[] = [];
-  try {
-    const usersParent =
-      process.platform === 'win32'
-        ? 'C:\\Users'
-        : process.platform === 'darwin'
-        ? '/Users'
-        : '/home';
-    if (fs.existsSync(usersParent)) {
-      const currentHome = process.env.HOME || process.env.USERPROFILE || '';
-      const entries = fs.readdirSync(usersParent, { withFileTypes: true });
+function cleanCommonWorkspaceDirs(home: string, cleanedList: string[]): void {
+  const commonFolders = ['Projects', 'Documents', 'Desktop', 'workspace', 'repos', 'src', 'dev', 'code', 'source'];
+  for (const folder of commonFolders) {
+    const parent = path.join(home, folder);
+    if (!fs.existsSync(parent)) continue;
+    try {
+      const entries = fs.readdirSync(parent, { withFileTypes: true });
       for (const e of entries) {
-        if (e.isDirectory() && !e.name.startsWith('.')) {
-          const uPath = path.join(usersParent, e.name);
-          if (path.resolve(uPath) !== path.resolve(currentHome)) {
-            homes.push(uPath);
-          }
+        if (!e.isDirectory() || e.name.startsWith('.')) continue;
+        const sub = path.join(parent, e.name);
+        const hookPath = path.join(sub, '.git', 'hooks', 'pre-commit');
+        if (cleanHook(hookPath)) {
+          cleanedList.push(hookPath);
         }
       }
-    }
-  } catch {}
-  return homes;
+    } catch {}
+  }
 }
 
 function getGlobalStorageCandidates(cleanedList: string[]): string[] {
@@ -213,26 +232,8 @@ export function runUninstall(): void {
     }
   }
 
-  // 3. Clean hooks recorded in other user profiles if accessible
-  const otherHomes = getOtherUserHomes();
-  for (const oHome of otherHomes) {
-    const oRecord = path.join(oHome, '.sld', 'installed-hooks.json');
-    if (fs.existsSync(oRecord)) {
-      try {
-        const hooks: string[] = JSON.parse(fs.readFileSync(oRecord, 'utf8'));
-        if (Array.isArray(hooks)) {
-          for (const h of hooks) {
-            if (cleanHook(h)) {
-              cleanedHooks.push(h);
-            }
-          }
-        }
-        try {
-          fs.unlinkSync(oRecord);
-        } catch {}
-      } catch {}
-    }
-  }
+  // 3. Clean common user workspace repositories
+  cleanCommonWorkspaceDirs(home, cleanedHooks);
 
   // 4. Clean hooks configured via global core.hooksPath if any
   try {
@@ -271,11 +272,17 @@ export function runUninstall(): void {
       }
     }
 
-    // Remove stable CLI binary from globalStorage so no frozen orphaned scanner survives
+    // Remove stable CLI and AST parser binaries from globalStorage so no frozen orphaned scanner survives
     const cliPath = path.join(sDir, 'cli.js');
     if (fs.existsSync(cliPath)) {
       try {
         fs.unlinkSync(cliPath);
+      } catch {}
+    }
+    const astParserPath = path.join(sDir, 'ast-parser.js');
+    if (fs.existsSync(astParserPath)) {
+      try {
+        fs.unlinkSync(astParserPath);
       } catch {}
     }
   }

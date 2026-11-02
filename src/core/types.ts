@@ -89,6 +89,7 @@ export interface GitExposure {
   branches: string[];
   isRemote: boolean;
   statusDescription: string;
+  commitCount?: number;
 }
 
 export interface RemediationPlan {
@@ -130,6 +131,7 @@ export interface SecretFinding {
   remediation: RemediationPlan;
   status: Status;
   detectedAt: string;
+  sourceExpression?: string;
 
   // Backwards-compatibility aliases
   signals?: string[];

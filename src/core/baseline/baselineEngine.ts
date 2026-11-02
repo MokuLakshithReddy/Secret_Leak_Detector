@@ -138,11 +138,21 @@ export class BaselineEngine {
       const absBaseline = path.isAbsolute(this.baselinePath)
         ? this.baselinePath
         : path.resolve(this.workspaceRoot, this.baselinePath);
-      gitPath = path.relative(gitRoot, absBaseline).replace(/\\/g, '/');
+      let canonicalGitRoot = gitRoot;
+      let canonicalAbsBaseline = absBaseline;
+      try {
+        if (fs.existsSync(gitRoot)) canonicalGitRoot = fs.realpathSync(gitRoot);
+        if (fs.existsSync(absBaseline)) canonicalAbsBaseline = fs.realpathSync(absBaseline);
+      } catch {}
+      gitPath = path.relative(canonicalGitRoot, canonicalAbsBaseline).replace(/\\/g, '/');
+      if (gitPath.startsWith('../') || path.isAbsolute(gitPath) || !gitPath) {
+        gitPath = path.basename(this.baselinePath);
+      }
+      gitPath = gitPath.replace(/^\.?\//, '');
     } catch {
       gitPath = path.isAbsolute(this.baselinePath)
         ? path.basename(this.baselinePath)
-        : this.baselinePath.replace(/\\/g, '/');
+        : this.baselinePath.replace(/\\/g, '/').replace(/^\.?\//, '');
     }
 
     const isCI = !!(process.env.CI || process.env.GITHUB_ACTIONS || process.env.GITLAB_CI);

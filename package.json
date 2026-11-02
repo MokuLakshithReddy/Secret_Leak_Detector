@@ -182,6 +182,11 @@
           "default": true,
           "description": "Treat binary files and oversized files as warnings during Git staged scans instead of blocking commits."
         },
+        "secretLeakDetector.strict": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enforce strict enterprise security: block commits on skipped files and disallow inline suppression comments."
+        },
         "secretLeakDetector.failOnSkipped": {
           "type": "boolean",
           "default": false,

@@ -71,8 +71,10 @@ export class DiagnosticProvider {
   }
 
   public scanDocument(document: vscode.TextDocument): SecretFinding[] {
-    // Skip virtual or output documents
-    if (document.uri.scheme !== 'file') {
+    // Skip virtual or output documents (allow 'file' and 'untitled' for live in-memory scanning)
+    const isFile = document.uri.scheme === 'file';
+    const isUntitled = document.uri.scheme === 'untitled';
+    if (!isFile && !isUntitled) {
       return [];
     }
 
@@ -83,15 +85,21 @@ export class DiagnosticProvider {
     }
     const workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri);
     const workspaceRoot = workspaceFolder ? workspaceFolder.uri.fsPath : undefined;
+    const docPath = isFile ? document.uri.fsPath : (document.fileName || 'untitled.ts');
 
     let cachedSourceFile: any = null;
     const cacheEntry = this.documentAstCache.get(document.uri.toString());
     if (cacheEntry && cacheEntry.version === document.version) {
       cachedSourceFile = cacheEntry.sourceFile;
     } else {
-      const isJsTs = /\.[jt]sx?$|\.m[jt]s$|\.c[jt]s$/i.test(document.uri.fsPath);
+      const isJsTs =
+        /\.[jt]sx?$|\.m[jt]s$|\.c[jt]s$/i.test(docPath) ||
+        document.languageId === 'typescript' ||
+        document.languageId === 'javascript' ||
+        document.languageId === 'typescriptreact' ||
+        document.languageId === 'javascriptreact';
       if (isJsTs) {
-        cachedSourceFile = createSourceFile(text, document.uri.fsPath);
+        cachedSourceFile = createSourceFile(text, docPath);
         this.documentAstCache.set(document.uri.toString(), {
           version: document.version,
           sourceFile: cachedSourceFile,
@@ -105,9 +113,10 @@ export class DiagnosticProvider {
       cachedSourceFile,
     };
 
-    const allDetected = scanContent(text, document.uri.fsPath, scanOpts);
+    const allDetected = scanContent(text, docPath, scanOpts);
     const findings = allDetected.filter((f) => !this.ignoredFindings.has(f.id));
-    this.currentFindings.set(document.uri.fsPath, findings);
+    const storageKey = document.uri.fsPath || document.uri.toString();
+    this.currentFindings.set(storageKey, findings);
 
     const diagnostics: vscode.Diagnostic[] = [];
 
@@ -227,7 +236,8 @@ export class DiagnosticProvider {
 
   public removeDocument(uri: vscode.Uri): void {
     this.diagnosticCollection.delete(uri);
-    this.currentFindings.delete(uri.fsPath);
+    if (uri.fsPath) this.currentFindings.delete(uri.fsPath);
+    this.currentFindings.delete(uri.toString());
     this.documentAstCache.delete(uri.toString());
     this.onFindingsChangedEmitter.fire(this.getAllFindings());
   }

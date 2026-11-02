@@ -56,7 +56,7 @@ export interface ExposureTimelineReport {
   firstIntroducedDate?: string;
   removalDate?: string;
   totalExposureDays: number;
-  currentStatus: 'ACTIVE_IN_HEAD' | 'REMOVED_FROM_HEAD_PRESENT_IN_HISTORY' | 'CLEAN_UNCOMMITTED';
+  currentStatus: 'ACTIVE_IN_HEAD' | 'REMOVED_FROM_HEAD_PRESENT_IN_HISTORY' | 'CLEAN_UNCOMMITTED' | 'ERROR';
   reachableBranches: string[];
   isPushedToRemote: boolean;
   timelineAscii: string;
@@ -80,15 +80,15 @@ export class GitTimelineEngine {
         { cwd: this.workspaceRoot, maxBuffer: 15 * 1024 * 1024 }
       );
       logOutput = stdout.trim();
-    } catch {
+    } catch (err: any) {
       return {
         secretRedacted: redactedSecret,
         events: [],
         totalExposureDays: 0,
-        currentStatus: 'CLEAN_UNCOMMITTED',
+        currentStatus: 'ERROR',
         reachableBranches: ['local'],
         isPushedToRemote: false,
-        timelineAscii: 'No Git history found for this credential.',
+        timelineAscii: `Git history timeline query failed: ${err?.message || String(err)}`,
         graph: {
           nodes: [],
           edges: [],
@@ -150,7 +150,7 @@ export class GitTimelineEngine {
           .split('\n')
           .map((b) => b.trim().replace(/^[\*\s]+/, ''))
           .filter(Boolean);
-      } catch {
+      } catch (err: any) {
         branches = ['main'];
       }
 
@@ -179,7 +179,7 @@ export class GitTimelineEngine {
             cwd: this.workspaceRoot,
           });
           eventType = 'MODIFIED';
-        } catch {
+        } catch (err: any) {
           eventType = 'REMOVED';
         }
       } else if (isMergeCommit) {
@@ -207,7 +207,7 @@ export class GitTimelineEngine {
         cwd: this.workspaceRoot,
       });
       isPresentInHead = true;
-    } catch {
+    } catch (err: any) {
       isPresentInHead = false;
     }
 

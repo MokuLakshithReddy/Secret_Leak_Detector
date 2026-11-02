@@ -1,4 +1,4 @@
-import { execFile } from 'child_process';
+import { execFile, execFileSync } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -343,10 +343,23 @@ After fixing:
       if (!content.includes(SLD_HOOK_MARKER)) return false;
 
       const normCurrent = currentCliPath.replace(/\\/g, '/');
+      let effectiveFailOnSkipped = failOnSkipped;
+      if (!effectiveFailOnSkipped) {
+        try {
+          const gitStrict = execFileSync('git', ['config', '--bool', 'secret-leak-detector.strict'], {
+            cwd: this.workspaceRoot,
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'ignore'],
+          }).trim();
+          if (gitStrict === 'true') {
+            effectiveFailOnSkipped = true;
+          }
+        } catch {}
+      }
       const expectedFailOn = `SLD_FAIL_ON="${failOn}"`;
       const expectedBlockCommits = `SLD_BLOCK_COMMITS="${blockCommits ? '1' : '0'}"`;
       const expectedDisallowInline = `SLD_DISALLOW_INLINE_DEFAULT="${disallowInline ? '1' : '0'}"`;
-      const expectedFailOnSkipped = `SLD_FAIL_ON_SKIPPED_DEFAULT="${failOnSkipped ? '1' : '0'}"`;
+      const expectedFailOnSkipped = `SLD_FAIL_ON_SKIPPED_DEFAULT="${effectiveFailOnSkipped ? '1' : '0'}"`;
       const expectedAllowSelfHeal = `SLD_ALLOW_SELF_HEAL_DEFAULT="${allowSelfHeal ? '1' : '0'}"`;
       const hasElectronNode = content.includes('ELECTRON_RUN_AS_NODE=1');
 
@@ -359,7 +372,7 @@ After fixing:
         !content.includes(expectedAllowSelfHeal) ||
         !hasElectronNode
       ) {
-        const res = await this.installPreCommitHook(currentCliPath, customNodePath, blockCommits, failOn, disallowInline, failOnSkipped, allowSelfHeal);
+        const res = await this.installPreCommitHook(currentCliPath, customNodePath, blockCommits, failOn, disallowInline, effectiveFailOnSkipped, allowSelfHeal);
         return res.success;
       }
     } catch {
