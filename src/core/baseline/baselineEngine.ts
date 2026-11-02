@@ -119,7 +119,7 @@ export class BaselineEngine {
    * Ensures that PRs or pushed commits cannot tamper with .secretleak-baseline.json to bypass checks.
    *
    * In CI:
-   *  - For pull_request: loads from trusted PR base (GITHUB_BASE_REF).
+   *  - For pull_request: loads from trusted PR base (GITHUB_BASE_REF / origin/main).
    *  - For push: loads from the push event's previous commit SHA (SLD_BASE_REF / GITHUB_EVENT_BEFORE / HEAD~1).
    *  - NEVER trusts the current commit (HEAD) as its own baseline.
    *
