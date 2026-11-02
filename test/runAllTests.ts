@@ -1,6 +1,7 @@
 import { scanContent, scanFile, buildScanResult } from '../src/core/scanner/scanner';
 import { calculateShannonEntropy, calculateNormalizedEntropy } from '../src/core/entropy/entropy';
-import { redactSecret, generateFingerprint } from '../src/core/redactor/redactor';
+import { redactSecret, generateFingerprint, resolveSalt } from '../src/core/redactor/redactor';
+import * as crypto from 'crypto';
 import { BaselineEngine, BaselineValidationError, validateBaselineSchema } from '../src/core/baseline/baselineEngine';
 import { toRedactedFindingView } from '../src/webview/dashboardModel';
 import { VerificationEngine } from '../src/core/verification/verificationEngine';
@@ -1143,6 +1144,35 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
       // Different fingerprint, but the normalised file:rule:line key still matches.
       const res2 = engine.filterAgainstBaseline([mkFinding('src/win/leak.ts', 10, 'FPB')], { forceFile: true });
       assert(res2.newFindings.length === 1 && res2.existingFindings.length === 0, 'Different secret at same line is not suppressed by baseline');
+
+      // Multiline CRLF vs LF backwards compatibility in baseline matching
+      const multilineSecret = Buffer.from('LS0tLS1CRUdJTiBURVNUIEtFWS0tLS0tCmxpbmUxCnNlY3JldAotLS0tLUVORCBURVNUIEtFWS0tLS0t', 'base64').toString('utf8');
+      const salt = resolveSalt(undefined, bdir);
+      const crlfSecret = multilineSecret.replace(/\n/g, '\r\n');
+      const crlfHash = crypto.createHmac('sha256', salt).update(crlfSecret).digest('hex').substring(0, 16);
+      const legacyBaselineFile: any = {
+        version: 1,
+        generatedAt: new Date().toISOString(),
+        generator: 'Secret Leak Detector v1.0.3',
+        findings: [
+          {
+            id: 'legacy-multiline',
+            fingerprint: crlfHash,
+            ruleId: 'Cryptographic Private Key (PEM)',
+            file: 'certs/server.pem',
+            line: 1,
+            firstSeen: new Date().toISOString(),
+          },
+        ],
+      };
+      fs.writeFileSync(path.join(bdir, 'xplat.json'), JSON.stringify(legacyBaselineFile, null, 2), 'utf8');
+
+      const canonicalFinding = {
+        ...mkFinding('certs/server.pem', 1, generateFingerprint(multilineSecret, undefined, bdir)),
+        rawSecret: multilineSecret,
+      };
+      const res3 = engine.filterAgainstBaseline([canonicalFinding], { forceFile: true });
+      assert(res3.newFindings.length === 0 && res3.existingFindings.length === 1, 'Multiline canonical finding matches legacy CRLF baseline entry');
 
       fs.rmSync(bdir, { recursive: true, force: true });
     }
