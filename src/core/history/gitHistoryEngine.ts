@@ -80,18 +80,148 @@ function parseAddedLineNumbersFromDiff(diffText: string): Set<number> {
   return addedLines;
 }
 
+/**
+ * Unquotes a Git path formatted according to Git's C-style string quoting rules
+ * (octal escapes \ooo for byte values, escaped quotes, tabs, newlines, etc.).
+ */
+export function unquoteGitPath(rawPath: string): string {
+  rawPath = rawPath.trim();
+  if (!rawPath.startsWith('"') || !rawPath.endsWith('"')) {
+    return rawPath;
+  }
+  // Strip outer quotes
+  const inner = rawPath.slice(1, -1);
+  const bytes: number[] = [];
+  let i = 0;
+  while (i < inner.length) {
+    if (inner[i] === '\\' && i + 1 < inner.length) {
+      i++;
+      const nextChar = inner[i];
+      if (nextChar === '\\') {
+        bytes.push(0x5c);
+        i++;
+      } else if (nextChar === '"') {
+        bytes.push(0x22);
+        i++;
+      } else if (nextChar === 'n') {
+        bytes.push(0x0a);
+        i++;
+      } else if (nextChar === 't') {
+        bytes.push(0x09);
+        i++;
+      } else if (nextChar === 'r') {
+        bytes.push(0x0d);
+        i++;
+      } else if (nextChar === 'a') {
+        bytes.push(0x07);
+        i++;
+      } else if (nextChar === 'b') {
+        bytes.push(0x08);
+        i++;
+      } else if (nextChar === 'f') {
+        bytes.push(0x0c);
+        i++;
+      } else if (nextChar === 'v') {
+        bytes.push(0x0b);
+        i++;
+      } else if (nextChar >= '0' && nextChar <= '7') {
+        // Octal escape \ooo (1-3 octal digits)
+        let octalStr = nextChar;
+        i++;
+        while (octalStr.length < 3 && i < inner.length && inner[i] >= '0' && inner[i] <= '7') {
+          octalStr += inner[i];
+          i++;
+        }
+        bytes.push(parseInt(octalStr, 8));
+      } else {
+        // Unknown escape, keep verbatim ASCII code
+        bytes.push(nextChar.charCodeAt(0));
+        i++;
+      }
+    } else {
+      // Standard UTF-8 character
+      const codePoint = inner.codePointAt(i)!;
+      const charBuf = Buffer.from(String.fromCodePoint(codePoint), 'utf8');
+      for (const b of charBuf) {
+        bytes.push(b);
+      }
+      i += String.fromCodePoint(codePoint).length;
+    }
+  }
+  return Buffer.from(bytes).toString('utf8');
+}
+
+/**
+ * Extracts and unquotes pathA and pathB from the first line of a git diff header
+ * (e.g. `diff --git "a/path 1.bin" "b/path 2.bin"` or `diff --git a/foo.ts b/foo.ts`).
+ */
+export function parseDiffHeaderPaths(diffLine: string): { pathA: string; pathB: string } | null {
+  let line = diffLine.trim();
+  if (line.startsWith('diff --git ')) {
+    line = line.substring(11).trim();
+  }
+
+  let pathA = '';
+  let rest = '';
+
+  if (line.startsWith('"')) {
+    let i = 1;
+    let inEscape = false;
+    while (i < line.length) {
+      if (inEscape) {
+        inEscape = false;
+        i++;
+      } else if (line[i] === '\\') {
+        inEscape = true;
+        i++;
+      } else if (line[i] === '"') {
+        break;
+      } else {
+        i++;
+      }
+    }
+    if (i < line.length) {
+      pathA = unquoteGitPath(line.slice(0, i + 1));
+      rest = line.slice(i + 1).trim();
+    } else {
+      return null;
+    }
+  } else {
+    // Unquoted pathA: search for delimiter before pathB: ' b/' or ' "b/'
+    const match = line.match(/^(\S+)\s+(.+)$/);
+    if (!match) return null;
+    pathA = match[1];
+    rest = match[2].trim();
+  }
+
+  let pathB = '';
+  if (rest.startsWith('"')) {
+    pathB = unquoteGitPath(rest);
+  } else {
+    pathB = rest;
+  }
+
+  // Strip leading a/ and b/
+  if (pathA.startsWith('a/')) pathA = pathA.slice(2);
+  if (pathB.startsWith('b/')) pathB = pathB.slice(2);
+
+  return { pathA, pathB };
+}
+
 export class GitHistoryEngine {
-  private workspaceRoot: string;
+  protected workspaceRoot: string;
 
   constructor(workspaceRoot: string) {
     this.workspaceRoot = workspaceRoot;
   }
 
+  protected async execGit(args: string[], options: any = {}): Promise<{ stdout: any; stderr: any }> {
+    return execFileAsync('git', args, { cwd: this.workspaceRoot, ...options });
+  }
+
   public async isGitRepo(): Promise<boolean> {
     try {
-      await execFileAsync('git', ['rev-parse', '--is-inside-work-tree'], {
-        cwd: this.workspaceRoot,
-      });
+      await this.execGit(['rev-parse', '--is-inside-work-tree']);
       return true;
     } catch {
       return false;
@@ -124,10 +254,9 @@ export class GitHistoryEngine {
     // 1. If a hint file path is known, check that file directly at HEAD
     if (hintFileName) {
       try {
-        const { stdout: fileContent } = await execFileAsync(
-          'git',
+        const { stdout: fileContent } = await this.execGit(
           ['show', `HEAD:${hintFileName}`],
-          { cwd: this.workspaceRoot, maxBuffer: 10 * 1024 * 1024, encoding: 'utf8' }
+          { maxBuffer: 10 * 1024 * 1024, encoding: 'utf8' }
         );
         if (fileContent.replace(/\r\n/g, '\n').includes(normSecret)) {
           return true;
@@ -143,19 +272,17 @@ export class GitHistoryEngine {
 
     const pat = createSecurePatternFile(patternLine);
     try {
-      const { stdout } = await execFileAsync(
-        'git',
+      const { stdout } = await this.execGit(
         ['grep', '-F', '-l', '-f', pat.filePath, 'HEAD'],
-        { cwd: this.workspaceRoot, encoding: 'utf8' }
+        { encoding: 'utf8' }
       );
       const matches = stdout.trim().split('\n').filter(Boolean);
       for (const m of matches) {
         const candidateFile = m.replace(/^HEAD:/, '').trim();
         try {
-          const { stdout: content } = await execFileAsync(
-            'git',
+          const { stdout: content } = await this.execGit(
             ['show', `HEAD:${candidateFile}`],
-            { cwd: this.workspaceRoot, maxBuffer: 10 * 1024 * 1024, encoding: 'utf8' }
+            { maxBuffer: 10 * 1024 * 1024, encoding: 'utf8' }
           );
           if (content.replace(/\r\n/g, '\n').includes(normSecret)) {
             return true;
@@ -191,10 +318,9 @@ export class GitHistoryEngine {
     try {
       // 1. Check untracked working tree files
       try {
-        const { stdout: untrackedOut } = await execFileAsync(
-          'git',
+        const { stdout: untrackedOut } = await this.execGit(
           ['grep', '-F', '-l', '-f', pat.filePath, '--untracked'],
-          { cwd: this.workspaceRoot, encoding: 'utf8' }
+          { encoding: 'utf8' }
         );
         for (const file of untrackedOut.trim().split('\n').filter(Boolean)) {
           const absPath = path.resolve(this.workspaceRoot, file);
@@ -202,7 +328,9 @@ export class GitHistoryEngine {
             try {
               const content = fs.readFileSync(absPath, 'utf8').replace(/\r\n/g, '\n');
               if (content.includes(normSecret)) return true;
-            } catch {}
+            } catch (readErr: any) {
+              throw new Error(`Failed to read untracked candidate file '${file}': ${readErr?.message || readErr}`);
+            }
           }
         }
       } catch (err: any) {
@@ -211,17 +339,15 @@ export class GitHistoryEngine {
 
       // 2. Check cached (staged index) files by directly inspecting the staged blob via git show :<path>
       try {
-        const { stdout: cachedOut } = await execFileAsync(
-          'git',
+        const { stdout: cachedOut } = await this.execGit(
           ['grep', '-F', '-l', '-f', pat.filePath, '--cached'],
-          { cwd: this.workspaceRoot, encoding: 'utf8' }
+          { encoding: 'utf8' }
         );
         for (const file of cachedOut.trim().split('\n').filter(Boolean)) {
           try {
-            const { stdout: stagedContent } = await execFileAsync(
-              'git',
+            const { stdout: stagedContent } = await this.execGit(
               ['show', `:${file}`],
-              { cwd: this.workspaceRoot, maxBuffer: 10 * 1024 * 1024, encoding: 'utf8' }
+              { maxBuffer: 10 * 1024 * 1024, encoding: 'utf8' }
             );
             if (stagedContent.replace(/\r\n/g, '\n').includes(normSecret)) {
               return true;
@@ -236,10 +362,9 @@ export class GitHistoryEngine {
 
       // 3. Check tracked working-tree files
       try {
-        const { stdout: trackedOut } = await execFileAsync(
-          'git',
+        const { stdout: trackedOut } = await this.execGit(
           ['grep', '-F', '-l', '-f', pat.filePath],
-          { cwd: this.workspaceRoot, encoding: 'utf8' }
+          { encoding: 'utf8' }
         );
         for (const file of trackedOut.trim().split('\n').filter(Boolean)) {
           const absPath = path.resolve(this.workspaceRoot, file);
@@ -247,7 +372,9 @@ export class GitHistoryEngine {
             try {
               const content = fs.readFileSync(absPath, 'utf8').replace(/\r\n/g, '\n');
               if (content.includes(normSecret)) return true;
-            } catch {}
+            } catch (readErr: any) {
+              throw new Error(`Failed to read tracked candidate file '${file}': ${readErr?.message || readErr}`);
+            }
           }
         }
       } catch (err: any) {
@@ -282,10 +409,9 @@ export class GitHistoryEngine {
     let countError: string | undefined;
     if (maxCommits > 0) {
       try {
-        const { stdout: countOut } = await execFileAsync(
-          'git',
+        const { stdout: countOut } = await this.execGit(
           ['rev-list', '--all', '--count'],
-          { cwd: this.workspaceRoot, maxBuffer: 10 * 1024 * 1024, encoding: 'utf8' }
+          { maxBuffer: 10 * 1024 * 1024, encoding: 'utf8' }
         );
         totalRevCount = parseInt(countOut.trim(), 10) || 0;
       } catch (err: any) {
@@ -313,10 +439,9 @@ export class GitHistoryEngine {
 
     let revs: string[] = [];
     try {
-      const { stdout: revOut } = await execFileAsync(
-        'git',
+      const { stdout: revOut } = await this.execGit(
         revArgs,
-        { cwd: this.workspaceRoot, maxBuffer: 20 * 1024 * 1024, encoding: 'utf8' }
+        { maxBuffer: 20 * 1024 * 1024, encoding: 'utf8' }
       );
       revs = revOut.trim().split('\n').filter(Boolean);
     } catch (err: any) {
@@ -340,10 +465,9 @@ export class GitHistoryEngine {
       for (let i = 0; i < revs.length; i += chunkSize) {
         const chunk = revs.slice(i, i + chunkSize);
         try {
-          const { stdout: grepOut } = await execFileAsync(
-            'git',
+          const { stdout: grepOut } = await this.execGit(
             ['grep', '-F', '-l', '-f', pat.filePath, ...chunk],
-            { cwd: this.workspaceRoot, maxBuffer: 15 * 1024 * 1024, encoding: 'utf8' }
+            { maxBuffer: 15 * 1024 * 1024, encoding: 'utf8' }
           );
           const matches = grepOut.trim().split('\n').filter(Boolean);
           for (const m of matches) {
@@ -353,10 +477,9 @@ export class GitHistoryEngine {
               const cPath = m.substring(colonIdx + 1);
               if (secret.includes('\n')) {
                 try {
-                  const { stdout: content } = await execFileAsync(
-                    'git',
+                  const { stdout: content } = await this.execGit(
                     ['show', `${cSha}:${cPath}`],
-                    { cwd: this.workspaceRoot, maxBuffer: 10 * 1024 * 1024, encoding: 'utf8' }
+                    { maxBuffer: 10 * 1024 * 1024, encoding: 'utf8' }
                   );
                   if (content.replace(/\r\n/g, '\n').includes(normSecret)) {
                     matchingCommitsSet.add(cSha);
@@ -459,11 +582,13 @@ export class GitHistoryEngine {
       if (searchResult.status === 'ERROR' || searchResult.status === 'SEARCH_INCOMPLETE') {
         const hasMatches = searchResult.commitShas.length > 0;
         return {
-          isPresentInHead: false,
+          isPresentInHead: 'UNKNOWN',
           isPresentInHistory: hasMatches,
+          isPresentInWorkingTree: 'UNKNOWN',
+          isSecretInWorkingTree: 'UNKNOWN',
           exposureDurationDays: 0,
           branches: [],
-          isRemote: false,
+          isRemote: 'UNKNOWN',
           statusDescription: `Git history search was incomplete: ${searchResult.error || 'operational error'}${
             hasMatches ? ` (${searchResult.commitShas.length} matching commit(s) discovered before failure)` : ''
           }`,
@@ -475,16 +600,18 @@ export class GitHistoryEngine {
 
       const commitShas = searchResult.commitShas;
       if (commitShas.length === 0) {
-        let inWorkingTree = false;
+        let inWorkingTree: boolean | 'UNKNOWN' = false;
         try {
           inWorkingTree = await this.isSecretInWorkingTree(secret);
         } catch (err: any) {
           return {
-            isPresentInHead: false,
+            isPresentInHead: 'UNKNOWN',
             isPresentInHistory: false,
+            isPresentInWorkingTree: 'UNKNOWN',
+            isSecretInWorkingTree: 'UNKNOWN',
             exposureDurationDays: 0,
             branches: [],
-            isRemote: false,
+            isRemote: 'UNKNOWN',
             statusDescription: `Failed to inspect working tree: ${err?.message || err}`,
             searchStatus: 'ERROR',
           };
@@ -535,13 +662,13 @@ export class GitHistoryEngine {
 
       const parsedCommits: GitCommitInfo[] = [];
       let metadataError: string | undefined;
+      let failedMetadataCount = 0;
 
       for (const sha of commitShas) {
         try {
-          const { stdout: commitInfo } = await execFileAsync(
-            'git',
+          const { stdout: commitInfo } = await this.execGit(
             ['log', '-1', '--format=%H|%an|%ad|%s', '--date=iso', sha],
-            { cwd: this.workspaceRoot, encoding: 'utf8' }
+            { encoding: 'utf8' }
           );
           const [cSha, author, date, ...rest] = commitInfo.trim().split('|');
           if (cSha) {
@@ -551,8 +678,11 @@ export class GitHistoryEngine {
               date: date || new Date().toISOString(),
               message: rest.join('|') || '',
             });
+          } else {
+            failedMetadataCount++;
           }
         } catch (mErr: any) {
+          failedMetadataCount++;
           metadataError = mErr?.message || String(mErr);
         }
       }
@@ -560,11 +690,13 @@ export class GitHistoryEngine {
       if (parsedCommits.length === 0) {
         if (commitShas.length > 0) {
           return {
-            isPresentInHead: false,
+            isPresentInHead: 'UNKNOWN',
             isPresentInHistory: true,
+            isPresentInWorkingTree: 'UNKNOWN',
+            isSecretInWorkingTree: 'UNKNOWN',
             exposureDurationDays: 0,
             branches: [],
-            isRemote: false,
+            isRemote: 'UNKNOWN',
             statusDescription: `Secret detected in ${commitShas.length} commit(s), but commit metadata retrieval failed: ${metadataError || 'git log error'}`,
             commitCount: commitShas.length,
             searchStatus: 'SEARCH_INCOMPLETE',
@@ -589,24 +721,30 @@ export class GitHistoryEngine {
       const introducedCommit = parsedCommits[parsedCommits.length - 1];
       const lastModifiedCommit = parsedCommits[0];
 
-      const isPresentInHead = await this.isSecretInHead(secret);
+      let isPresentInHead: boolean | 'UNKNOWN' = 'UNKNOWN';
+      let headCheckFailed = false;
+      try {
+        isPresentInHead = await this.isSecretInHead(secret);
+      } catch (headErr: any) {
+        isPresentInHead = 'UNKNOWN';
+        headCheckFailed = true;
+      }
 
       // Check branches containing the introduced commit
       let branches: string[] = [];
-      let isRemote = false;
+      let isRemote: boolean | 'UNKNOWN' = 'UNKNOWN';
       try {
-        const { stdout: branchOut } = await execFileAsync(
-          'git',
-          ['branch', '-a', '--contains', introducedCommit.sha],
-          { cwd: this.workspaceRoot }
+        const { stdout: branchOut } = await this.execGit(
+          ['branch', '-a', '--contains', introducedCommit.sha]
         );
-        branches = branchOut
+        branches = String(branchOut)
           .split('\n')
           .map((b) => b.trim().replace(/^[\*\s]+/, ''))
           .filter((b) => b.length > 0);
         isRemote = branches.some((b) => b.startsWith('remotes/') || b.startsWith('origin/'));
       } catch {
-        branches = ['main'];
+        branches = [];
+        isRemote = 'UNKNOWN';
       }
 
       // Compute exposure duration
@@ -614,7 +752,7 @@ export class GitHistoryEngine {
       let removedCommit: GitCommitInfo | undefined;
       let endDate = Date.now();
 
-      if (!isPresentInHead && parsedCommits.length > 1) {
+      if (isPresentInHead !== true && parsedCommits.length > 1) {
         removedCommit = parsedCommits[0];
         endDate = new Date(removedCommit.date).getTime();
       }
@@ -625,19 +763,38 @@ export class GitHistoryEngine {
       );
 
       let statusDescription = '';
-      if (!isPresentInHead) {
-        statusDescription = `REMOVED FROM HEAD BUT STILL PRESENT IN GIT HISTORY! (Introduced ${exposureDurationDays} days ago by ${introducedCommit.author} in ${introducedCommit.sha.substring(0, 7)})`;
-      } else {
+      if (headCheckFailed) {
+        statusDescription = `INCOMPLETE HEAD VERIFICATION: Present in commit history (${exposureDurationDays} days exposure, ${parsedCommits.length} commit(s)), but HEAD verification failed`;
+      } else if (isPresentInHead === true) {
         statusDescription = `ACTIVE IN HEAD & COMMITTED (Introduced ${exposureDurationDays} days ago by ${introducedCommit.author} in ${introducedCommit.sha.substring(0, 7)})`;
+      } else {
+        statusDescription = `REMOVED FROM HEAD BUT STILL PRESENT IN GIT HISTORY! (Introduced ${exposureDurationDays} days ago by ${introducedCommit.author} in ${introducedCommit.sha.substring(0, 7)})`;
+      }
+
+      if (failedMetadataCount > 0) {
+        statusDescription += ` [INCOMPLETE METADATA: ${failedMetadataCount} of ${commitShas.length} metadata request(s) failed: ${metadataError}]`;
+      }
+
+      let inWorkingTree: boolean | 'UNKNOWN' = false;
+      let wtCheckFailed = false;
+      try {
+        inWorkingTree = await this.isSecretInWorkingTree(secret);
+      } catch (wtErr: any) {
+        inWorkingTree = 'UNKNOWN';
+        wtCheckFailed = true;
+      }
+
+      if (wtCheckFailed) {
+        statusDescription += ` [Working-tree verification incomplete]`;
       }
       if (searchResult.isPartialHistory) {
         statusDescription += ` [PARTIAL HISTORY: search depth limited to ${maxCommits} commit(s)]`;
       }
 
-      let inWorkingTree = false;
-      try {
-        inWorkingTree = await this.isSecretInWorkingTree(secret);
-      } catch {}
+      const finalSearchStatus: GitExposure['searchStatus'] =
+        (failedMetadataCount > 0 || headCheckFailed || wtCheckFailed)
+          ? 'SEARCH_INCOMPLETE'
+          : 'FOUND';
 
       return {
         introducedCommit,
@@ -652,16 +809,18 @@ export class GitHistoryEngine {
         isRemote,
         statusDescription,
         commitCount: parsedCommits.length,
-        searchStatus: 'FOUND',
-        isPartialHistory: searchResult.isPartialHistory,
+        searchStatus: finalSearchStatus,
+        isPartialHistory: searchResult.isPartialHistory || failedMetadataCount > 0,
       };
     } catch (err: any) {
       return {
-        isPresentInHead: false,
+        isPresentInHead: 'UNKNOWN',
         isPresentInHistory: false,
+        isPresentInWorkingTree: 'UNKNOWN',
+        isSecretInWorkingTree: 'UNKNOWN',
         exposureDurationDays: 0,
-        branches: ['main'],
-        isRemote: false,
+        branches: [],
+        isRemote: 'UNKNOWN',
         statusDescription: `Git history query failed: ${err?.message || String(err)}`,
         searchStatus: 'ERROR',
       };
@@ -684,14 +843,13 @@ export class GitHistoryEngine {
       if (maxCommits > 0) {
         gitArgs.push('-n', String(maxCommits));
       }
-      const { stdout } = await execFileAsync(
-        'git',
+      const { stdout } = await this.execGit(
         gitArgs,
-        { cwd: this.workspaceRoot, maxBuffer: 20 * 1024 * 1024 }
+        { maxBuffer: 20 * 1024 * 1024 }
       );
 
       const findings: SecretFinding[] = [];
-      const commitBlocks = stdout.split(/^commit /m);
+      const commitBlocks = String(stdout).split(/^commit /m);
       const headCheckCache = new Map<string, boolean>();
 
       for (const block of commitBlocks) {
@@ -711,12 +869,16 @@ export class GitHistoryEngine {
         // Index 0 contains commit metadata / log message prior to first diff --git
         for (let i = 1; i < fileDiffs.length; i++) {
           const diff = fileDiffs[i];
-          const fileMatch = diff.match(/^[ab]\/(.+?) [ab]\/(.+)/m) || diff.match(/^\+\+\+ b\/(.+)/m);
-          if (!fileMatch) continue;
-          let fileName = (fileMatch[2] || fileMatch[1]).trim();
-          if (fileName.startsWith('"') && fileName.endsWith('"')) {
-            fileName = fileName.slice(1, -1);
+          const firstLine = diff.split('\n')[0].trim();
+          const headerPaths = parseDiffHeaderPaths(firstLine);
+          let fileName = headerPaths ? headerPaths.pathB : '';
+          if (!fileName) {
+            const plusMatch = diff.match(/^\+\+\+ b\/(.+)$/m);
+            if (plusMatch) {
+              fileName = unquoteGitPath(plusMatch[1].trim());
+            }
           }
+          if (!fileName) continue;
 
           const diffFindings: SecretFinding[] = [];
           const isBinaryDiff = diff.includes('Binary files') || diff.includes('GIT binary patch');
@@ -727,10 +889,9 @@ export class GitHistoryEngine {
             if (!isDeleted && !isSubmodule) {
               // Retrieve binary blob and decode via content decoder
               try {
-                const { stdout: binBuf } = await execFileAsync(
-                  'git',
+                const { stdout: binBuf } = await this.execGit(
                   ['show', `${sha}:${fileName}`],
-                  { cwd: this.workspaceRoot, maxBuffer: 15 * 1024 * 1024, encoding: 'buffer' }
+                  { maxBuffer: 15 * 1024 * 1024, encoding: 'buffer' }
                 );
                 const decoded = decodeTextBuffer(binBuf);
                 if (decoded) {
@@ -758,10 +919,9 @@ export class GitHistoryEngine {
             // Unconditionally inspect full snapshot for multiline findings intersecting added lines
             if (!isDeleted && !isSubmodule) {
               try {
-                const { stdout: fullSnapshot } = await execFileAsync(
-                  'git',
+                const { stdout: fullSnapshot } = await this.execGit(
                   ['show', `${sha}:${fileName}`],
-                  { cwd: this.workspaceRoot, maxBuffer: 10 * 1024 * 1024, encoding: 'utf8' }
+                  { maxBuffer: 10 * 1024 * 1024, encoding: 'utf8' }
                 );
                 const snapshotFindings = scanContent(fullSnapshot, fileName, { workspaceRoot: this.workspaceRoot });
                 if (snapshotFindings.length > 0) {

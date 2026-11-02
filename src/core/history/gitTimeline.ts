@@ -69,15 +69,17 @@ export class GitTimelineEngine {
   private workspaceRoot: string;
   private gitHistory: GitHistoryEngine;
 
-  constructor(workspaceRoot: string) {
+  constructor(workspaceRoot: string, gitHistory?: GitHistoryEngine) {
     this.workspaceRoot = workspaceRoot;
-    this.gitHistory = new GitHistoryEngine(workspaceRoot);
+    this.gitHistory = gitHistory || new GitHistoryEngine(workspaceRoot);
   }
 
   public async buildTimeline(secret: string, redactedSecret: string, maxCommits = 0): Promise<ExposureTimelineReport> {
     const lines: string[] = [];
     let searchResult: GitSearchResult | undefined;
     let commitShas: string[] = [];
+    let failedTimelineMetadataCount = 0;
+    let timelineMetadataError: string | undefined;
 
     try {
       const isGit = await this.gitHistory.isGitRepo();
@@ -186,17 +188,24 @@ export class GitTimelineEngine {
       }
 
       // Fetch metadata for each commit without passing secret in argv
+      failedTimelineMetadataCount = 0;
+      timelineMetadataError = undefined;
+
       for (const sha of commitShas) {
         try {
-          const { stdout: commitInfo } = await execFileAsync(
-            'git',
+          const { stdout: commitInfo } = await (this.gitHistory as any).execGit(
             ['log', '-1', '--format=%H|%P|%an|%ae|%ad|%s', '--date=iso', sha],
-            { cwd: this.workspaceRoot, encoding: 'utf8' }
+            { encoding: 'utf8' }
           );
           if (commitInfo.trim()) {
             lines.push(commitInfo.trim());
+          } else {
+            failedTimelineMetadataCount++;
           }
-        } catch {}
+        } catch (tmErr: any) {
+          failedTimelineMetadataCount++;
+          timelineMetadataError = tmErr?.message || String(tmErr);
+        }
       }
 
       // Sort commits chronologically ascending (oldest to newest)
@@ -342,13 +351,23 @@ export class GitTimelineEngine {
     }
 
     const lastEvent = events[events.length - 1];
-    const isPresentInHead = await this.gitHistory.isSecretInHead(secret);
+    let isPresentInHead: boolean | 'UNKNOWN' = 'UNKNOWN';
+    let headCheckFailed = false;
+    try {
+      isPresentInHead = await this.gitHistory.isSecretInHead(secret);
+    } catch {
+      isPresentInHead = 'UNKNOWN';
+      headCheckFailed = true;
+    }
 
-    const currentStatus = isPresentInHead
-      ? 'ACTIVE_IN_HEAD'
-      : events.length > 0
-      ? 'REMOVED_FROM_HEAD_PRESENT_IN_HISTORY'
-      : 'CLEAN_UNCOMMITTED';
+    const currentStatus: ExposureTimelineReport['currentStatus'] =
+      (failedTimelineMetadataCount > 0 || headCheckFailed)
+        ? 'SEARCH_INCOMPLETE'
+        : isPresentInHead
+        ? 'ACTIVE_IN_HEAD'
+        : events.length > 0
+        ? 'REMOVED_FROM_HEAD_PRESENT_IN_HISTORY'
+        : 'CLEAN_UNCOMMITTED';
 
     const firstDateMs = firstDate ? firstDate.getTime() : Date.now();
     const lastDateMs =
@@ -386,6 +405,12 @@ export class GitTimelineEngine {
 
     timelineAscii += '═'.repeat(68) + '\n';
     timelineAscii += `Current Status:     ${currentStatus}\n`;
+    if (failedTimelineMetadataCount > 0) {
+      timelineAscii += `Metadata Quality:   INCOMPLETE (${failedTimelineMetadataCount} of ${commitShas.length} metadata requests failed: ${timelineMetadataError})\n`;
+    }
+    if (headCheckFailed) {
+      timelineAscii += `HEAD Verification:  INCOMPLETE (operational error during HEAD inspection)\n`;
+    }
     if (searchResult.isPartialHistory) {
       timelineAscii += `History Coverage:   PARTIAL (limited to ${maxCommits} commits; earlier history uninspected)\n`;
     }
@@ -444,7 +469,7 @@ export class GitTimelineEngine {
       isPushedToRemote,
       timelineAscii,
       graph,
-      isPartialHistory: searchResult.isPartialHistory,
+      isPartialHistory: searchResult.isPartialHistory || failedTimelineMetadataCount > 0,
     };
   }
 }

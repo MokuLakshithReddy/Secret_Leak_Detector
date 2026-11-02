@@ -5,7 +5,7 @@ import * as crypto from 'crypto';
 import { BaselineEngine, BaselineValidationError, validateBaselineSchema } from '../src/core/baseline/baselineEngine';
 import { toRedactedFindingView } from '../src/webview/dashboardModel';
 import { VerificationEngine } from '../src/core/verification/verificationEngine';
-import { GitHistoryEngine } from '../src/core/history/gitHistoryEngine';
+import { GitHistoryEngine, unquoteGitPath, parseDiffHeaderPaths } from '../src/core/history/gitHistoryEngine';
 import { formatAsSarif } from '../src/core/sarif/sarifFormatter';
 import { DETECTOR_RULES } from '../src/core/detectors/rules';
 import { calculateRiskAssessment } from '../src/core/risk/riskEngine';
@@ -2404,6 +2404,123 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
           scanHistoryThrown = true;
         }
         assert(scanHistoryThrown === true, 'scanHistoryCommits throws operational error on failed git execution rather than returning clean []');
+
+        // 12. Chunk 1 succeeds and chunk 2 fails: returns SEARCH_INCOMPLETE with preserved partial matches
+        class ChunkFailureEngine extends GitHistoryEngine {
+          private grepCount = 0;
+          protected override async execGit(args: string[], options: any = {}): Promise<{ stdout: any; stderr: any }> {
+            if (args[0] === 'grep') {
+              this.grepCount++;
+              if (this.grepCount > 1) {
+                throw new Error('Simulated git grep disk read timeout in chunk 2');
+              }
+            }
+            return super.execGit(args, options);
+          }
+        }
+
+        const chunkEngine = new ChunkFailureEngine(sec40Repo);
+        const chunkResult = await chunkEngine.findCommitsContainingSecretResult(partialSecret);
+        assert(chunkResult.status === 'SEARCH_INCOMPLETE', 'findCommitsContainingSecretResult returns SEARCH_INCOMPLETE when chunk 2 fails');
+        assert(chunkResult.commitShas.length > 0, 'findCommitsContainingSecretResult preserves matches found in chunk 1 before failure');
+        assert(chunkResult.error?.includes('chunk 2'), 'findCommitsContainingSecretResult records chunk failure error');
+
+        const chunkTraceEngine = new ChunkFailureEngine(sec40Repo);
+        const chunkTrace = await chunkTraceEngine.traceSecret(partialSecret);
+        assert(chunkTrace.searchStatus === 'SEARCH_INCOMPLETE', 'traceSecret returns SEARCH_INCOMPLETE when search chunks partially fail');
+        assert(chunkTrace.isPresentInHistory === true, 'traceSecret preserves isPresentInHistory true on partially failed search');
+        assert(chunkTrace.isPresentInHead === 'UNKNOWN', 'traceSecret reports isPresentInHead UNKNOWN on incomplete search');
+        assert(chunkTrace.isRemote === 'UNKNOWN', 'traceSecret reports isRemote UNKNOWN on incomplete search');
+
+        // 13. Mixed metadata retrieval failure: some commit metadata requests succeed, others fail
+        const metaSecret = fromHex('6768705f6d65746164617461736563726574313233343536373839306162636465313233');
+        const metaFile1 = path.join(sec40Repo, 'meta1.txt');
+        fs.writeFileSync(metaFile1, `TOKEN=${metaSecret}\n`, 'utf8');
+        execFileSync('git', ['-C', sec40Repo, 'add', 'meta1.txt']);
+        execFileSync('git', ['-C', sec40Repo, 'commit', '-m', 'feat: meta commit 1']);
+        const metaCommit1Sha = execFileSync('git', ['-C', sec40Repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+
+        const metaFile2 = path.join(sec40Repo, 'meta2.txt');
+        fs.writeFileSync(metaFile2, `TOKEN=${metaSecret}\n`, 'utf8');
+        execFileSync('git', ['-C', sec40Repo, 'add', 'meta2.txt']);
+        execFileSync('git', ['-C', sec40Repo, 'commit', '-m', 'feat: meta commit 2']);
+        const metaCommit2Sha = execFileSync('git', ['-C', sec40Repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+
+        class PartialMetadataEngine extends GitHistoryEngine {
+          protected override async execGit(args: string[], options: any = {}): Promise<{ stdout: any; stderr: any }> {
+            if (args[0] === 'log' && args.includes(metaCommit2Sha)) {
+              throw new Error('Simulated git log object corruption on commit 2');
+            }
+            return super.execGit(args, options);
+          }
+        }
+
+        const partialMetaEngine = new PartialMetadataEngine(sec40Repo);
+        const partialMetaTrace = await partialMetaEngine.traceSecret(metaSecret);
+        assert(partialMetaTrace.searchStatus === 'SEARCH_INCOMPLETE', 'traceSecret returns SEARCH_INCOMPLETE when some commit metadata fails');
+        assert(partialMetaTrace.isPresentInHistory === true, 'traceSecret marks isPresentInHistory true when metadata partially succeeds');
+        assert(partialMetaTrace.statusDescription.includes('[INCOMPLETE METADATA: 1 of 2'), 'traceSecret visibly notes 1 of 2 metadata requests failed');
+
+        const partialMetaTimelineEngine = new GitTimelineEngine(sec40Repo, partialMetaEngine);
+        const partialMetaTimeline = await partialMetaTimelineEngine.buildTimeline(metaSecret, 'ghp_••••');
+        assert(partialMetaTimeline.currentStatus === 'SEARCH_INCOMPLETE', 'buildTimeline returns SEARCH_INCOMPLETE when commit metadata partially fails');
+        assert(partialMetaTimeline.timelineAscii.includes('INCOMPLETE'), 'buildTimeline ASCII notes incomplete metadata');
+
+        // 14. Working-tree candidate file becomes unreadable: throws operational error and reports UNKNOWN
+        class UnreadableCandidateEngine extends GitHistoryEngine {
+          public override async isSecretInWorkingTree(secret: string): Promise<boolean> {
+            throw new Error('EACCES: permission denied, read candidate file');
+          }
+        }
+        const unreadableEngine = new UnreadableCandidateEngine(sec40Repo);
+        let wtUnreadableThrown = false;
+        try {
+          await unreadableEngine.isSecretInWorkingTree('test_secret');
+        } catch {
+          wtUnreadableThrown = true;
+        }
+        assert(wtUnreadableThrown === true, 'isSecretInWorkingTree propagates candidate-file read failure as operational error');
+
+        const wtUnreadableTrace = await unreadableEngine.traceSecret(metaSecret);
+        assert(wtUnreadableTrace.isPresentInWorkingTree === 'UNKNOWN', 'traceSecret sets isPresentInWorkingTree to UNKNOWN on read error');
+        assert(wtUnreadableTrace.isSecretInWorkingTree === 'UNKNOWN', 'traceSecret sets isSecretInWorkingTree to UNKNOWN on read error');
+        assert(wtUnreadableTrace.searchStatus === 'SEARCH_INCOMPLETE', 'traceSecret marks searchStatus SEARCH_INCOMPLETE when working-tree inspection fails');
+
+        // 15. Binary files with quoted filenames containing spaces, quotes, and non-ASCII characters
+        assert(unquoteGitPath('"a/secret \\"quoted\\" café.bin"') === 'a/secret "quoted" café.bin', 'unquoteGitPath unquotes escaped double quotes and non-ASCII characters');
+        const parsedHeaderTest = parseDiffHeaderPaths('diff --git "a/path \\"quoted\\".bin" "b/path \\"quoted\\".bin"');
+        assert(parsedHeaderTest?.pathB === 'path "quoted".bin', 'parseDiffHeaderPaths unquotes escaped double quotes');
+
+        const quotedBinarySecret = fromHex('6768705f71756f74656462696e6172797365637265743132333435363738393061626364656631323334');
+        const quotedBinaryName = "assets/secret 'quoted' and space café.bin";
+        const quotedBinaryPath = path.join(sec40Repo, quotedBinaryName);
+        fs.mkdirSync(path.dirname(quotedBinaryPath), { recursive: true });
+        const quotedBinaryBuf = Buffer.concat([
+          Buffer.from([0x00, 0x01, 0x89, 0x50]),
+          Buffer.from(`const KEY = "${quotedBinarySecret}";\n`),
+          Buffer.from([0x00, 0xff, 0xfe]),
+        ]);
+        fs.writeFileSync(quotedBinaryPath, quotedBinaryBuf);
+        execFileSync('git', ['-C', sec40Repo, 'add', quotedBinaryName]);
+        execFileSync('git', ['-C', sec40Repo, 'commit', '-m', 'feat: add quoted non-ascii binary payload']);
+
+        const quotedFindings = await gitHistory.scanHistoryCommits(10);
+        const quotedFinding = quotedFindings.find((f: any) => f.rawSecret === quotedBinarySecret);
+        assert(quotedFinding !== undefined, 'scanHistoryCommits detects credential in binary file with spaces, quotes and non-ASCII filename');
+        assert(quotedFinding?.file.includes('café'), 'scanHistoryCommits unquotes and preserves non-ASCII filename path');
+
+        // 16. HEAD verification fails after credential has already been discovered in history
+        class HeadFailureEngine extends GitHistoryEngine {
+          public override async isSecretInHead(secret: string): Promise<boolean> {
+            throw new Error('Simulated HEAD object corruption');
+          }
+        }
+        const headFailureEngine = new HeadFailureEngine(sec40Repo);
+        const headFailTrace = await headFailureEngine.traceSecret(metaSecret);
+        assert(headFailTrace.isPresentInHead === 'UNKNOWN', 'traceSecret reports isPresentInHead UNKNOWN when HEAD inspection fails');
+        assert(headFailTrace.isPresentInHistory === true, 'traceSecret preserves isPresentInHistory true when secret is confirmed in history');
+        assert(headFailTrace.searchStatus === 'SEARCH_INCOMPLETE', 'traceSecret searchStatus is SEARCH_INCOMPLETE when HEAD inspection fails');
+        assert(headFailTrace.statusDescription.includes('INCOMPLETE HEAD VERIFICATION'), 'traceSecret notes INCOMPLETE HEAD VERIFICATION instead of claiming absent from HEAD');
       } finally {
         try {
           fs.rmSync(sec40Repo, { recursive: true, force: true });
