@@ -83,6 +83,9 @@ const fp2 = generateFingerprint('secret-12345');
 const fp3 = generateFingerprint('secret-99999');
 assert(fp1 === fp2, 'Identical secrets yield identical fingerprints');
 assert(fp1 !== fp3, 'Different secrets yield unique fingerprints');
+const multilineCRLF = 'dummy-multiline-token-sample\r\nsecond-line-payload\r\nthird-line-suffix';
+const multilineLF = 'dummy-multiline-token-sample\nsecond-line-payload\nthird-line-suffix';
+assert(generateFingerprint(multilineCRLF) === generateFingerprint(multilineLF), 'Multiline fingerprint matches deterministically across CRLF and LF');
 
 // --- 3. Provider Detection Engine Tests ---
 console.log('\n--- 3. Multi-Provider Detection Engine Tests ---');
