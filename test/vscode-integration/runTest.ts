@@ -18,6 +18,8 @@ async function main() {
       extensionDevelopmentPath,
       extensionTestsPath,
       launchArgs: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
         '--disable-extensions',
         '--disable-gpu',
         '--disable-workspace-trust',

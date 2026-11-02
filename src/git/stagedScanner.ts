@@ -219,8 +219,8 @@ function parseDiffHunks(diffOutput: string): Map<string, Set<number>> {
 
     if (addedLines.size > 0) {
       filesWithAdditions.set(bPath, addedLines);
-    } else if (chunk.includes('rename to ') || chunk.includes('new file mode ')) {
-      // Scored rename or new mode with no hunk additions: scan whole file (fail closed)
+    } else if (chunk.includes('rename to ') || chunk.includes('new file mode ') || chunk.includes('Binary files ')) {
+      // Scored rename, new file mode, or binary diff with no text hunks: scan whole file (fail closed)
       filesWithAdditions.set(bPath, new Set([-1]));
     }
   }

@@ -5,7 +5,7 @@ import { DiagnosticProvider } from './diagnostics/diagnosticProvider';
 import { SecretCodeActionProvider } from './diagnostics/codeActionProvider';
 import { FindingsTreeProvider, OverviewTreeProvider } from './sidebar/findingsTreeProvider';
 import { DashboardPanel } from './webview/dashboardPanel';
-import { GitService } from './git/gitService';
+import { GitService, recordInstalledHook, unrecordInstalledHook } from './git/gitService';
 import { SkippedFile } from './git/stagedScanner';
 import { SecretFinding, Risk } from './core/types';
 import { DEFAULT_FAIL_ON, meetsThreshold, resolveFailOn } from './core/policy';
@@ -408,7 +408,7 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('secret-leak-detector.installGitHook', async () => {
       const blockCommits = getConfig().get<boolean>('blockGitCommits', true);
       const configuredFailOn = resolveFailOn(getConfig().get<string>('failOn', DEFAULT_FAIL_ON));
-      const disallowInline = getConfig().get<boolean>('disallowInlineIgnore', false);
+      const disallowInline = getConfig().get<boolean>('disallowInlineIgnore', true);
       const failOnSkipped = getConfig().get<boolean>('failOnSkipped', false);
       const result = await gitService.installPreCommitHook(
         activeCliPath,
@@ -431,6 +431,7 @@ export function activate(context: vscode.ExtensionContext) {
             existingHooks.push(hookFile);
             fs.writeFileSync(hooksRecordPath, JSON.stringify(existingHooks, null, 2), 'utf8');
           }
+          recordInstalledHook(hookFile);
         } catch {}
         vscode.window.showInformationMessage(`🛡️ ${result.message}`);
       } else {
@@ -465,6 +466,7 @@ export function activate(context: vscode.ExtensionContext) {
             existingHooks.push(hookFile);
             fs.writeFileSync(hooksRecordPath, JSON.stringify(existingHooks, null, 2), 'utf8');
           }
+          recordInstalledHook(hookFile);
         } catch {}
         vscode.window.showInformationMessage(`🛡️ ${result.message} (Strict Mode: Fail on Skipped & No Inline Ignore)`);
       } else {
@@ -476,11 +478,11 @@ export function activate(context: vscode.ExtensionContext) {
   // Command: Uninstall Git Pre-Commit Hook
   context.subscriptions.push(
     vscode.commands.registerCommand('secret-leak-detector.uninstallGitHook', async () => {
+      const hookFile = await gitService.getHookPath();
       const result = await gitService.uninstallPreCommitHook();
       if (result.success) {
         try {
           const hooksRecordPath = path.join(context.globalStorageUri.fsPath, 'installed-hooks.json');
-          const hookFile = await gitService.getHookPath();
           if (fs.existsSync(hooksRecordPath)) {
             const parsed = JSON.parse(fs.readFileSync(hooksRecordPath, 'utf8'));
             if (Array.isArray(parsed)) {
@@ -488,6 +490,7 @@ export function activate(context: vscode.ExtensionContext) {
               fs.writeFileSync(hooksRecordPath, JSON.stringify(updated, null, 2), 'utf8');
             }
           }
+          unrecordInstalledHook(hookFile);
         } catch {}
         vscode.window.showInformationMessage(`🛡️ ${result.message}`);
       } else {

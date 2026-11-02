@@ -327,23 +327,23 @@ export function scanContent(
   }
 
   // D. Base64 encoded payload: Buffer.from("c2tfbGl2ZV8...", "base64"), atob("..."), or standalone base64 string literals
-  const b64Regex = /(?:(?:Buffer\.from|atob|b64decode)\s*\(\s*(?:b)?["']([A-Za-z0-9+/=_-]{20,300})["']|["']([A-Za-z0-9+/_-]{20,}={0,2})["']|(?:=|\:)\s*([A-Za-z0-9+/_-]{24,}={0,2}))/g;
+  const b64Regex = /(?:(?:Buffer\.from|atob|b64decode|b64_decode|base64_decode|DecodeString)\s*\(\s*(?:b)?["']([A-Za-z0-9+/=_-]{20,300})["']|["']([A-Za-z0-9+/_-]{20,}={0,2})["']|(?:=|\:)\s*([A-Za-z0-9+/_-]{20,}={0,2})|(?:^|[\r\n\s])([A-Za-z0-9+/_-]{24,}={0,2})(?:[\r\n\s]|$))/g;
   let b64Match: RegExpExecArray | null;
   while ((b64Match = b64Regex.exec(content)) !== null) {
-    const rawB64 = b64Match[1] || b64Match[2] || b64Match[3];
+    const rawB64 = b64Match[1] || b64Match[2] || b64Match[3] || b64Match[4];
     if (!rawB64) continue;
     try {
-      if (rawB64.length % 4 === 0 || rawB64.endsWith('=')) {
-        const normalizedB64 = rawB64.replace(/-/g, '+').replace(/_/g, '/');
-        const decoded = Buffer.from(normalizedB64, 'base64').toString('utf8');
-        if (decoded.length >= 10 && /^[\x20-\x7E\r\n\t]+$/.test(decoded)) {
-          candidates.push({
-            combined: decoded,
-            matchOffset: b64Match.index,
-            matchLength: b64Match[0].length,
-            description: 'Resolved base64-encoded credential payload',
-          });
-        }
+      const normalizedB64 = rawB64.replace(/-/g, '+').replace(/_/g, '/');
+      const padLen = (4 - (normalizedB64.length % 4)) % 4;
+      const paddedB64 = normalizedB64 + '='.repeat(padLen);
+      const decoded = Buffer.from(paddedB64, 'base64').toString('utf8');
+      if (decoded.length >= 10 && /^[\x20-\x7E\r\n\t]+$/.test(decoded)) {
+        candidates.push({
+          combined: decoded,
+          matchOffset: b64Match.index,
+          matchLength: b64Match[0].length,
+          description: 'Resolved base64-encoded credential payload',
+        });
       }
     } catch {}
   }
