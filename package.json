@@ -179,18 +179,18 @@
         },
         "secretLeakDetector.ignoreSkipped": {
           "type": "boolean",
-          "default": true,
+          "default": false,
           "description": "Treat binary files and oversized files as warnings during Git staged scans instead of blocking commits."
         },
         "secretLeakDetector.strict": {
           "type": "boolean",
-          "default": false,
+          "default": true,
           "description": "Enforce strict enterprise security: block commits on skipped files and disallow inline suppression comments."
         },
         "secretLeakDetector.failOnSkipped": {
           "type": "boolean",
-          "default": false,
-          "description": "Fail closed and block commits if any files cannot be inspected during staged scans (strict mode)."
+          "default": true,
+          "description": "Fail closed and block commits if any files cannot be inspected during staged scans (strict mode default)."
         },
         "secretLeakDetector.disallowInlineIgnore": {
           "type": "boolean",

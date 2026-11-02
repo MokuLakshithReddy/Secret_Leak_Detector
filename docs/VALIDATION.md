@@ -19,7 +19,7 @@ The document makes four concrete, independently verifiable claims:
 |-------|----------|
 | SLD detects realistic fake credentials | `demo/` — block-and-remediate fixture repo |
 | SLD ignores high-entropy non-secrets (low FP rate) | `evaluation/datasets/heldOutCorpus.ts` |
-| Core detector logic is covered by 361 automated tests | `test/runAllTests.ts` |
+| Core detector logic is covered by 399 automated tests | `test/runAllTests.ts` |
 | Pre-commit hook *actually* blocks commits | `test/integration/gitHookScenarios.test.ts` |
 
 ---
@@ -169,7 +169,7 @@ with the output of `npm run benchmark:heldout` and your Node.js + OS version.
 
 ### Overview
 
-`test/runAllTests.ts` contains **361 tests** across 36 sections. It is the
+`test/runAllTests.ts` contains **399 tests** across 39 sections. It is the
 primary regression guard run on every CI push/PR.
 
 ### Run
@@ -209,6 +209,19 @@ npm run build && node dist/test-suite.js
 | §24 | Dashboard Panel: CSP nonce, no inline onclick, safe DOM creation |
 | §25 | Verification Engine: deleted file Git history independence |
 | §26 | Baseline schema validation edge cases |
+| §27 | CLI Options & SARIF Schema Invariants |
+| §28 | Lexical AST: Method Calls & Property Access Suppressions |
+| §29 | Long Line Coordinate Mapping, Multi-Part Joins & Baseline Resolution |
+| §30 | Staged Added-Line Filter, Ignore-Skipped & Verification Invariants |
+| §31 | Verification Engine Integration & Git Staged Hook Invariants |
+| §32 | Content-Based Inspection, Encodings (UTF-16BE/32/Gzip), NUL Byte & Base64 Resilience |
+| §33 | Unicode/CRLF Normalization, Property Access & File Size Limits |
+| §34 | Private Salt (.sld/salt), Auto-Recovery Hook Cleanup & NON_TEXT_EXTENSIONS |
+| §35 | CI Trusted Base Ref, Staged Multiline PEM & Fail-On-Skipped Invariants |
+| §36 | Compact JSON, Quoted Auth Header, Hyphenated Keys & Hook Fail-Closed Defaults |
+| §37 | Cross-Platform Baseline Canonicalization, Deobfuscation Source Expressions, and Atomic Uninstaller |
+| §38 | Uninstaller Lock Race Protection, Capture Group Isolation & Strict Defaults |
+| §39 | History Scanning Multiline Invariants, Multi-Hunk Attributions, and Working-Tree State |
 
 > **Note:** Section §23 (GitHub Action: Shell Injection Prevention) was removed
 > when `action.yml` was deleted from the repository. The section numbers above

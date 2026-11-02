@@ -1,5 +1,6 @@
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import { GitHistoryEngine } from './gitHistoryEngine';
 
 // execFile (argument array) keeps untrusted values out of a shell, preventing
 // command injection via the credential being traced.
@@ -56,7 +57,7 @@ export interface ExposureTimelineReport {
   firstIntroducedDate?: string;
   removalDate?: string;
   totalExposureDays: number;
-  currentStatus: 'ACTIVE_IN_HEAD' | 'REMOVED_FROM_HEAD_PRESENT_IN_HISTORY' | 'CLEAN_UNCOMMITTED' | 'ERROR';
+  currentStatus: 'ACTIVE_IN_HEAD' | 'REMOVED_FROM_HEAD_PRESENT_IN_HISTORY' | 'CLEAN_UNCOMMITTED' | 'NOT_FOUND' | 'ERROR';
   reachableBranches: string[];
   isPushedToRemote: boolean;
   timelineAscii: string;
@@ -65,21 +66,90 @@ export interface ExposureTimelineReport {
 
 export class GitTimelineEngine {
   private workspaceRoot: string;
+  private gitHistory: GitHistoryEngine;
 
   constructor(workspaceRoot: string) {
     this.workspaceRoot = workspaceRoot;
+    this.gitHistory = new GitHistoryEngine(workspaceRoot);
   }
 
   public async buildTimeline(secret: string, redactedSecret: string): Promise<ExposureTimelineReport> {
-    let logOutput = '';
+    const lines: string[] = [];
 
     try {
-      const { stdout } = await execFileAsync(
-        'git',
-        ['log', `-S${secret}`, '--all', '--reverse', '--format=%H|%P|%an|%ae|%ad|%s', '--date=iso'],
-        { cwd: this.workspaceRoot, maxBuffer: 15 * 1024 * 1024 }
-      );
-      logOutput = stdout.trim();
+      const isGit = await this.gitHistory.isGitRepo();
+      if (!isGit) {
+        throw new Error(`Directory is not a Git repository: ${this.workspaceRoot}`);
+      }
+
+      const commitShas = await this.gitHistory.findCommitsContainingSecret(secret);
+      if (commitShas.length === 0) {
+        const inWorkingTree = await this.gitHistory.isSecretInWorkingTree(secret);
+        if (inWorkingTree) {
+          return {
+            secretRedacted: redactedSecret,
+            events: [],
+            totalExposureDays: 0,
+            currentStatus: 'CLEAN_UNCOMMITTED',
+            reachableBranches: ['working-tree'],
+            isPushedToRemote: false,
+            timelineAscii: 'Credential exists only in uncommitted local working tree.',
+            graph: {
+              nodes: [],
+              edges: [],
+              summary: {
+                totalExposedCommits: 0,
+                introducedCommit: '',
+                durationDays: 0,
+                branchesContaminated: ['working-tree'],
+                isPushedToRemote: false,
+              },
+            },
+          };
+        } else {
+          return {
+            secretRedacted: redactedSecret,
+            events: [],
+            totalExposureDays: 0,
+            currentStatus: 'NOT_FOUND',
+            reachableBranches: [],
+            isPushedToRemote: false,
+            timelineAscii: 'Credential was not found in Git history or working tree.',
+            graph: {
+              nodes: [],
+              edges: [],
+              summary: {
+                totalExposedCommits: 0,
+                introducedCommit: '',
+                durationDays: 0,
+                branchesContaminated: [],
+                isPushedToRemote: false,
+              },
+            },
+          };
+        }
+      }
+
+      // Fetch metadata for each commit without passing secret in argv
+      for (const sha of commitShas) {
+        try {
+          const { stdout: commitInfo } = await execFileAsync(
+            'git',
+            ['log', '-1', '--format=%H|%P|%an|%ae|%ad|%s', '--date=iso', sha],
+            { cwd: this.workspaceRoot, encoding: 'utf8' }
+          );
+          if (commitInfo.trim()) {
+            lines.push(commitInfo.trim());
+          }
+        } catch {}
+      }
+
+      // Sort commits chronologically ascending (oldest to newest)
+      lines.sort((a, b) => {
+        const dateA = a.split('|')[4] || '';
+        const dateB = b.split('|')[4] || '';
+        return new Date(dateA).getTime() - new Date(dateB).getTime();
+      });
     } catch (err: any) {
       return {
         secretRedacted: redactedSecret,
@@ -103,15 +173,15 @@ export class GitTimelineEngine {
       };
     }
 
-    if (!logOutput) {
+    if (lines.length === 0) {
       return {
         secretRedacted: redactedSecret,
         events: [],
         totalExposureDays: 0,
-        currentStatus: 'CLEAN_UNCOMMITTED',
-        reachableBranches: ['working-tree'],
+        currentStatus: 'NOT_FOUND',
+        reachableBranches: [],
         isPushedToRemote: false,
-        timelineAscii: 'Credential exists only in uncommitted local working tree.',
+        timelineAscii: 'Credential was not found in Git history or working tree.',
         graph: {
           nodes: [],
           edges: [],
@@ -119,14 +189,13 @@ export class GitTimelineEngine {
             totalExposedCommits: 0,
             introducedCommit: '',
             durationDays: 0,
-            branchesContaminated: ['working-tree'],
+            branchesContaminated: [],
             isPushedToRemote: false,
           },
         },
       };
     }
 
-    const lines = logOutput.split('\n').filter((l) => l.trim().length > 0);
     const events: GitTimelineEvent[] = [];
     let firstDate: Date | undefined;
     let allReachableBranches = new Set<string>();
@@ -173,15 +242,8 @@ export class GitTimelineEngine {
       if (i === 0) {
         eventType = 'INTRODUCED';
       } else if (i === lines.length - 1) {
-        // Check if secret currently in HEAD
-        try {
-          await execFileAsync('git', ['grep', '-F', '-q', '-e', secret, 'HEAD'], {
-            cwd: this.workspaceRoot,
-          });
-          eventType = 'MODIFIED';
-        } catch (err: any) {
-          eventType = 'REMOVED';
-        }
+        const inHead = await this.gitHistory.isSecretInHead(secret);
+        eventType = inHead ? 'MODIFIED' : 'REMOVED';
       } else if (isMergeCommit) {
         eventType = 'MERGED_IN';
       }
@@ -201,15 +263,7 @@ export class GitTimelineEngine {
     }
 
     const lastEvent = events[events.length - 1];
-    let isPresentInHead = false;
-    try {
-      await execFileAsync('git', ['grep', '-F', '-q', '-e', secret, 'HEAD'], {
-        cwd: this.workspaceRoot,
-      });
-      isPresentInHead = true;
-    } catch (err: any) {
-      isPresentInHead = false;
-    }
+    const isPresentInHead = await this.gitHistory.isSecretInHead(secret);
 
     const currentStatus = isPresentInHead
       ? 'ACTIVE_IN_HEAD'

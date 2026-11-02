@@ -2030,11 +2030,123 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
       assert(DEFAULT_IGNORE_PATTERNS.includes('.vscode-test/**'), 'DEFAULT_IGNORE_PATTERNS includes .vscode-test/**');
       assert(DEFAULT_IGNORE_PATTERNS.includes('**/.vscode-test/**'), 'DEFAULT_IGNORE_PATTERNS includes **/.vscode-test/**');
 
-      // 6. Hook defaults to warning on skipped (0), but strict hook enables failOnSkipped (1)
+      // 6. Hook defaults to strict failOnSkipped (1), relaxed hook sets failOnSkipped to 0
       const defaultHook = buildPreCommitHook();
-      assert(defaultHook.includes('SLD_FAIL_ON_SKIPPED_DEFAULT="0"'), 'Default hook defaults failOnSkipped to 0');
-      const strictHook = buildPreCommitHook(undefined, undefined, undefined, true, true, true);
-      assert(strictHook.includes('SLD_FAIL_ON_SKIPPED_DEFAULT="1"'), 'Strict hook sets failOnSkipped to 1');
+      assert(defaultHook.includes('SLD_FAIL_ON_SKIPPED_DEFAULT="1"'), 'Default hook defaults failOnSkipped to 1 (strict fail-closed)');
+      const relaxedHook = buildPreCommitHook(undefined, undefined, undefined, true, true, false);
+      assert(relaxedHook.includes('SLD_FAIL_ON_SKIPPED_DEFAULT="0"'), 'Relaxed hook sets failOnSkipped to 0');
+    }
+
+    // --- 39. History Scanning Multiline Invariants, Multi-Hunk Attributions, and Working-Tree State ---
+    console.log('\n--- 39. History Scanning Multiline Invariants, Multi-Hunk Attributions, and Working-Tree State ---');
+    {
+      const { GitHistoryEngine } = require('../src/core/history/gitHistoryEngine');
+      const { GitTimelineEngine } = require('../src/core/history/gitTimeline');
+      const { execFileSync } = require('child_process');
+
+      const testHistoryRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-hist-pem-'));
+      try {
+        execFileSync('git', ['init', testHistoryRepo]);
+        execFileSync('git', ['-C', testHistoryRepo, 'config', 'user.name', 'Security Tester']);
+        execFileSync('git', ['-C', testHistoryRepo, 'config', 'user.email', 'sec@test.com']);
+
+        const gitHistory = new GitHistoryEngine(testHistoryRepo);
+        const gitTimeline = new GitTimelineEngine(testHistoryRepo);
+
+        // 1. PEM header existing before body added (detected when body is introduced)
+        // Commit 1: Header and placeholder footer
+        fs.writeFileSync(
+          path.join(testHistoryRepo, 'server.pem'),
+          '-----BEGIN RSA PRIVATE KEY-----\n// pending key insertion\n-----END RSA PRIVATE KEY-----\n',
+          'utf8'
+        );
+        execFileSync('git', ['-C', testHistoryRepo, 'add', 'server.pem']);
+        execFileSync('git', ['-C', testHistoryRepo, 'commit', '-m', 'chore: add placeholder cert']);
+
+        // Commit 2: Replace body with real PEM key
+        const realPem = '-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0Y1v8d2Y3e9aB+L/7m4Q7z8R1t9u2v3w4x5y6z7a8b9c0d1e2f3g\n4h5i6j7k8l9m0n1o2p3q4r5s6t7u8v9w0x1y2z3a4b5c6d7e8f9g0h1i2j3k4l5m6n7o\n8p9q0r1s2t3u4v5w6x7y8z9a0b1c2d3e4f5g6h7i8j9k0l1m2n3o4p5q6r7s8t9u0v1w\n-----END RSA PRIVATE KEY-----';
+        fs.writeFileSync(path.join(testHistoryRepo, 'server.pem'), realPem + '\n', 'utf8');
+        execFileSync('git', ['-C', testHistoryRepo, 'add', 'server.pem']);
+        execFileSync('git', ['-C', testHistoryRepo, 'commit', '-m', 'feat: install private key']);
+
+        const findings1 = await gitHistory.scanHistoryCommits();
+        const pemFinding1 = findings1.find((f: any) => f.rawSecret && f.rawSecret.includes('MIIEowIBAAKCAQEA0Y1v8d2Y3e9aB+L/7m4Q7z8R1t9u2v3w4x5y6z7a8b9c0d1e2f3g'));
+        assert(pemFinding1 !== undefined, 'scanHistoryCommits detects PEM key when body was added after header existed');
+        assert(pemFinding1?.gitExposure?.isPresentInHead === true, 'PEM key is active in HEAD');
+
+        // 2. PEM body modified while another credential (API key) added in same commit
+        // Commit 3: update PEM key body + add GitHub token in config.json
+        const updatedPem = '-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA8888888888888888888888888888888888888888888888888888\n4h5i6j7k8l9m0n1o2p3q4r5s6t7u8v9w0x1y2z3a4b5c6d7e8f9g0h1i2j3k4l5m6n7o\n8p9q0r1s2t3u4v5w6x7y8z9a0b1c2d3e4f5g6h7i8j9k0l1m2n3o4p5q6r7s8t9u0v1w\n-----END RSA PRIVATE KEY-----';
+        const githubToken = 'ghp_' + '111122223333444455556666777788889999';
+        fs.writeFileSync(path.join(testHistoryRepo, 'server.pem'), updatedPem + '\n', 'utf8');
+        fs.writeFileSync(path.join(testHistoryRepo, 'config.json'), JSON.stringify({ token: githubToken }), 'utf8');
+        execFileSync('git', ['-C', testHistoryRepo, 'add', 'server.pem', 'config.json']);
+        execFileSync('git', ['-C', testHistoryRepo, 'commit', '-m', 'feat: update cert and add github pat']);
+
+        const findings2 = await gitHistory.scanHistoryCommits();
+        const pemFinding2 = findings2.find((f: any) => f.rawSecret && f.rawSecret.includes('MIIEowIBAAKCAQEA8888888888888888888888888888888888888888888888888888'));
+        const ghFinding2 = findings2.find((f: any) => f.rawSecret === githubToken);
+        assert(pemFinding2 !== undefined, 'scanHistoryCommits detects modified PEM key in multi-secret commit');
+        assert(ghFinding2 !== undefined, 'scanHistoryCommits detects GitHub PAT in same commit as modified PEM key');
+
+        // 3. PEM key removed while header remains (isPresentInHead === false)
+        // Commit 4: Delete PEM body from server.pem, leaving only delimiters
+        fs.writeFileSync(
+          path.join(testHistoryRepo, 'server.pem'),
+          '-----BEGIN RSA PRIVATE KEY-----\n-----END RSA PRIVATE KEY-----\n',
+          'utf8'
+        );
+        execFileSync('git', ['-C', testHistoryRepo, 'add', 'server.pem']);
+        execFileSync('git', ['-C', testHistoryRepo, 'commit', '-m', 'chore: revoke cert leaving placeholder']);
+
+        const inHeadAfterRevocation = await gitHistory.isSecretInHead(realPem, 'server.pem');
+        assert(inHeadAfterRevocation === false, 'isSecretInHead returns false when PEM body is removed but header remains');
+
+        const findingsAfterRevocation = await gitHistory.scanHistoryCommits();
+        const historicalPem = findingsAfterRevocation.find((f: any) => f.rawSecret && f.rawSecret.includes('MIIEowIBAAKCAQEA0Y1v8d2Y3e9aB+L/7m4Q7z8R1t9u2v3w4x5y6z7a8b9c0d1e2f3g'));
+        assert(historicalPem !== undefined, 'Revoked PEM key is preserved in historical commit findings');
+        assert(historicalPem?.gitExposure?.isPresentInHead === false, 'Revoked PEM key correctly marked as NOT present in HEAD');
+
+        // 4. Credential added in hunk 3 of a multi-hunk diff
+        const distantFile = path.join(testHistoryRepo, 'distant.txt');
+        const initialLines = Array.from({ length: 300 }, (_, i) => `line ${i + 1}`);
+        fs.writeFileSync(distantFile, initialLines.join('\n') + '\n', 'utf8');
+        execFileSync('git', ['-C', testHistoryRepo, 'add', 'distant.txt']);
+        execFileSync('git', ['-C', testHistoryRepo, 'commit', '-m', 'chore: add large baseline file']);
+
+        // Modify at line 10, line 150, and line 280 (hunk 3 contains secret)
+        const hunkSecret = 'ghp_' + '999988887777666655554444333322221111';
+        initialLines[9] = 'modified line 10';
+        initialLines[149] = 'modified line 150';
+        initialLines[279] = `const TOKEN = "${hunkSecret}";`;
+        fs.writeFileSync(distantFile, initialLines.join('\n') + '\n', 'utf8');
+        execFileSync('git', ['-C', testHistoryRepo, 'add', 'distant.txt']);
+        execFileSync('git', ['-C', testHistoryRepo, 'commit', '-m', 'feat: update lines across file with token']);
+
+        const findingsMultiHunk = await gitHistory.scanHistoryCommits();
+        const hunkFinding = findingsMultiHunk.find((f: any) => f.rawSecret === hunkSecret);
+        assert(hunkFinding !== undefined, 'scanHistoryCommits detects credential in hunk 3 of multi-hunk diff');
+
+        // 5. Empty history results verified against working tree:
+        // Absent everywhere -> NOT_FOUND
+        const phantomSecret = 'ghp_' + '000000000000000000000000000000000000';
+        const tracePhantom = await gitHistory.traceSecret(phantomSecret);
+        assert(tracePhantom.statusDescription.includes('not found in Git history or working tree'), 'traceSecret reports NOT_FOUND when secret is absent everywhere');
+        const timelinePhantom = await gitTimeline.buildTimeline(phantomSecret, 'ghp_••••');
+        assert(timelinePhantom.currentStatus === 'NOT_FOUND', 'buildTimeline reports NOT_FOUND when secret is absent everywhere');
+
+        // Present in working tree only (uncommitted) -> CLEAN_UNCOMMITTED
+        const uncommittedSecret = 'ghp_' + 'abcdeabcdeabcdeabcdeabcdeabcdeabcdea';
+        fs.writeFileSync(path.join(testHistoryRepo, 'uncommitted.ts'), `const secret = "${uncommittedSecret}";\n`, 'utf8');
+        const traceUncommitted = await gitHistory.traceSecret(uncommittedSecret);
+        assert(traceUncommitted.statusDescription.includes('Present in working tree only (uncommitted)'), 'traceSecret reports uncommitted working tree status');
+        const timelineUncommitted = await gitTimeline.buildTimeline(uncommittedSecret, 'ghp_••••');
+        assert(timelineUncommitted.currentStatus === 'CLEAN_UNCOMMITTED', 'buildTimeline reports CLEAN_UNCOMMITTED when present in working tree only');
+      } finally {
+        try {
+          fs.rmSync(testHistoryRepo, { recursive: true, force: true });
+        } catch {}
+      }
     }
 
   console.log('\n============================================================');

@@ -1,13 +1,15 @@
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
 import { GitExposure, GitCommitInfo, SecretFinding } from '../types';
 import { scanContent } from '../scanner/scanner';
 import { calculateRiskAssessment } from '../risk/riskEngine';
 import { CORE_RULES } from '../detectors/rules';
 
-// execFile (argument array) is used everywhere so untrusted values such as the
-// credential being traced are passed as argv elements and NEVER interpreted by a
-// shell. Shell string interpolation here was a command-injection vector.
+// execFile is used with safe argument arrays and pattern files so credentials
+// are NEVER exposed in command-line arguments or process inspection tables (ps aux / /proc).
 const execFileAsync = promisify(execFile);
 
 function parseAddedLineNumbersFromDiff(diffText: string): Set<number> {
@@ -57,7 +59,204 @@ export class GitHistoryEngine {
   }
 
   /**
+   * Selects the most specific and identifying line from a secret for secure pattern matching.
+   * For multiline secrets (such as PEM blocks), ignores common delimiters (e.g. -----BEGIN...)
+   * and chooses the longest high-entropy body line.
+   */
+  public pickDistinctiveSearchLine(secret: string): string {
+    const lines = secret.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0);
+    if (lines.length <= 1) return secret.trim();
+    const nonDelim = lines.filter((l) => !l.startsWith('-----') && !l.endsWith('-----'));
+    if (nonDelim.length > 0) {
+      return nonDelim.reduce((a, b) => (a.length >= b.length ? a : b));
+    }
+    return lines[0];
+  }
+
+  /**
+   * Safely checks whether a secret exists anywhere in HEAD (by full content comparison,
+   * without ever exposing the credential in process command-line arguments).
+   */
+  public async isSecretInHead(secret: string, hintFileName?: string): Promise<boolean> {
+    if (!secret || !secret.trim()) return false;
+    const normSecret = secret.replace(/\r\n/g, '\n');
+
+    // 1. If a hint file path is known, check that file directly at HEAD
+    if (hintFileName) {
+      try {
+        const { stdout: fileContent } = await execFileAsync(
+          'git',
+          ['show', `HEAD:${hintFileName}`],
+          { cwd: this.workspaceRoot, maxBuffer: 10 * 1024 * 1024, encoding: 'utf8' }
+        );
+        if (fileContent.replace(/\r\n/g, '\n').includes(normSecret)) {
+          return true;
+        }
+      } catch {}
+    }
+
+    // 2. Search candidate files in HEAD using an isolated pattern file
+    const tmp = path.join(os.tmpdir(), `sld-hcheck-${Date.now()}-${Math.random().toString(36).slice(2)}.pat`);
+    const patternLine = this.pickDistinctiveSearchLine(secret);
+    if (!patternLine) return false;
+
+    try {
+      fs.writeFileSync(tmp, patternLine + '\n', { encoding: 'utf8', mode: 0o600 });
+      const { stdout } = await execFileAsync(
+        'git',
+        ['grep', '-F', '-l', '-f', tmp, 'HEAD'],
+        { cwd: this.workspaceRoot, encoding: 'utf8' }
+      );
+      const matches = stdout.trim().split('\n').filter(Boolean);
+      for (const m of matches) {
+        const candidateFile = m.replace(/^HEAD:/, '').trim();
+        try {
+          const { stdout: content } = await execFileAsync(
+            'git',
+            ['show', `HEAD:${candidateFile}`],
+            { cwd: this.workspaceRoot, maxBuffer: 10 * 1024 * 1024, encoding: 'utf8' }
+          );
+          if (content.replace(/\r\n/g, '\n').includes(normSecret)) {
+            return true;
+          }
+        } catch {}
+      }
+      return false;
+    } catch {
+      return false;
+    } finally {
+      try { fs.unlinkSync(tmp); } catch {}
+    }
+  }
+
+  /**
+   * Safely checks whether a secret exists in tracked, staged, or untracked working-tree files
+   * without exposing credentials in command-line arguments.
+   */
+  public async isSecretInWorkingTree(secret: string): Promise<boolean> {
+    if (!secret || !secret.trim()) return false;
+    const tmp = path.join(os.tmpdir(), `sld-wtcheck-${Date.now()}-${Math.random().toString(36).slice(2)}.pat`);
+    const patternLine = this.pickDistinctiveSearchLine(secret);
+    if (!patternLine) return false;
+
+    try {
+      fs.writeFileSync(tmp, patternLine + '\n', { encoding: 'utf8', mode: 0o600 });
+      const matchedFiles: string[] = [];
+
+      try {
+        const { stdout: untrackedOut } = await execFileAsync(
+          'git',
+          ['grep', '-F', '-l', '-f', tmp, '--untracked'],
+          { cwd: this.workspaceRoot, encoding: 'utf8' }
+        );
+        matchedFiles.push(...untrackedOut.trim().split('\n').filter(Boolean));
+      } catch {}
+
+      try {
+        const { stdout: cachedOut } = await execFileAsync(
+          'git',
+          ['grep', '-F', '-l', '-f', tmp, '--cached'],
+          { cwd: this.workspaceRoot, encoding: 'utf8' }
+        );
+        matchedFiles.push(...cachedOut.trim().split('\n').filter(Boolean));
+      } catch {}
+
+      if (matchedFiles.length === 0) return false;
+
+      const normSecret = secret.replace(/\r\n/g, '\n');
+      const uniqueFiles = Array.from(new Set(matchedFiles));
+      for (const relFile of uniqueFiles) {
+        const absPath = path.resolve(this.workspaceRoot, relFile);
+        if (fs.existsSync(absPath)) {
+          try {
+            const content = fs.readFileSync(absPath, 'utf8').replace(/\r\n/g, '\n');
+            if (content.includes(normSecret)) {
+              return true;
+            }
+          } catch {}
+        }
+      }
+      return false;
+    } catch {
+      return false;
+    } finally {
+      try { fs.unlinkSync(tmp); } catch {}
+    }
+  }
+
+  /**
+   * Finds all Git commit SHAs that touched or introduced a secret without passing the secret
+   * in command-line arguments. Uses temporary pattern files with git grep across rev-list commits.
+   */
+  public async findCommitsContainingSecret(secret: string, maxCommits = 200): Promise<string[]> {
+    if (!secret || !secret.trim()) return [];
+    const tmp = path.join(os.tmpdir(), `sld-trace-${Date.now()}-${Math.random().toString(36).slice(2)}.pat`);
+    const patternLine = this.pickDistinctiveSearchLine(secret);
+    if (!patternLine) return [];
+
+    try {
+      fs.writeFileSync(tmp, patternLine + '\n', { encoding: 'utf8', mode: 0o600 });
+      const revArgs = ['rev-list', '--all'];
+      if (maxCommits > 0) {
+        revArgs.push('-n', String(maxCommits));
+      }
+      const { stdout: revOut } = await execFileAsync(
+        'git',
+        revArgs,
+        { cwd: this.workspaceRoot, maxBuffer: 10 * 1024 * 1024, encoding: 'utf8' }
+      );
+      const revs = revOut.trim().split('\n').filter(Boolean);
+      if (revs.length === 0) return [];
+
+      const chunkSize = 40;
+      const matchingCommitsSet = new Set<string>();
+      const normSecret = secret.replace(/\r\n/g, '\n');
+
+      for (let i = 0; i < revs.length; i += chunkSize) {
+        const chunk = revs.slice(i, i + chunkSize);
+        try {
+          const { stdout: grepOut } = await execFileAsync(
+            'git',
+            ['grep', '-F', '-l', '-f', tmp, ...chunk],
+            { cwd: this.workspaceRoot, maxBuffer: 10 * 1024 * 1024, encoding: 'utf8' }
+          );
+          const matches = grepOut.trim().split('\n').filter(Boolean);
+          for (const m of matches) {
+            const colonIdx = m.indexOf(':');
+            if (colonIdx !== -1) {
+              const cSha = m.substring(0, colonIdx);
+              const cPath = m.substring(colonIdx + 1);
+              if (secret.includes('\n')) {
+                try {
+                  const { stdout: content } = await execFileAsync(
+                    'git',
+                    ['show', `${cSha}:${cPath}`],
+                    { cwd: this.workspaceRoot, maxBuffer: 10 * 1024 * 1024, encoding: 'utf8' }
+                  );
+                  if (content.replace(/\r\n/g, '\n').includes(normSecret)) {
+                    matchingCommitsSet.add(cSha);
+                  }
+                } catch {}
+              } else {
+                matchingCommitsSet.add(cSha);
+              }
+            }
+          }
+        } catch {}
+      }
+
+      return Array.from(matchingCommitsSet);
+    } catch {
+      return [];
+    } finally {
+      try { fs.unlinkSync(tmp); } catch {}
+    }
+  }
+
+  /**
    * Traces the provenance and historical exposure lifecycle of a specific secret.
+   * Never exposes credentials in process arguments; verifies presence in working tree
+   * before reporting uncommitted status.
    */
   public async traceSecret(secret: string): Promise<GitExposure> {
     const isGit = await this.isGitRepo();
@@ -73,9 +272,6 @@ export class GitHistoryEngine {
     }
 
     try {
-      // Find all commits that added or removed the secret string.
-      // The secret is passed as a single `-S<string>` argv token (no shell),
-      // so quotes / metacharacters / command substitution cannot be injected.
       if (secret.length === 0) {
         return {
           isPresentInHead: false,
@@ -86,49 +282,72 @@ export class GitHistoryEngine {
           statusDescription: 'Empty string is not a traceable credential',
         };
       }
-      const { stdout } = await execFileAsync(
-        'git',
-        ['log', `-S${secret}`, '--all', '--format=%H|%an|%ad|%s', '--date=iso'],
-        { cwd: this.workspaceRoot, maxBuffer: 10 * 1024 * 1024 }
-      );
 
-      const lines = stdout.trim().split('\n').filter((l) => l.trim().length > 0);
-      if (lines.length === 0) {
+      const commitShas = await this.findCommitsContainingSecret(secret);
+      if (commitShas.length === 0) {
+        const inWorkingTree = await this.isSecretInWorkingTree(secret);
+        if (inWorkingTree) {
+          return {
+            isPresentInHead: false,
+            isPresentInHistory: false,
+            exposureDurationDays: 0,
+            branches: ['working-tree'],
+            isRemote: false,
+            statusDescription: 'Present in working tree only (uncommitted)',
+            commitCount: 0,
+          };
+        } else {
+          return {
+            isPresentInHead: false,
+            isPresentInHistory: false,
+            exposureDurationDays: 0,
+            branches: [],
+            isRemote: false,
+            statusDescription: 'Credential not found in Git history or working tree',
+            commitCount: 0,
+          };
+        }
+      }
+
+      const parsedCommits: GitCommitInfo[] = [];
+      for (const sha of commitShas) {
+        try {
+          const { stdout: commitInfo } = await execFileAsync(
+            'git',
+            ['log', '-1', '--format=%H|%an|%ad|%s', '--date=iso', sha],
+            { cwd: this.workspaceRoot, encoding: 'utf8' }
+          );
+          const [cSha, author, date, ...rest] = commitInfo.trim().split('|');
+          if (cSha) {
+            parsedCommits.push({
+              sha: cSha,
+              author: author || 'Unknown',
+              date: date || new Date().toISOString(),
+              message: rest.join('|') || '',
+            });
+          }
+        } catch {}
+      }
+
+      if (parsedCommits.length === 0) {
         return {
-          isPresentInHead: true,
+          isPresentInHead: false,
           isPresentInHistory: false,
           exposureDurationDays: 0,
-          branches: ['working-tree'],
+          branches: [],
           isRemote: false,
-          statusDescription: 'Present in working tree only (uncommitted)',
+          statusDescription: 'Credential not found in Git history or working tree',
+          commitCount: 0,
         };
       }
 
-      // Commits are returned newest first.
-      const parsedCommits: GitCommitInfo[] = lines.map((line) => {
-        const [sha, author, date, ...rest] = line.split('|');
-        return {
-          sha: sha || '',
-          author: author || 'Unknown',
-          date: date || new Date().toISOString(),
-          message: rest.join('|') || '',
-        };
-      });
+      // Sort newest first
+      parsedCommits.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
       const introducedCommit = parsedCommits[parsedCommits.length - 1];
       const lastModifiedCommit = parsedCommits[0];
 
-      // Check if secret currently exists in HEAD. `-e` separates the pattern so
-      // a credential beginning with '-' is still treated as data by git.
-      let isPresentInHead = false;
-      try {
-        await execFileAsync('git', ['grep', '-F', '-q', '-e', secret, 'HEAD'], {
-          cwd: this.workspaceRoot,
-        });
-        isPresentInHead = true;
-      } catch {
-        isPresentInHead = false;
-      }
+      const isPresentInHead = await this.isSecretInHead(secret);
 
       // Check branches containing the introduced commit
       let branches: string[] = [];
@@ -154,7 +373,6 @@ export class GitHistoryEngine {
       let endDate = Date.now();
 
       if (!isPresentInHead && parsedCommits.length > 1) {
-        // If not in HEAD, latest commit in the list was likely the removal commit
         removedCommit = parsedCommits[0];
         endDate = new Date(removedCommit.date).getTime();
       }
@@ -185,7 +403,7 @@ export class GitHistoryEngine {
       };
     } catch {
       return {
-        isPresentInHead: true,
+        isPresentInHead: false,
         isPresentInHistory: false,
         exposureDurationDays: 0,
         branches: ['main'],
@@ -244,11 +462,20 @@ export class GitHistoryEngine {
 
           if (!addedLines.trim()) continue;
 
-          let diffFindings = scanContent(addedLines, fileName, {
+          const diffFindings = scanContent(addedLines, fileName, {
             workspaceRoot: this.workspaceRoot,
           });
 
-          if (diffFindings.length === 0 && (diff.includes('KEY') || diff.includes('CERTIFICATE') || diff.includes('SECRET') || diff.length > 500)) {
+          // Always check the full snapshot for multiline secrets (e.g. PEM keys whose body was
+          // added or modified while the header was pre-existing) across relevant files,
+          // rather than skipping when other findings (e.g. an API key) are detected in addedLines.
+          if (
+            diff.includes('-----BEGIN') ||
+            diff.includes('KEY') ||
+            diff.includes('CERTIFICATE') ||
+            diff.includes('SECRET') ||
+            diff.length > 250
+          ) {
             try {
               const { stdout: fullSnapshot } = await execFileAsync(
                 'git',
@@ -258,9 +485,20 @@ export class GitHistoryEngine {
               const snapshotFindings = scanContent(fullSnapshot, fileName, { workspaceRoot: this.workspaceRoot });
               if (snapshotFindings.length > 0) {
                 const addedLineNumbers = parseAddedLineNumbersFromDiff(diff);
-                const relevant = snapshotFindings.filter((sf) => addedLineNumbers.has(sf.line));
-                if (relevant.length > 0) {
-                  diffFindings = relevant;
+                for (const sf of snapshotFindings) {
+                  const secretLines = sf.rawSecret ? (sf.rawSecret.match(/\n/g) || []).length + 1 : 1;
+                  let intersects = false;
+                  for (let i = 0; i < secretLines; i++) {
+                    if (addedLineNumbers.has(sf.line + i)) {
+                      intersects = true;
+                      break;
+                    }
+                  }
+                  if (intersects) {
+                    if (!diffFindings.some((df) => df.fingerprint === sf.fingerprint)) {
+                      diffFindings.push(sf);
+                    }
+                  }
                 }
               }
             } catch {}
@@ -271,17 +509,7 @@ export class GitHistoryEngine {
             if (headCheckCache.has(f.rawSecret)) {
               isPresentInHead = headCheckCache.get(f.rawSecret)!;
             } else {
-              try {
-                const pattern = f.rawSecret.includes('\n') ? f.rawSecret.split('\n')[0] : f.rawSecret;
-                if (pattern.trim()) {
-                  await execFileAsync('git', ['grep', '-F', '-q', '-e', pattern, 'HEAD'], {
-                    cwd: this.workspaceRoot,
-                  });
-                  isPresentInHead = true;
-                }
-              } catch {
-                isPresentInHead = false;
-              }
+              isPresentInHead = await this.isSecretInHead(f.rawSecret, fileName);
               headCheckCache.set(f.rawSecret, isPresentInHead);
             }
 
