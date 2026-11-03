@@ -793,6 +793,9 @@ async function runFix(cmdArgs: string[], cwd: string) {
   for (const f of findings) {
     const result = applyControlledRemediation(f, cwd);
     if (result.success) {
+      if (result.degradedSecurity || result.warning) {
+        console.warn(`⚠️  ${result.warning || result.message}`);
+      }
       console.log(`✅ Applied fix: ${result.message}`);
     } else {
       console.error(`❌ Failed: ${result.message}`);

@@ -100,7 +100,10 @@ export class VerificationEngine {
       !gitExposure ||
       gitExposure.isPresentInHistory === 'UNKNOWN' ||
       gitExposure.searchStatus === 'SEARCH_INCOMPLETE' ||
+      gitExposure.searchStatus === 'PARTIAL_HISTORY' ||
       gitExposure.searchStatus === 'ERROR' ||
+      gitExposure.isPartialHistory ||
+      gitExposure.isShallow ||
       gitExposure.statusDescription.includes('Failed to query git log')
     ) {
       return {
@@ -109,8 +112,12 @@ export class VerificationEngine {
         workingTreeClean: true,
         historyStatus: 'UNKNOWN',
         details: fileExists
-          ? 'Secret removed from working tree, but Git repository history could not be verified.'
-          : 'Offending file removed from working tree, but Git repository history could not be verified.',
+          ? (gitExposure?.isShallow
+              ? 'Secret removed from working tree, but repository is a shallow clone; historical commits could not be fully verified.'
+              : 'Secret removed from working tree, but Git repository history could not be verified.')
+          : (gitExposure?.isShallow
+              ? 'Offending file removed from working tree, but repository is a shallow clone; historical commits could not be fully verified.'
+              : 'Offending file removed from working tree, but Git repository history could not be verified.'),
         timestamp: now,
       };
     }

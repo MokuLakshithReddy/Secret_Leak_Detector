@@ -2,7 +2,7 @@
 
 [![Visual Studio Code](https://img.shields.io/badge/VS%20Code-v1.85+-blue.svg?logo=visualstudiocode)](https://code.visualstudio.com/)
 [![CI Status](https://github.com/MokuLakshithReddy/Secret_Leak_Detector/actions/workflows/secret-leak-detector.yml/badge.svg)](https://github.com/MokuLakshithReddy/Secret_Leak_Detector/actions)
-[![Tests](https://img.shields.io/badge/tests-668%20passed%20%28611%20core%20%2B%2040%20git--hook%20%2B%2017%20manifest%29-brightgreen.svg)](https://github.com/MokuLakshithReddy/Secret_Leak_Detector/actions)
+[![Tests](https://img.shields.io/badge/tests-700%20passed%20%28643%20core%20%2B%2040%20git--hook%20%2B%2017%20manifest%29-brightgreen.svg)](https://github.com/MokuLakshithReddy/Secret_Leak_Detector/actions)
 [![Benchmark F1](https://img.shields.io/badge/benchmark%20F1-100%25-brightgreen.svg)](docs/VALIDATION.md)
 [![Corpus](https://img.shields.io/badge/corpus-1%2C000%20synthetic%20%2B%20100%20curated-blueviolet.svg)](docs/VALIDATION.md)
 [![Precision](https://img.shields.io/badge/precision-100%25-00e5b0.svg)]()
@@ -321,7 +321,7 @@ Secret Leak Detector is engineered against 6 primary security threats:
 
 ## 🧪 Testing & Verification
 
-Run the comprehensive security engineering test suite (668 tests: 611 core unit/AST/risk/baseline/history tests across 44 sections, 40 Git hook scenario tests, and 17 VS Code manifest & mock tests):
+Run the comprehensive security engineering test suite (700 tests: 643 core unit/AST/risk/baseline/history tests across 45 sections, 40 Git hook scenario tests, and 17 VS Code manifest & mock tests):
 
 ```bash
 npm test

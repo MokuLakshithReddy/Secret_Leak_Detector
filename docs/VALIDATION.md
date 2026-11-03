@@ -169,7 +169,7 @@ with the output of `npm run benchmark:heldout` and your Node.js + OS version.
 
 ### Overview
 
-`test/runAllTests.ts` contains **611 tests** across 44 sections. It is the
+`test/runAllTests.ts` contains **643 tests** across 45 sections. It is the
 primary regression guard run on every CI push/PR.
 
 ### Run
@@ -297,7 +297,7 @@ git clone https://github.com/MokuLakshithReddy/Secret_Leak_Detector.git
 cd Secret_Leak_Detector
 npm ci
 npm run build
-npm test                     # 611 tests across 44 sections (668 tests total including git-hook and manifest suites)
+npm test                     # 643 tests across 45 sections (700 tests total including git-hook and manifest suites)
 npm run benchmark:heldout    # confusion matrix
 npm run benchmark:gate       # 520-fixture regression gate
 npm run test:git-hook        # 40 git-hook integration tests (commit blocking)
@@ -367,7 +367,7 @@ Follow these steps on your own machine to produce independent verification:
    ```bash
    npm test
    ```
-   Expected: final line reads `TEST SUMMARY: 611 PASSED, 0 FAILED`.
+   Expected: final line reads `TEST SUMMARY: 643 PASSED, 0 FAILED`.
 
 5. **Run the held-out evaluation**
    ```bash

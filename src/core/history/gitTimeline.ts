@@ -385,18 +385,18 @@ export class GitTimelineEngine {
         : 'CLEAN_UNCOMMITTED';
 
     const firstDateMs = firstDate ? firstDate.getTime() : Date.now();
-    let isAncestorOfHead = false;
+    let isAncestorOfHead: boolean | 'UNKNOWN' = 'UNKNOWN';
     if (lastEvent) {
       try {
         isAncestorOfHead = await this.gitHistory.isAncestor(lastEvent.commitSha, 'HEAD');
       } catch {
-        isAncestorOfHead = false;
+        isAncestorOfHead = 'UNKNOWN';
       }
     }
 
     const isPositivelyRemoved =
       isPresentInHead === false &&
-      isAncestorOfHead &&
+      isAncestorOfHead === true &&
       currentStatus === 'REMOVED_FROM_HEAD_PRESENT_IN_HISTORY';
     let removalCommitSha: string | undefined;
     let removalCommitDate: string | undefined;
@@ -471,8 +471,10 @@ export class GitTimelineEngine {
     if (searchResult.isPartialHistory) {
       timelineAscii += `History Coverage:   PARTIAL (limited to ${maxCommits} commits; earlier history uninspected)\n`;
     }
-    if (!isAncestorOfHead && events.length > 0) {
+    if (isAncestorOfHead === false && events.length > 0) {
       timelineAscii += `Branch Lineage:     UNMERGED BRANCH (Credential committed on unmerged branch; never merged into HEAD)\n`;
+    } else if (isAncestorOfHead === 'UNKNOWN' && events.length > 0) {
+      timelineAscii += `Branch Lineage:     INCOMPLETE (Lineage to HEAD could not be established)\n`;
     }
     timelineAscii += `Total Exposure:     ${totalExposureDays} days\n`;
     const nodes: GitGraphNode[] = events.map((ev, idx) => ({

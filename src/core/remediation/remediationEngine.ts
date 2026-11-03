@@ -108,6 +108,13 @@ export interface ApplyRemediationResult {
   message: string;
   envPath: string;
   modifiedFile: string;
+  envProtection?: {
+    enforced: boolean;
+    isUnsupportedFs?: boolean;
+    details?: string;
+  };
+  degradedSecurity?: boolean;
+  warning?: string;
 }
 
 /**
@@ -212,6 +219,106 @@ export function ensureGitignoreProtectsEnv(workspaceRoot: string): void {
  *   permissions and restricting explicit access to the current executing user only.
  *   On non-NTFS volumes (e.g. FAT32/exFAT) where Windows ACLs are not supported, verifies read/write access.
  */
+export interface SecurityPrincipal {
+  username: string;
+  domain?: string;
+  qualifiedName: string;
+  userSid?: string;
+}
+
+/**
+ * Discovers the current user's security principal on Windows (or fallback environments),
+ * querying whoami /user to obtain the authoritative domain, username, and account SID.
+ */
+export function getCurrentSecurityPrincipal(
+  cpModule: typeof cp = cp,
+  targetPlatform: string = process.platform
+): SecurityPrincipal {
+  let username = process.env.USERNAME || process.env.USER;
+  if (!username) {
+    try {
+      username = os.userInfo().username;
+    } catch {}
+  }
+  if (!username) {
+    username = 'unknown';
+  }
+
+  let domain = process.env.USERDOMAIN;
+  let qualifiedName = domain ? `${domain}\\${username}` : username;
+  let userSid: string | undefined = process.env.USER_SID;
+
+  if (targetPlatform === 'win32') {
+    try {
+      const whoamiOut = cpModule
+        .execFileSync('whoami', ['/user', '/fo', 'csv'], {
+          encoding: 'utf8',
+          stdio: 'pipe',
+          windowsHide: true,
+        })
+        .toString();
+
+      const lines = whoamiOut.split(/\r?\n/).filter((l) => l.trim().length > 0);
+      for (const line of lines) {
+        if (/User Name.*SID/i.test(line)) continue;
+        const match = line.match(/"([^"]+)"\s*,\s*"([^"]+)"/);
+        if (match) {
+          qualifiedName = match[1].trim();
+          userSid = match[2].trim();
+          if (qualifiedName.includes('\\')) {
+            const parts = qualifiedName.split('\\');
+            domain = parts[0];
+            username = parts.slice(1).join('\\');
+          }
+          break;
+        }
+      }
+    } catch {
+      // whoami not available or mocked; fall back to environment / os values
+    }
+  }
+
+  return { username, domain, qualifiedName, userSid };
+}
+
+/**
+ * Strictly verifies whether an Access Control Entry (ACE) principal matches the current user or SYSTEM.
+ * Never matches on bare username suffixes when a domain prefix differs (preventing OTHERDOMAIN\user from
+ * matching CURRENTDOMAIN\user), and checks the account SID when available.
+ */
+export function isPrincipalAuthorized(rawAccount: string, principal: SecurityPrincipal): boolean {
+  const accountTrim = rawAccount.trim();
+  const accountLower = accountTrim.toLowerCase();
+  const accountBare = accountTrim.split('\\').pop()?.toLowerCase() || '';
+
+  // SYSTEM account check (NT AUTHORITY\SYSTEM, SID S-1-5-18)
+  if (
+    accountLower === 'nt authority\\system' ||
+    accountBare === 'system' ||
+    accountLower === 's-1-5-18' ||
+    accountLower === '*s-1-5-18'
+  ) {
+    return true;
+  }
+
+  // Exact SID check
+  const sidCandidate = accountLower.startsWith('*') ? accountLower.slice(1) : accountLower;
+  if (principal.userSid && sidCandidate === principal.userSid.toLowerCase()) {
+    return true;
+  }
+
+  // Domain-qualified account check (e.g. "DOMAIN\username")
+  if (accountTrim.includes('\\')) {
+    // If account has a domain prefix, it MUST match the current user's fully qualified domain\username.
+    // Accounts with differing domain prefixes (e.g. "OTHERDOMAIN\Lakshith") will NEVER match!
+    return accountLower === principal.qualifiedName.toLowerCase();
+  }
+
+  // Bare account check without domain prefix (e.g. "testuser", "runner", or local account)
+  // Bare name matches ONLY if bare username matches the current user's username
+  return accountBare === principal.username.toLowerCase();
+}
+
 /**
  * Enforces strict 0600 file permissions on POSIX, and user-exclusive ACLs on Windows:
  * - On POSIX: sets mode to 0600 (owner read/write only, zero permissions for group/others)
@@ -233,19 +340,15 @@ export function enforceEnvFilePermissions(
 ): { enforced: boolean; isUnsupportedFs?: boolean; details?: string } {
   if (targetPlatform === 'win32') {
     fsModule.accessSync(envPath, fs.constants.R_OK | fs.constants.W_OK);
-    let username = process.env.USERNAME || process.env.USER;
-    if (!username) {
-      try {
-        username = os.userInfo().username;
-      } catch {}
-    }
-    if (!username) {
+    const principal = getCurrentSecurityPrincipal(cpModule, targetPlatform);
+    if (!principal.username || principal.username === 'unknown') {
       throw new Error('Failed to enforce Windows ACLs: neither USERNAME nor USER environment variable is set');
     }
 
     try {
-      // 1. Remove inherited ACLs and grant exclusive Full Control to the current user
-      cpModule.execFileSync('icacls', [envPath, '/inheritance:r', '/grant:r', `${username}:F`], {
+      // 1. Remove inherited ACLs and grant exclusive Full Control to the current user principal
+      const grantTarget = principal.qualifiedName || principal.username;
+      cpModule.execFileSync('icacls', [envPath, '/inheritance:r', '/grant:r', `${grantTarget}:F`], {
         stdio: 'pipe',
         windowsHide: true,
       });
@@ -261,20 +364,13 @@ export function enforceEnvFilePermissions(
 
       const lines = queryOut.split(/\r?\n/).filter((l: string) => l.trim().length > 0);
       const unsafeAccounts: string[] = [];
-      const userLower = username.toLowerCase();
 
       for (const line of lines) {
         if (/successfully processed|failed processing|processed file/i.test(line)) continue;
         const match = line.match(/(?:^|[^\\]\s+|^.+?\s+)([A-Za-z0-9_\\\-\.\$@ ]+?):(\([^\)]+\)+)/);
         if (match) {
           const rawAccount = match[1].trim();
-          const accountBare = rawAccount.split('\\').pop()?.toLowerCase() || '';
-          const accountFull = rawAccount.toLowerCase();
-          const isCurrentUser =
-            accountBare === userLower || accountFull.endsWith(`\\${userLower}`) || accountFull === userLower;
-          const isSystem = accountFull === 'nt authority\\system' || accountBare === 'system';
-
-          if (!isCurrentUser && !isSystem) {
+          if (!isPrincipalAuthorized(rawAccount, principal)) {
             unsafeAccounts.push(rawAccount);
           }
         }
@@ -307,12 +403,7 @@ export function enforceEnvFilePermissions(
         const match = line.match(/(?:^|[^\\]\s+|^.+?\s+)([A-Za-z0-9_\\\-\.\$@ ]+?):(\([^\)]+\)+)/);
         if (match) {
           const rawAccount = match[1].trim();
-          const accountBare = rawAccount.split('\\').pop()?.toLowerCase() || '';
-          const accountFull = rawAccount.toLowerCase();
-          const isCurrentUser =
-            accountBare === userLower || accountFull.endsWith(`\\${userLower}`) || accountFull === userLower;
-          const isSystem = accountFull === 'nt authority\\system' || accountBare === 'system';
-          if (!isCurrentUser && !isSystem) {
+          if (!isPrincipalAuthorized(rawAccount, principal)) {
             remainingUnsafe.push(rawAccount);
           }
         }
@@ -324,7 +415,7 @@ export function enforceEnvFilePermissions(
         );
       }
 
-      return { enforced: true, details: `ACL hardened exclusively for ${username}` };
+      return { enforced: true, details: `ACL hardened exclusively for ${principal.qualifiedName}` };
     } catch (err: any) {
       const errMsg = err?.message || String(err);
       const isUnsupportedFs =
@@ -359,7 +450,9 @@ export function enforceEnvFilePermissions(
 export function applyControlledRemediation(
   finding: SecretFinding,
   workspaceRoot: string,
-  fsModule: typeof fs = fs
+  fsModule: typeof fs = fs,
+  targetPlatform: string = process.platform,
+  cpModule: typeof cp = cp
 ): ApplyRemediationResult {
   const targetFile = finding.fullPath;
   let originalFileContent: string | null = null;
@@ -427,7 +520,16 @@ export function applyControlledRemediation(
       const prefix = envContent.endsWith('\n') || envContent.length === 0 ? '' : '\n';
       fsModule.appendFileSync(envPath, `${prefix}${envLine}`, 'utf8');
     }
-    enforceEnvFilePermissions(envPath, fsModule);
+    const envProtection = enforceEnvFilePermissions(envPath, fsModule, targetPlatform, cpModule);
+    let degradedSecurity = false;
+    let warning: string | undefined;
+    let message = `Successfully migrated ${finding.type} to .env (${varName}) and replaced in ${finding.file}.`;
+
+    if (!envProtection.enforced) {
+      degradedSecurity = true;
+      warning = `DEGRADED FILE SECURITY: Environment file permissions could not be enforced on '${envPath}' (${envProtection.details || 'unsupported filesystem'}). The environment file may be readable by other local users.`;
+      message = `[DEGRADED SECURITY] Migrated ${finding.type} to .env (${varName}) and replaced in ${finding.file}, but file permissions could not be enforced (${envProtection.details || 'unsupported filesystem'}).`;
+    }
 
     // 4. Update .env.example
     const envExamplePath = path.join(workspaceRoot, '.env.example');
@@ -467,9 +569,12 @@ export function applyControlledRemediation(
 
     return {
       success: true,
-      message: `Successfully migrated ${finding.type} to .env (${varName}) and replaced in ${finding.file}.`,
+      message,
       envPath,
       modifiedFile: targetFile,
+      envProtection,
+      degradedSecurity,
+      warning,
     };
   } catch (err: any) {
     // Transactional Rollback: restore all mutated files to their pre-call state.
