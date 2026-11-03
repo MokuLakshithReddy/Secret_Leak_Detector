@@ -2587,14 +2587,34 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
         assert(disappearingTrace.isSecretInWorkingTree === 'UNKNOWN', 'traceSecret sets isSecretInWorkingTree to UNKNOWN when candidate file disappears');
         assert(disappearingTrace.searchStatus === 'ERROR', 'traceSecret searchStatus is ERROR when working tree inspection throws on disappearing file');
 
-        // 21. Partial history with zero matches returns isPresentInHistory 'UNKNOWN'
+        // 21. Partial history with zero matches returns isPresentInHistory, isPresentInHead, isRemote 'UNKNOWN'
         const absentSecret = fromHex('6768705f616273656e7473656372657431323334353637383930616263646566313233');
         const partialTraceZero = await gitHistory.traceSecret(absentSecret, 1);
         assert(partialTraceZero.isPartialHistory === true, 'traceSecret with limit 1 is partial history');
         assert(partialTraceZero.isPresentInHistory === 'UNKNOWN', 'traceSecret returns isPresentInHistory UNKNOWN when depth is limited and 0 matches found');
+        assert(partialTraceZero.isPresentInHead === 'UNKNOWN', 'traceSecret returns isPresentInHead UNKNOWN when depth is limited and 0 matches found');
+        assert(partialTraceZero.isRemote === 'UNKNOWN', 'traceSecret returns isRemote UNKNOWN when depth is limited and 0 matches found');
         assert(partialTraceZero.searchStatus === 'PARTIAL_HISTORY', 'traceSecret searchStatus is PARTIAL_HISTORY when depth is limited');
 
-        // 22. VerificationEngine with unknown history sets isResolved false and historyStatus UNKNOWN
+        const timelinePartialZero = await gitTimeline.buildTimeline(absentSecret, 'ghp_****', 1);
+        assert(timelinePartialZero.currentStatus === 'PARTIAL_HISTORY', 'buildTimeline returns PARTIAL_HISTORY for zero matches with limit 1');
+        assert(timelinePartialZero.isPushedToRemote === 'UNKNOWN', 'buildTimeline reports isPushedToRemote UNKNOWN for zero matches with limit 1');
+        assert(timelinePartialZero.graph.summary.isPushedToRemote === 'UNKNOWN', 'buildTimeline graph summary reports isPushedToRemote UNKNOWN for zero matches with limit 1');
+
+        // 22. Outer error handler in traceSecret returns isPresentInHistory 'UNKNOWN'
+        class CorruptedTraceEngine extends GitHistoryEngine {
+          public override async findCommitsContainingSecretResult(secret: string, maxCommits = 0): Promise<any> {
+            throw new Error('Fatal git error during trace');
+          }
+        }
+        const corruptedEngine = new CorruptedTraceEngine(sec40Repo);
+        const errorTrace = await corruptedEngine.traceSecret(absentSecret);
+        assert(errorTrace.searchStatus === 'ERROR', 'traceSecret returns searchStatus ERROR on fatal error');
+        assert(errorTrace.isPresentInHistory === 'UNKNOWN', 'traceSecret returns isPresentInHistory UNKNOWN on fatal error');
+        assert(errorTrace.isPresentInHead === 'UNKNOWN', 'traceSecret returns isPresentInHead UNKNOWN on fatal error');
+        assert(errorTrace.isRemote === 'UNKNOWN', 'traceSecret returns isRemote UNKNOWN on fatal error');
+
+        // 23. VerificationEngine with unknown history sets isResolved false and historyStatus UNKNOWN
         class UnknownHistoryVerificationEngine extends GitHistoryEngine {
           public override async traceSecret(secret: string, maxCommits = 0): Promise<any> {
             return {
@@ -2626,6 +2646,43 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
         const verificationRes = await verifier.verifyFindingFix(fakeCleanFinding);
         assert(verificationRes.isResolved === false, 'VerificationEngine rejects resolution when Git history is UNKNOWN');
         assert(verificationRes.historyStatus === 'UNKNOWN', 'VerificationEngine reports historyStatus UNKNOWN on incomplete history');
+
+        // 24. VerificationEngine resolves finding when current history is clean even if previously exposed in finding
+        class CleanCurrentHistoryVerificationEngine extends GitHistoryEngine {
+          public override async traceSecret(secret: string, maxCommits = 0): Promise<any> {
+            return {
+              isPresentInHead: false,
+              isPresentInHistory: false,
+              isPresentInWorkingTree: false,
+              isSecretInWorkingTree: false,
+              exposureDurationDays: 0,
+              branches: [],
+              isRemote: false,
+              statusDescription: 'Clean in current Git history',
+              searchStatus: 'FOUND',
+            };
+          }
+        }
+        const cleanHistEngine = new CleanCurrentHistoryVerificationEngine(sec40Repo);
+        const cleanVerifier = new VerificationEngine(sec40Repo);
+        (cleanVerifier as any).historyEngine = cleanHistEngine;
+        const findingPreviouslyInHistory = {
+          file: 'clean.ts',
+          fullPath: path.join(sec40Repo, 'clean.ts'),
+          line: 1,
+          type: 'github-pat',
+          rawSecret: metaSecret,
+          fingerprint: 'fp123',
+          confidence: 100,
+          gitExposure: {
+            isPresentInHistory: true,
+            introducedCommit: { sha: 'abcdef1234567890' }
+          }
+        };
+        const cleanVerificationRes = await cleanVerifier.verifyFindingFix(findingPreviouslyInHistory as any);
+        assert(cleanVerificationRes.isResolved === true, 'VerificationEngine resolves finding when current history is clean despite old finding historical exposure');
+        assert(cleanVerificationRes.historyStatus === 'HEAD_AND_HISTORY_CLEAN', 'VerificationEngine reports HEAD_AND_HISTORY_CLEAN when current history is clean');
+        assert(cleanVerificationRes.previouslyExposedInHistory === true, 'VerificationEngine records previouslyExposedInHistory true for audit tracking');
       } finally {
         try {
           fs.rmSync(sec40Repo, { recursive: true, force: true });
