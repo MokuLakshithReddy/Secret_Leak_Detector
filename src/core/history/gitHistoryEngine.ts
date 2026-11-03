@@ -853,15 +853,17 @@ export class GitHistoryEngine {
       for (const sha of commitShas) {
         try {
           const { stdout: commitInfo } = await this.execGit(
-            ['log', '-1', '--format=%H|%an|%ad|%s', '--date=iso', sha],
+            ['log', '-1', '--format=%H|%an|%ad|%cn|%cd|%s', '--date=iso', sha],
             { encoding: 'utf8' }
           );
-          const [cSha, author, date, ...rest] = commitInfo.trim().split('|');
+          const [cSha, author, authorDate, committer, committerDate, ...rest] = commitInfo.trim().split('|');
           if (cSha) {
             parsedCommits.push({
               sha: cSha,
               author: author || 'Unknown',
-              date: date || new Date().toISOString(),
+              date: committerDate || authorDate || new Date().toISOString(),
+              committerDate: committerDate || authorDate,
+              committer: committer || author,
               message: rest.join('|') || '',
             });
           } else {
@@ -901,11 +903,41 @@ export class GitHistoryEngine {
         };
       }
 
-      // Sort newest first
-      parsedCommits.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+      // Sort topologically newest first (descendants before ancestors) using Git ancestry and committer timestamps.
+      // This prevents deliberately backdated author timestamps (e.g. GIT_AUTHOR_DATE or --date) from distorting chronology.
+      const ancestryCache = new Map<string, boolean | 'UNKNOWN'>();
+      const checkAncestry = async (aSha: string, bSha: string): Promise<boolean | 'UNKNOWN'> => {
+        const key = `${aSha}->${bSha}`;
+        if (ancestryCache.has(key)) return ancestryCache.get(key)!;
+        const res = await this.isAncestor(aSha, bSha);
+        ancestryCache.set(key, res);
+        return res;
+      };
 
-      const introducedCommit = parsedCommits[parsedCommits.length - 1];
-      const lastModifiedCommit = parsedCommits[0];
+      for (let i = 0; i < parsedCommits.length; i++) {
+        for (let j = i + 1; j < parsedCommits.length; j++) {
+          const a = parsedCommits[i];
+          const b = parsedCommits[j];
+          // If a is an ancestor of b, then b is newer and should come BEFORE a (newest-first ordering)
+          const aIsAncestorOfB = await checkAncestry(a.sha, b.sha);
+          if (aIsAncestorOfB === true) {
+            parsedCommits[i] = b;
+            parsedCommits[j] = a;
+            continue;
+          }
+          const bIsAncestorOfA = await checkAncestry(b.sha, a.sha);
+          if (bIsAncestorOfA === true) {
+            continue;
+          }
+          // Neither is an ancestor of the other (independent sibling branches): sort by committer timestamp
+          const timeA = new Date(a.committerDate || a.date).getTime();
+          const timeB = new Date(b.committerDate || b.date).getTime();
+          if (timeA < timeB) {
+            parsedCommits[i] = b;
+            parsedCommits[j] = a;
+          }
+        }
+      }
 
       let isPresentInHead: boolean | 'UNKNOWN' = 'UNKNOWN';
       let headCheckFailed = false;
@@ -916,83 +948,134 @@ export class GitHistoryEngine {
         headCheckFailed = true;
       }
 
-      // Check branches containing the introduced commit
-      let branches: string[] = [];
+      // Query containing branches across ALL matching commits independently
+      const branchSet = new Set<string>();
+      const commitBranchesMap = new Map<string, string[]>();
+      let branchQueryFailed = false;
+
+      for (const c of parsedCommits) {
+        try {
+          const { stdout: branchOut } = await this.execGit([
+            'branch',
+            '-a',
+            '--contains',
+            c.sha,
+          ]);
+          const bList = String(branchOut)
+            .split('\n')
+            .map((b) => b.trim().replace(/^[\*\s]+/, ''))
+            .filter((b) => b.length > 0 && !b.includes('(HEAD detached'));
+          commitBranchesMap.set(c.sha, bList);
+          for (const b of bList) {
+            branchSet.add(b);
+          }
+        } catch {
+          branchQueryFailed = true;
+        }
+      }
+
+      const branches = Array.from(branchSet);
       let isRemote: boolean | 'UNKNOWN' = 'UNKNOWN';
-      try {
-        const { stdout: branchOut } = await this.execGit(
-          ['branch', '-a', '--contains', introducedCommit.sha]
-        );
-        branches = String(branchOut)
-          .split('\n')
-          .map((b) => b.trim().replace(/^[\*\s]+/, ''))
-          .filter((b) => b.length > 0);
+      if (!branchQueryFailed || branches.length > 0) {
         isRemote = branches.some((b) => b.startsWith('remotes/') || b.startsWith('origin/'));
-      } catch {
-        branches = [];
-        isRemote = 'UNKNOWN';
       }
 
-      // Compute exposure duration and lastSeenCommit without falsely labeling lastSeenCommit as removal commit
-      const introDate = new Date(introducedCommit.date).getTime();
-      const lastSeenCommit = parsedCommits[0];
-      let removedCommit: GitCommitInfo | undefined;
-      let removalCheckFailed = false;
-      let removalError: string | undefined;
-      let endDate = Date.now();
-
-      // Check whether lastSeenCommit is an ancestor of HEAD
-      let isAncestorOfHead: boolean | 'UNKNOWN' = 'UNKNOWN';
-      try {
-        isAncestorOfHead = await this.isAncestor(lastSeenCommit.sha, 'HEAD');
-      } catch {
-        isAncestorOfHead = 'UNKNOWN';
-      }
-
-      // Track removal per branch across all containing branches
-      const branchRemovals: Record<string, { isAncestor: boolean | 'UNKNOWN'; isRemoved: boolean | 'UNKNOWN'; removalCommit?: GitCommitInfo }> = {};
+      // Track exposure and removal independently per branch
+      const branchRemovals: Record<string, BranchRemovalInfo> = {};
       const containingBranches = branches.filter((b) => !b.includes('(HEAD detached'));
 
       for (const branch of containingBranches) {
+        const commitsOnBranch = parsedCommits.filter((c) =>
+          commitBranchesMap.get(c.sha)?.includes(branch)
+        );
+
+        if (commitsOnBranch.length === 0) {
+          branchRemovals[branch] = {
+            isAncestor: false,
+            isRemoved: false,
+          };
+          continue;
+        }
+
+        const branchIntroCommit = commitsOnBranch[commitsOnBranch.length - 1];
+        const branchLastSeenCommit = commitsOnBranch[0];
+
         try {
-          const isAnc = await this.isAncestor(lastSeenCommit.sha, branch);
+          const isAnc = await checkAncestry(branchLastSeenCommit.sha, branch);
           if (isAnc === true) {
-            const bRemoval = await this.findRemovalCommit(secret, lastSeenCommit.sha, branch);
+            const bRemoval = await this.findRemovalCommit(secret, branchLastSeenCommit.sha, branch);
             branchRemovals[branch] = {
               isAncestor: true,
               isRemoved: !!bRemoval,
               removalCommit: bRemoval,
+              introducedCommit: branchIntroCommit,
             };
           } else if (isAnc === false) {
             branchRemovals[branch] = {
               isAncestor: false,
               isRemoved: false,
+              introducedCommit: branchIntroCommit,
             };
           } else {
             branchRemovals[branch] = {
               isAncestor: 'UNKNOWN',
               isRemoved: 'UNKNOWN',
+              introducedCommit: branchIntroCommit,
             };
           }
         } catch {
           branchRemovals[branch] = {
             isAncestor: 'UNKNOWN',
             isRemoved: 'UNKNOWN',
+            introducedCommit: branchIntroCommit,
           };
         }
       }
 
+      // Check whether matching commits exist in HEAD's lineage
+      const commitsInHeadLineage: GitCommitInfo[] = [];
+      for (const c of parsedCommits) {
+        const isAnc = await checkAncestry(c.sha, 'HEAD');
+        if (isAnc === true) {
+          commitsInHeadLineage.push(c);
+        }
+      }
+
+      let isAncestorOfHead: boolean | 'UNKNOWN' = 'UNKNOWN';
+      if (commitsInHeadLineage.length > 0) {
+        isAncestorOfHead = true;
+      } else {
+        let anyUnknown = false;
+        for (const c of parsedCommits) {
+          const anc = await checkAncestry(c.sha, 'HEAD');
+          if (anc === 'UNKNOWN') {
+            anyUnknown = true;
+            break;
+          }
+        }
+        isAncestorOfHead = anyUnknown ? 'UNKNOWN' : false;
+      }
+
+      const introducedCommit = parsedCommits[parsedCommits.length - 1];
+      const lastModifiedCommit = parsedCommits[0];
+      const lastSeenCommit = parsedCommits[0];
+
+      let removedCommit: GitCommitInfo | undefined;
+      let removalCheckFailed = false;
+      let removalError: string | undefined;
+      let endDate = Date.now();
+
       if (isPresentInHead === false) {
-        if (isAncestorOfHead === true) {
+        if (isAncestorOfHead === true && commitsInHeadLineage.length > 0) {
           try {
-            removedCommit = await this.findRemovalCommit(secret, lastSeenCommit.sha, 'HEAD');
+            removedCommit = await this.findRemovalCommit(secret, commitsInHeadLineage[0].sha, 'HEAD');
           } catch (remErr: any) {
             removalCheckFailed = true;
             removalError = remErr?.message || String(remErr);
           }
         } else if (isAncestorOfHead === 'UNKNOWN') {
           removalCheckFailed = true;
-          removalError = 'Failed to verify lineage between last seen commit and HEAD';
+          removalError = 'Failed to verify lineage between commit history and HEAD';
           removedCommit = undefined;
         } else {
           // If not an ancestor of HEAD (false), HEAD never passed through this commit lineage.
@@ -1001,12 +1084,13 @@ export class GitHistoryEngine {
         }
 
         if (removedCommit) {
-          endDate = new Date(removedCommit.date).getTime();
+          endDate = new Date(removedCommit.committerDate || removedCommit.date).getTime();
         } else {
-          endDate = new Date(lastSeenCommit.date).getTime();
+          endDate = new Date(lastSeenCommit.committerDate || lastSeenCommit.date).getTime();
         }
       }
 
+      const introDate = new Date(introducedCommit.committerDate || introducedCommit.date).getTime();
       const exposureDurationDays = Math.max(
         0,
         Math.round((endDate - introDate) / (1000 * 60 * 60 * 24))
@@ -1014,7 +1098,15 @@ export class GitHistoryEngine {
 
       let statusDescription = '';
       if (headCheckFailed) {
-        statusDescription = `INCOMPLETE HEAD VERIFICATION: Present in commit history (${exposureDurationDays} days exposure, ${parsedCommits.length} commit(s)), but HEAD verification failed`;
+        statusDescription = `INCOMPLETE HEAD VERIFICATION: Present in commit history (${parsedCommits.length} commit(s)), but HEAD verification failed`;
+      } else if (isShallow) {
+        if (isPresentInHead === true) {
+          statusDescription = `ACTIVE IN HEAD & COMMITTED (Earliest visible commit: ${introducedCommit.sha.substring(0, 7)} by ${introducedCommit.author}; original introduction date and total exposure duration unverified due to shallow clone)`;
+        } else if (isAncestorOfHead === false) {
+          statusDescription = `UNMERGED BRANCH EXPOSURE: Credential present in history on branch(es) [${containingBranches.join(', ') || 'unmerged'}], but never merged into HEAD (Earliest visible commit: ${introducedCommit.sha.substring(0, 7)}; original introduction unverified due to shallow clone)`;
+        } else {
+          statusDescription = `REMOVED FROM HEAD BUT STILL PRESENT IN GIT HISTORY! (Earliest visible commit: ${introducedCommit.sha.substring(0, 7)} by ${introducedCommit.author}; original introduction unverified due to shallow clone)`;
+        }
       } else if (isPresentInHead === true) {
         statusDescription = `ACTIVE IN HEAD & COMMITTED (Introduced ${exposureDurationDays} days ago by ${introducedCommit.author} in ${introducedCommit.sha.substring(0, 7)})`;
       } else if (isAncestorOfHead === false) {
@@ -1044,12 +1136,14 @@ export class GitHistoryEngine {
       if (wtCheckFailed) {
         statusDescription += ` [Working-tree verification incomplete]`;
       }
-      if (searchResult.isPartialHistory) {
+      if (searchResult.isShallow) {
+        statusDescription += ` [SHALLOW CLONE: repository history is truncated at shallow boundary; original introduction date, total exposure duration, and complete branch coverage are unverified]`;
+      } else if (searchResult.isPartialHistory && maxCommits > 0) {
         statusDescription += ` [PARTIAL HISTORY: search depth limited to ${maxCommits} commit(s)]`;
       }
 
       const finalSearchStatus: GitExposure['searchStatus'] =
-        (failedMetadataCount > 0 || headCheckFailed || wtCheckFailed || removalCheckFailed || isAncestorOfHead === 'UNKNOWN')
+        (failedMetadataCount > 0 || headCheckFailed || wtCheckFailed || removalCheckFailed || isAncestorOfHead === 'UNKNOWN' || searchResult.isShallow)
           ? 'SEARCH_INCOMPLETE'
           : 'FOUND';
 
@@ -1070,6 +1164,7 @@ export class GitHistoryEngine {
         searchStatus: finalSearchStatus,
         isPartialHistory: searchResult.isPartialHistory || failedMetadataCount > 0,
         isShallow,
+        isIntroductionUnverified: isShallow,
         isAncestorOfHead,
         branchRemovals,
       };

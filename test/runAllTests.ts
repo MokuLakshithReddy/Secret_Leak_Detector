@@ -3694,6 +3694,172 @@ exit 0
       }
     }
 
+    // --- 46. Shallow Credential Found, Multi-Branch Reachability, Committer Chronology & Numerical SIDs ---
+    console.log('\n--- 46. Shallow Credential Found, Multi-Branch Reachability, Committer Chronology & Numerical SIDs ---');
+    {
+      const { execFileSync } = cp;
+      const fromHex = (h: string) => Buffer.from(h, 'hex').toString('utf8');
+      const sec46Dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-sec46-'));
+      try {
+        // 1. Shallow repository where secret IS discovered in visible history
+        const shallowRepoWithSecret = path.join(sec46Dir, 'shallow-with-secret');
+        fs.mkdirSync(shallowRepoWithSecret, { recursive: true });
+        execFileSync('git', ['init'], { cwd: shallowRepoWithSecret });
+        execFileSync('git', ['checkout', '-B', 'main'], { cwd: shallowRepoWithSecret });
+        execFileSync('git', ['config', 'user.name', 'Dev Tester'], { cwd: shallowRepoWithSecret });
+        execFileSync('git', ['config', 'user.email', 'dev@example.com'], { cwd: shallowRepoWithSecret });
+
+        const shallowSecretVal = fromHex('6768705f') + fromHex('5368616c6c6f7756697369626c65536563726574546f6b656e31323334353637383930');
+        fs.writeFileSync(path.join(shallowRepoWithSecret, 'creds.json'), `{"token": "${shallowSecretVal}"}\n`, 'utf8');
+        execFileSync('git', ['add', 'creds.json'], { cwd: shallowRepoWithSecret });
+        execFileSync('git', ['commit', '-m', 'feat: shallow visible commit with secret'], { cwd: shallowRepoWithSecret });
+
+        const shallowSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: shallowRepoWithSecret, encoding: 'utf8' }).trim();
+        // Mark as shallow boundary commit
+        fs.writeFileSync(path.join(shallowRepoWithSecret, '.git', 'shallow'), `${shallowSha}\n`, 'utf8');
+
+        const shallowFoundEngine = new GitHistoryEngine(shallowRepoWithSecret);
+        const searchFoundRes = await shallowFoundEngine.findCommitsContainingSecretResult(shallowSecretVal);
+        assert(searchFoundRes.status === 'FOUND', 'findCommitsContainingSecretResult returns FOUND when secret in shallow commit');
+        assert(searchFoundRes.isShallow === true, 'isShallow is true in search result');
+        assert(searchFoundRes.isPartialHistory === true, 'isPartialHistory is true when secret found in shallow repository');
+
+        const traceFound = await shallowFoundEngine.traceSecret(shallowSecretVal);
+        assert(traceFound.isPresentInHistory === true, 'traceSecret marks isPresentInHistory: true when secret discovered in shallow repo');
+        assert(traceFound.isIntroductionUnverified === true, 'traceSecret flags isIntroductionUnverified: true in shallow repo');
+        assert(traceFound.searchStatus === 'SEARCH_INCOMPLETE', 'traceSecret searchStatus is SEARCH_INCOMPLETE due to shallow truncation');
+        assert(traceFound.statusDescription.includes('original introduction date and total exposure duration unverified due to shallow clone'), 'statusDescription clarifies unverified introduction due to shallow clone');
+        assert(!traceFound.statusDescription.includes('limited to 0 commit(s)'), 'statusDescription does not emit misleading 0 commits limit message');
+
+        // Timeline check for shallow clone
+        const timelineEngine = new GitTimelineEngine(shallowRepoWithSecret, shallowFoundEngine);
+        const tlReport = await timelineEngine.buildTimeline(shallowSecretVal, 'ghp_****7890');
+        assert(tlReport.currentStatus === 'SEARCH_INCOMPLETE', 'buildTimeline reports currentStatus: SEARCH_INCOMPLETE on shallow repo');
+        assert(tlReport.timelineAscii.includes('⚠️ EARLIEST VISIBLE COMMIT (Shallow clone; original introduction unverified)'), 'buildTimeline tags earliest visible commit on shallow repo');
+        assert(tlReport.timelineAscii.includes('Total Exposure:     >= 0 days (unverified earlier history due to shallow clone)'), 'buildTimeline ASCII notes >= X days exposure for shallow repo');
+
+        // 2. Independent credential introductions across branches with remote tracking ref
+        const multiBranchRepo = path.join(sec46Dir, 'multi-branch-repo');
+        fs.mkdirSync(multiBranchRepo, { recursive: true });
+        execFileSync('git', ['init'], { cwd: multiBranchRepo });
+        execFileSync('git', ['checkout', '-B', 'main'], { cwd: multiBranchRepo });
+        execFileSync('git', ['config', 'user.name', 'Branch Tester'], { cwd: multiBranchRepo });
+        execFileSync('git', ['config', 'user.email', 'branch@example.com'], { cwd: multiBranchRepo });
+
+        fs.writeFileSync(path.join(multiBranchRepo, 'base.txt'), 'base\n', 'utf8');
+        execFileSync('git', ['add', 'base.txt'], { cwd: multiBranchRepo });
+        execFileSync('git', ['commit', '-m', 'chore: initial base commit'], { cwd: multiBranchRepo });
+
+        const branchSecret = fromHex('736b2d616e742d61706930332d') + fromHex('4272616e6368537072656164546f6b656e313233343536373839303132333435363738');
+
+        // Branch A (local only)
+        execFileSync('git', ['checkout', '-b', 'feature/local-a'], { cwd: multiBranchRepo });
+        fs.writeFileSync(path.join(multiBranchRepo, 'local_a.txt'), `API_KEY=${branchSecret}\n`, 'utf8');
+        execFileSync('git', ['add', 'local_a.txt'], { cwd: multiBranchRepo });
+        execFileSync('git', ['commit', '-m', 'feat(local): introduce secret on branch A'], { cwd: multiBranchRepo });
+        const branchASha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: multiBranchRepo, encoding: 'utf8' }).trim();
+
+        // Branch B (divergent from main, has fake remote tracking branch)
+        execFileSync('git', ['checkout', 'main'], { cwd: multiBranchRepo });
+        execFileSync('git', ['checkout', '-b', 'feature/remote-b'], { cwd: multiBranchRepo });
+        fs.writeFileSync(path.join(multiBranchRepo, 'remote_b.txt'), `API_KEY=${branchSecret}\n`, 'utf8');
+        execFileSync('git', ['add', 'remote_b.txt'], { cwd: multiBranchRepo });
+        execFileSync('git', ['commit', '-m', 'feat(remote): introduce secret on branch B'], { cwd: multiBranchRepo });
+        const branchBSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: multiBranchRepo, encoding: 'utf8' }).trim();
+
+        // Create a remote tracking ref for branch B: refs/remotes/origin/feature/remote-b pointing to branchBSha
+        execFileSync('git', ['update-ref', 'refs/remotes/origin/feature/remote-b', branchBSha], { cwd: multiBranchRepo });
+
+        // Checkout main (which has NO secret)
+        execFileSync('git', ['checkout', 'main'], { cwd: multiBranchRepo });
+
+        const multiEngine = new GitHistoryEngine(multiBranchRepo);
+        const multiTrace = await multiEngine.traceSecret(branchSecret);
+        assert(multiTrace.isPresentInHistory === true, 'traceSecret detects presence in multi-branch repo');
+        assert(multiTrace.isPresentInHead === false, 'traceSecret correctly detects absence from main HEAD');
+        assert(multiTrace.isRemote === true, 'traceSecret identifies remote push when ANY containing branch has remote tracking ref');
+        assert(multiTrace.branches.some((b) => b.includes('feature/local-a')), 'traceSecret branches includes feature/local-a');
+        assert(multiTrace.branches.some((b) => b.includes('feature/remote-b')), 'traceSecret branches includes feature/remote-b');
+        assert(multiTrace.branchRemovals !== undefined, 'traceSecret returns branchRemovals');
+        assert(multiTrace.branchRemovals['feature/local-a']?.introducedCommit?.sha === branchASha, 'branchRemovals tracks independent introduction on branch A');
+        assert(multiTrace.branchRemovals['feature/remote-b']?.introducedCommit?.sha === branchBSha, 'branchRemovals tracks independent introduction on branch B');
+
+        // 3. Topological sorting neutralizes backdated author dates (GIT_AUTHOR_DATE)
+        const dateRepo = path.join(sec46Dir, 'date-repo');
+        fs.mkdirSync(dateRepo, { recursive: true });
+        execFileSync('git', ['init'], { cwd: dateRepo });
+        execFileSync('git', ['checkout', '-B', 'main'], { cwd: dateRepo });
+        execFileSync('git', ['config', 'user.name', 'Time Tester'], { cwd: dateRepo });
+        execFileSync('git', ['config', 'user.email', 'time@example.com'], { cwd: dateRepo });
+
+        const dateSecret = fromHex('6768705f') + fromHex('4261636b6461746564417574686f72536563726574546f6b656e31323334353637383930');
+
+        // Commit 1 (the true introduction): modern committer date and modern author date
+        fs.writeFileSync(path.join(dateRepo, 'secret.txt'), `${dateSecret}\n`, 'utf8');
+        execFileSync('git', ['add', 'secret.txt'], { cwd: dateRepo });
+        execFileSync('git', ['commit', '-m', 'commit 1: real introduction'], {
+          cwd: dateRepo,
+          env: {
+            ...process.env,
+            GIT_AUTHOR_DATE: '2025-01-01T12:00:00Z',
+            GIT_COMMITTER_DATE: '2025-01-01T12:00:00Z',
+          },
+        });
+        const c1Sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dateRepo, encoding: 'utf8' }).trim();
+
+        // Commit 2 (child of commit 1): modified secret file with a deliberately BACKDATED author date to 1999!
+        fs.writeFileSync(path.join(dateRepo, 'secret.txt'), `${dateSecret} updated\n`, 'utf8');
+        execFileSync('git', ['add', 'secret.txt'], { cwd: dateRepo });
+        execFileSync('git', ['commit', '-m', 'commit 2: descendant with manipulated author date'], {
+          cwd: dateRepo,
+          env: {
+            ...process.env,
+            GIT_AUTHOR_DATE: '1999-01-01T12:00:00Z', // Deliberately backdated!
+            GIT_COMMITTER_DATE: '2025-01-02T12:00:00Z',
+          },
+        });
+        const c2Sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dateRepo, encoding: 'utf8' }).trim();
+
+        const dateEngine = new GitHistoryEngine(dateRepo);
+        const dateTrace = await dateEngine.traceSecret(dateSecret);
+        // By topological order: c2 is descendant of c1, so c1 MUST be identified as introducedCommit, not c2!
+        assert(dateTrace.introducedCommit?.sha === c1Sha, 'Topological sorting selects true ancestor c1 as introducedCommit despite backdated author date on c2');
+        assert(dateTrace.lastSeenCommit?.sha === c2Sha, 'Topological sorting selects child c2 as lastSeenCommit');
+
+        // 4. Windows ACL Parser: Asterisk-prefixed Numerical SIDs (*S-1-5-...)
+        let sidRemoved = false;
+        const sidMockCp = {
+          execFileSync: (cmd: string, args: string[]) => {
+            if (cmd === 'whoami' && args.includes('/fo')) {
+              return '"User Name","SID"\n"WORKGROUP\\admin","S-1-5-21-999999999-888888888-777777777-500"\n';
+            }
+            if (cmd === 'icacls') {
+              if (args.includes('/remove') && args.includes('*S-1-5-21-123456789-987654321-111111111-1002')) {
+                sidRemoved = true;
+              }
+              if (args.length === 1) {
+                if (!sidRemoved) {
+                  // Output with asterisk-prefixed unresolved SID
+                  return `${args[0]} *S-1-5-21-123456789-987654321-111111111-1002:(R)\n WORKGROUP\\admin:(F)\nSuccessfully processed 1 files;\n`;
+                }
+                return `${args[0]} WORKGROUP\\admin:(F)\nSuccessfully processed 1 files;\n`;
+              }
+            }
+            return Buffer.from('');
+          }
+        };
+
+        const sidEnvPath = path.join(sec46Dir, '.env');
+        fs.writeFileSync(sidEnvPath, 'KEY="val"\n', 'utf8');
+        const sidEnforceRes = enforceEnvFilePermissions(sidEnvPath, fs, 'win32', sidMockCp as any);
+        assert(sidEnforceRes.enforced === true, 'enforceEnvFilePermissions reports enforced: true when asterisk-prefixed SID is stripped');
+        assert(sidRemoved === true, 'enforceEnvFilePermissions captures and strips *S-1-5-... numerical SID via icacls /remove');
+
+      } finally {
+        try { fs.rmSync(sec46Dir, { recursive: true, force: true }); } catch {}
+      }
+    }
+
   console.log('\n============================================================');
   console.log(`🎉 TEST SUMMARY: ${passed} PASSED, ${failed} FAILED`);
   console.log('============================================================\n');
