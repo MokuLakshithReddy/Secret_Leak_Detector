@@ -6,6 +6,7 @@ import { SecretCodeActionProvider } from './diagnostics/codeActionProvider';
 import { FindingsTreeProvider, OverviewTreeProvider } from './sidebar/findingsTreeProvider';
 import { DashboardPanel } from './webview/dashboardPanel';
 import { GitService, recordInstalledHook, unrecordInstalledHook } from './git/gitService';
+import { SLD_HOOK_MARKER } from './git/preCommitHook';
 import { SkippedFile } from './git/stagedScanner';
 import { SecretFinding, Risk } from './core/types';
 import { DEFAULT_FAIL_ON, meetsThreshold, resolveFailOn } from './core/policy';
@@ -143,15 +144,21 @@ export function activate(context: vscode.ExtensionContext) {
     for (const folder of folders) {
       const gs = new GitService(folder.uri.fsPath, (msg) => outputChannel.appendLine(msg));
       if (await gs.isGitRepo()) {
-        if (!parserEnsured) {
-          await ensureGlobalAstParser();
-          parserEnsured = true;
+        const hookPath = await gs.getHookPath().catch(() => '');
+        let hasManagedHook = false;
+        if (hookPath && fs.existsSync(hookPath)) {
+          try {
+            hasManagedHook = fs.readFileSync(hookPath, 'utf8').includes(SLD_HOOK_MARKER);
+          } catch {}
         }
-        await gs.ensureHookIsPinned(cli, process.execPath, blockCommits, configuredFailOn, disallowInline, failOnSkipped).catch(() => {});
-        try {
-          const hookFile = await gs.getHookPath();
-          allHooks.add(hookFile);
-        } catch {}
+        if (hasManagedHook) {
+          if (!parserEnsured) {
+            await ensureGlobalAstParser();
+            parserEnsured = true;
+          }
+          await gs.ensureHookIsPinned(cli, process.execPath, blockCommits, configuredFailOn, disallowInline, failOnSkipped).catch(() => {});
+          allHooks.add(hookPath);
+        }
       }
     }
 
