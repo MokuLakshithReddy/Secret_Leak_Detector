@@ -26,6 +26,7 @@ export interface GitGraphNode {
   label: string;
   author: string;
   date: string;
+  committerDate?: string;
   eventType: 'INTRODUCED' | 'MODIFIED' | 'REMOVED' | 'MERGED_IN';
   isMerge: boolean;
   branches: string[];
@@ -415,8 +416,9 @@ export class GitTimelineEngine {
     }
 
     const isShallow = !!searchResult.isShallow;
+    const isPartialHistory = !!searchResult.isPartialHistory;
     const currentStatus: ExposureTimelineReport['currentStatus'] =
-      (failedTimelineMetadataCount > 0 || headCheckFailed || branchLookupFailed || isShallow)
+      (failedTimelineMetadataCount > 0 || headCheckFailed || branchLookupFailed || isShallow || isPartialHistory)
         ? 'SEARCH_INCOMPLETE'
         : isPresentInHead
         ? 'ACTIVE_IN_HEAD'
@@ -489,7 +491,12 @@ export class GitTimelineEngine {
           ? '🔀 MERGE COMMIT'
           : '✏️  MODIFIED';
 
-      timelineAscii += `[${ev.date.substring(0, 10)}] ${tag}\n`;
+      const displayDate = (ev.committerDate || ev.date).substring(0, 10);
+      const authorDateStr = ev.date ? ev.date.substring(0, 10) : '';
+      const dateDiffNote = ev.committerDate && authorDateStr && authorDateStr !== displayDate
+        ? ` (authored ${authorDateStr})`
+        : '';
+      timelineAscii += `[${displayDate}] ${tag}${dateDiffNote}\n`;
       timelineAscii += `   Commit:   ${ev.commitSha.substring(0, 8)} by ${ev.authorName} <${ev.authorEmail}>\n`;
       timelineAscii += `   Message:  "${ev.commitMessage}"\n`;
       timelineAscii += `   Branches: ${ev.branches.slice(0, 3).join(', ')}${ev.branches.length > 3 ? '...' : ''}\n`;
@@ -529,7 +536,8 @@ export class GitTimelineEngine {
       shortHash: ev.commitSha.substring(0, 8),
       label: `${ev.eventType}: ${ev.commitMessage.substring(0, 30)}`,
       author: `${ev.authorName} <${ev.authorEmail}>`,
-      date: ev.date,
+      date: ev.committerDate || ev.date,
+      committerDate: ev.committerDate,
       eventType: ev.eventType,
       isMerge: ev.isMergeCommit,
       branches: ev.branches,
