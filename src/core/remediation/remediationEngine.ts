@@ -367,7 +367,7 @@ export function enforceEnvFilePermissions(
 
       for (const line of lines) {
         if (/successfully processed|failed processing|processed file/i.test(line)) continue;
-        const match = line.match(/(?:^|[^\\]\s+|^.+?\s+)([A-Za-z0-9_\\\-\.\$@ ]+?):(\([^\)]+\)+)/);
+        const match = line.match(/(?:^|[^\\]\s+|^.+?\s+)([A-Za-z0-9_\\\-\.\$@\* ]+?):(\([^\)]+\)+)/);
         if (match) {
           const rawAccount = match[1].trim();
           if (!isPrincipalAuthorized(rawAccount, principal)) {
@@ -400,7 +400,7 @@ export function enforceEnvFilePermissions(
       const remainingUnsafe: string[] = [];
       for (const line of verifyOut.split(/\r?\n/).filter(Boolean)) {
         if (/successfully processed|failed processing|processed file/i.test(line)) continue;
-        const match = line.match(/(?:^|[^\\]\s+|^.+?\s+)([A-Za-z0-9_\\\-\.\$@ ]+?):(\([^\)]+\)+)/);
+        const match = line.match(/(?:^|[^\\]\s+|^.+?\s+)([A-Za-z0-9_\\\-\.\$@\* ]+?):(\([^\)]+\)+)/);
         if (match) {
           const rawAccount = match[1].trim();
           if (!isPrincipalAuthorized(rawAccount, principal)) {

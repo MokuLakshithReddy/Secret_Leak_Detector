@@ -375,8 +375,9 @@ export class GitTimelineEngine {
       headCheckFailed = true;
     }
 
+    const isShallow = !!searchResult.isShallow;
     const currentStatus: ExposureTimelineReport['currentStatus'] =
-      (failedTimelineMetadataCount > 0 || headCheckFailed || branchLookupFailed)
+      (failedTimelineMetadataCount > 0 || headCheckFailed || branchLookupFailed || isShallow)
         ? 'SEARCH_INCOMPLETE'
         : isPresentInHead
         ? 'ACTIVE_IN_HEAD'
@@ -439,9 +440,9 @@ export class GitTimelineEngine {
     timelineAscii += '═'.repeat(68) + '\n';
 
     events.forEach((ev, idx) => {
-      const tag =
+      let tag =
         ev.eventType === 'INTRODUCED'
-          ? '🚨 INTRODUCED'
+          ? (isShallow ? '⚠️ EARLIEST VISIBLE COMMIT (Shallow clone; original introduction unverified)' : '🚨 INTRODUCED')
           : ev.eventType === 'REMOVED'
           ? '✅ REMOVED FROM HEAD'
           : ev.isMergeCommit
@@ -468,7 +469,9 @@ export class GitTimelineEngine {
     if (branchLookupFailed) {
       timelineAscii += `Branch Inspection:  INCOMPLETE (operational error during branch reachability query: ${branchLookupError})\n`;
     }
-    if (searchResult.isPartialHistory) {
+    if (searchResult.isShallow) {
+      timelineAscii += `History Coverage:   SHALLOW CLONE (repository history is truncated at shallow boundary; original introduction and full exposure unverified)\n`;
+    } else if (searchResult.isPartialHistory && maxCommits > 0) {
       timelineAscii += `History Coverage:   PARTIAL (limited to ${maxCommits} commits; earlier history uninspected)\n`;
     }
     if (isAncestorOfHead === false && events.length > 0) {
@@ -476,7 +479,11 @@ export class GitTimelineEngine {
     } else if (isAncestorOfHead === 'UNKNOWN' && events.length > 0) {
       timelineAscii += `Branch Lineage:     INCOMPLETE (Lineage to HEAD could not be established)\n`;
     }
-    timelineAscii += `Total Exposure:     ${totalExposureDays} days\n`;
+    if (isShallow) {
+      timelineAscii += `Total Exposure:     >= ${totalExposureDays} days (unverified earlier history due to shallow clone)\n`;
+    } else {
+      timelineAscii += `Total Exposure:     ${totalExposureDays} days\n`;
+    }
     const nodes: GitGraphNode[] = events.map((ev, idx) => ({
       id: ev.commitSha,
       shortHash: ev.commitSha.substring(0, 8),

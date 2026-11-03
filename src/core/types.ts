@@ -77,12 +77,15 @@ export interface GitCommitInfo {
   author: string;
   date: string;
   message: string;
+  committerDate?: string;
+  committer?: string;
 }
 
 export interface BranchRemovalInfo {
   isAncestor: boolean | 'UNKNOWN';
   isRemoved: boolean | 'UNKNOWN';
   removalCommit?: GitCommitInfo;
+  introducedCommit?: GitCommitInfo;
 }
 
 export interface GitExposure {
@@ -101,6 +104,7 @@ export interface GitExposure {
   commitCount?: number;
   isPartialHistory?: boolean;
   isShallow?: boolean;
+  isIntroductionUnverified?: boolean;
   searchStatus?: 'FOUND' | 'NOT_FOUND' | 'PARTIAL_HISTORY' | 'SEARCH_INCOMPLETE' | 'ERROR';
   isAncestorOfHead?: boolean | 'UNKNOWN';
   branchRemovals?: Record<string, BranchRemovalInfo>;
