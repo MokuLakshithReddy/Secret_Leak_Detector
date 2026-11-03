@@ -80,8 +80,8 @@ export interface GitCommitInfo {
 }
 
 export interface BranchRemovalInfo {
-  isAncestor: boolean;
-  isRemoved: boolean;
+  isAncestor: boolean | 'UNKNOWN';
+  isRemoved: boolean | 'UNKNOWN';
   removalCommit?: GitCommitInfo;
 }
 
@@ -100,8 +100,9 @@ export interface GitExposure {
   statusDescription: string;
   commitCount?: number;
   isPartialHistory?: boolean;
+  isShallow?: boolean;
   searchStatus?: 'FOUND' | 'NOT_FOUND' | 'PARTIAL_HISTORY' | 'SEARCH_INCOMPLETE' | 'ERROR';
-  isAncestorOfHead?: boolean;
+  isAncestorOfHead?: boolean | 'UNKNOWN';
   branchRemovals?: Record<string, BranchRemovalInfo>;
 }
 

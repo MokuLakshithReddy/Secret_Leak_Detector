@@ -119,6 +119,10 @@ export class SecretCodeActionProvider implements vscode.CodeActionProvider {
       return;
     }
 
-    vscode.window.showInformationMessage(`🛡️ ${result.message}`);
+    if (result.degradedSecurity || result.warning) {
+      vscode.window.showWarningMessage(`⚠️ ${result.message}`);
+    } else {
+      vscode.window.showInformationMessage(`🛡️ ${result.message}`);
+    }
   }
 }

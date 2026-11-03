@@ -20,6 +20,7 @@ export interface GitSearchResult {
   commitShas: string[];
   error?: string;
   isPartialHistory?: boolean;
+  isShallow?: boolean;
 }
 
 interface SecurePatternFile {
@@ -230,6 +231,20 @@ export class GitHistoryEngine {
   }
 
   /**
+   * Checks whether the current repository is a shallow clone (e.g. cloned with --depth).
+   * In a shallow clone, earlier commit history is omitted, making a negative search result
+   * incomplete rather than definitively clean.
+   */
+  public async isShallowRepo(): Promise<boolean> {
+    try {
+      const { stdout } = await this.execGit(['rev-parse', '--is-shallow-repository']);
+      return stdout.trim().toLowerCase() === 'true';
+    } catch {
+      return fs.existsSync(path.join(this.workspaceRoot, '.git', 'shallow'));
+    }
+  }
+
+  /**
    * Selects the most specific and identifying line from a secret for secure pattern matching.
    * For multiline secrets (such as PEM blocks), ignores common delimiters (e.g. -----BEGIN...)
    * and chooses the longest high-entropy body line.
@@ -409,6 +424,13 @@ export class GitHistoryEngine {
       return { status: 'NOT_FOUND', commitShas: [] };
     }
 
+    let isShallow = false;
+    try {
+      isShallow = await this.isShallowRepo();
+    } catch {
+      isShallow = false;
+    }
+
     let totalRevCount = 0;
     let countOperationFailed = false;
     let countError: string | undefined;
@@ -426,7 +448,7 @@ export class GitHistoryEngine {
     }
 
     const revArgs = ['rev-list', '--all'];
-    let isPartialHistory = false;
+    let isPartialHistory = isShallow;
     let searchIncomplete = false;
     let operationalError: string | undefined;
 
@@ -454,11 +476,15 @@ export class GitHistoryEngine {
         status: 'ERROR',
         commitShas: [],
         error: err?.message || String(err),
+        isShallow,
       };
     }
 
     if (revs.length === 0) {
-      return { status: 'NOT_FOUND', commitShas: [] };
+      if (isShallow) {
+        return { status: 'PARTIAL_HISTORY', commitShas: [], isPartialHistory: true, isShallow: true };
+      }
+      return { status: 'NOT_FOUND', commitShas: [], isShallow: false };
     }
 
     const pat = createSecurePatternFile(patternLine);
@@ -517,6 +543,7 @@ export class GitHistoryEngine {
         commitShas: Array.from(matchingCommitsSet),
         error: operationalError,
         isPartialHistory,
+        isShallow,
       };
     }
 
@@ -525,6 +552,7 @@ export class GitHistoryEngine {
         status: 'FOUND',
         commitShas: Array.from(matchingCommitsSet),
         isPartialHistory,
+        isShallow,
       };
     }
 
@@ -533,12 +561,14 @@ export class GitHistoryEngine {
         status: 'PARTIAL_HISTORY',
         commitShas: [],
         isPartialHistory: true,
+        isShallow,
       };
     }
 
     return {
       status: 'NOT_FOUND',
       commitShas: [],
+      isShallow,
     };
   }
 
@@ -553,18 +583,26 @@ export class GitHistoryEngine {
 
   /**
    * Establishes whether ancestorSha is an ancestor of targetRef (defaults to 'HEAD').
-   * Uses git merge-base --is-ancestor, exiting 0 if true, 1 if false.
+   * Uses git merge-base --is-ancestor:
+   * - Exit code 0: true (confirmed ancestor).
+   * - Exit code 1: false (confirmed not an ancestor).
+   * - Other exit code / operational error: 'UNKNOWN' (lineage check failed).
    */
-  public async isAncestor(ancestorSha: string, targetRef = 'HEAD'): Promise<boolean> {
-    if (!ancestorSha || !targetRef) return false;
+  public async isAncestor(ancestorSha: string, targetRef = 'HEAD'): Promise<boolean | 'UNKNOWN'> {
+    if (!ancestorSha || !targetRef) return 'UNKNOWN';
     try {
       await this.execGit(['merge-base', '--is-ancestor', ancestorSha, targetRef]);
       return true;
     } catch (err: any) {
-      if (err && (err.code === 1 || err.code === '1' || (typeof err.message === 'string' && err.message.includes('exit code 1')))) {
+      const exitCode = err?.code ?? err?.status;
+      if (
+        exitCode === 1 ||
+        exitCode === '1' ||
+        (typeof err?.message === 'string' && /\bexit code 1\b/i.test(err.message))
+      ) {
         return false;
       }
-      return false;
+      return 'UNKNOWN';
     }
   }
 
@@ -579,8 +617,11 @@ export class GitHistoryEngine {
     if (!patternLine) return undefined;
 
     // Establish ancestry: lastSeenSha MUST be an ancestor of targetRef.
-    // If lastSeenSha is not in targetRef's history, targetRef did not remove it!
+    // If ancestry check fails (UNKNOWN), throw an operational error rather than assuming absence.
     const isAnc = await this.isAncestor(lastSeenSha, targetRef);
+    if (isAnc === 'UNKNOWN') {
+      throw new Error(`Git operational error establishing ancestry between ${lastSeenSha.substring(0, 7)} and ${targetRef}`);
+    }
     if (!isAnc) return undefined;
 
     // List commits chronologically between lastSeenSha and targetRef without credentials in arguments
@@ -710,6 +751,7 @@ export class GitHistoryEngine {
       }
 
       const searchResult = await this.findCommitsContainingSecretResult(secret, maxCommits);
+      const isShallow = !!searchResult.isShallow;
 
       if (searchResult.status === 'ERROR' || searchResult.status === 'SEARCH_INCOMPLETE') {
         const hasMatches = searchResult.commitShas.length > 0;
@@ -727,6 +769,7 @@ export class GitHistoryEngine {
           commitCount: searchResult.commitShas.length,
           searchStatus: searchResult.status,
           isPartialHistory: searchResult.isPartialHistory,
+          isShallow,
         };
       }
 
@@ -746,21 +789,28 @@ export class GitHistoryEngine {
             isRemote: 'UNKNOWN',
             statusDescription: `Failed to inspect working tree: ${err?.message || err}`,
             searchStatus: 'ERROR',
+            isShallow,
           };
         }
 
         if (inWorkingTree) {
           return {
             isPresentInHead: false,
-            isPresentInHistory: false,
+            isPresentInHistory: searchResult.isPartialHistory ? 'UNKNOWN' : false,
             isPresentInWorkingTree: true,
             isSecretInWorkingTree: true,
             exposureDurationDays: 0,
             branches: ['working-tree'],
-            isRemote: false,
-            statusDescription: 'Present in working tree only (uncommitted)',
+            isRemote: searchResult.isPartialHistory ? 'UNKNOWN' : false,
+            statusDescription: searchResult.isPartialHistory
+              ? (isShallow
+                  ? 'Present in working tree (uncommitted); shallow Git clone detected with truncated history'
+                  : `Present in working tree (uncommitted); search limited to ${maxCommits} commit(s)`)
+              : 'Present in working tree only (uncommitted)',
             commitCount: 0,
-            searchStatus: 'FOUND',
+            searchStatus: searchResult.isPartialHistory ? 'PARTIAL_HISTORY' : 'FOUND',
+            isPartialHistory: searchResult.isPartialHistory,
+            isShallow,
           };
         } else if (searchResult.status === 'PARTIAL_HISTORY') {
           return {
@@ -771,9 +821,12 @@ export class GitHistoryEngine {
             exposureDurationDays: 0,
             branches: [],
             isRemote: 'UNKNOWN',
-            statusDescription: `Credential not found in scanned commits, but history search was limited to ${maxCommits} commit(s)`,
+            statusDescription: isShallow
+              ? 'Shallow Git clone detected: repository history is truncated, cannot confirm historical clean state'
+              : `Credential not found in scanned commits, but history search was limited to ${maxCommits} commit(s)`,
             commitCount: 0,
             isPartialHistory: true,
+            isShallow,
             searchStatus: 'PARTIAL_HISTORY',
           };
         } else {
@@ -788,6 +841,7 @@ export class GitHistoryEngine {
             statusDescription: 'Credential not found in Git history or working tree',
             commitCount: 0,
             searchStatus: 'NOT_FOUND',
+            isShallow,
           };
         }
       }
@@ -888,51 +942,60 @@ export class GitHistoryEngine {
       let endDate = Date.now();
 
       // Check whether lastSeenCommit is an ancestor of HEAD
-      let isAncestorOfHead = false;
+      let isAncestorOfHead: boolean | 'UNKNOWN' = 'UNKNOWN';
       try {
         isAncestorOfHead = await this.isAncestor(lastSeenCommit.sha, 'HEAD');
       } catch {
-        isAncestorOfHead = false;
+        isAncestorOfHead = 'UNKNOWN';
       }
 
       // Track removal per branch across all containing branches
-      const branchRemovals: Record<string, { isAncestor: boolean; isRemoved: boolean; removalCommit?: GitCommitInfo }> = {};
+      const branchRemovals: Record<string, { isAncestor: boolean | 'UNKNOWN'; isRemoved: boolean | 'UNKNOWN'; removalCommit?: GitCommitInfo }> = {};
       const containingBranches = branches.filter((b) => !b.includes('(HEAD detached'));
 
       for (const branch of containingBranches) {
         try {
           const isAnc = await this.isAncestor(lastSeenCommit.sha, branch);
-          if (isAnc) {
+          if (isAnc === true) {
             const bRemoval = await this.findRemovalCommit(secret, lastSeenCommit.sha, branch);
             branchRemovals[branch] = {
               isAncestor: true,
               isRemoved: !!bRemoval,
               removalCommit: bRemoval,
             };
-          } else {
+          } else if (isAnc === false) {
             branchRemovals[branch] = {
               isAncestor: false,
               isRemoved: false,
             };
+          } else {
+            branchRemovals[branch] = {
+              isAncestor: 'UNKNOWN',
+              isRemoved: 'UNKNOWN',
+            };
           }
         } catch {
           branchRemovals[branch] = {
-            isAncestor: false,
-            isRemoved: false,
+            isAncestor: 'UNKNOWN',
+            isRemoved: 'UNKNOWN',
           };
         }
       }
 
       if (isPresentInHead === false) {
-        if (isAncestorOfHead) {
+        if (isAncestorOfHead === true) {
           try {
             removedCommit = await this.findRemovalCommit(secret, lastSeenCommit.sha, 'HEAD');
           } catch (remErr: any) {
             removalCheckFailed = true;
             removalError = remErr?.message || String(remErr);
           }
+        } else if (isAncestorOfHead === 'UNKNOWN') {
+          removalCheckFailed = true;
+          removalError = 'Failed to verify lineage between last seen commit and HEAD';
+          removedCommit = undefined;
         } else {
-          // If not an ancestor of HEAD, HEAD never passed through this commit lineage.
+          // If not an ancestor of HEAD (false), HEAD never passed through this commit lineage.
           // Therefore HEAD did NOT remove the credential; removal cannot be attributed to HEAD.
           removedCommit = undefined;
         }
@@ -954,8 +1017,10 @@ export class GitHistoryEngine {
         statusDescription = `INCOMPLETE HEAD VERIFICATION: Present in commit history (${exposureDurationDays} days exposure, ${parsedCommits.length} commit(s)), but HEAD verification failed`;
       } else if (isPresentInHead === true) {
         statusDescription = `ACTIVE IN HEAD & COMMITTED (Introduced ${exposureDurationDays} days ago by ${introducedCommit.author} in ${introducedCommit.sha.substring(0, 7)})`;
-      } else if (!isAncestorOfHead) {
+      } else if (isAncestorOfHead === false) {
         statusDescription = `UNMERGED BRANCH EXPOSURE: Credential present in history on branch(es) [${containingBranches.join(', ') || 'unmerged'}], but never merged into HEAD (Introduced ${exposureDurationDays} days ago by ${introducedCommit.author} in ${introducedCommit.sha.substring(0, 7)})`;
+      } else if (isAncestorOfHead === 'UNKNOWN') {
+        statusDescription = `INCOMPLETE LINEAGE VERIFICATION: Present in commit history (${exposureDurationDays} days exposure, ${parsedCommits.length} commit(s)), but Git ancestry check to HEAD failed`;
       } else {
         statusDescription = `REMOVED FROM HEAD BUT STILL PRESENT IN GIT HISTORY! (Introduced ${exposureDurationDays} days ago by ${introducedCommit.author} in ${introducedCommit.sha.substring(0, 7)})`;
       }
@@ -984,7 +1049,7 @@ export class GitHistoryEngine {
       }
 
       const finalSearchStatus: GitExposure['searchStatus'] =
-        (failedMetadataCount > 0 || headCheckFailed || wtCheckFailed || removalCheckFailed)
+        (failedMetadataCount > 0 || headCheckFailed || wtCheckFailed || removalCheckFailed || isAncestorOfHead === 'UNKNOWN')
           ? 'SEARCH_INCOMPLETE'
           : 'FOUND';
 
@@ -1004,6 +1069,7 @@ export class GitHistoryEngine {
         commitCount: parsedCommits.length,
         searchStatus: finalSearchStatus,
         isPartialHistory: searchResult.isPartialHistory || failedMetadataCount > 0,
+        isShallow,
         isAncestorOfHead,
         branchRemovals,
       };

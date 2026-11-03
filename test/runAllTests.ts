@@ -11,7 +11,7 @@ import { DETECTOR_RULES } from '../src/core/detectors/rules';
 import { calculateRiskAssessment } from '../src/core/risk/riskEngine';
 import { GitTimelineEngine } from '../src/core/history/gitTimeline';
 import { GitService } from '../src/git/gitService';
-import { applyControlledRemediation, resolveUniqueEnvVarName, escapeEnvValue } from '../src/core/remediation/remediationEngine';
+import { applyControlledRemediation, resolveUniqueEnvVarName, escapeEnvValue, enforceEnvFilePermissions, getCurrentSecurityPrincipal, isPrincipalAuthorized } from '../src/core/remediation/remediationEngine';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as cp from 'child_process';
@@ -3501,6 +3501,196 @@ exit 0
         assert(parserCallIdx > hookCheckIdx, 'ensureGlobalAstParser is deferred until AFTER verifying an SLD managed hook exists');
       } finally {
         try { fs.rmSync(sec44Repo, { recursive: true, force: true }); } catch {}
+      }
+    }
+
+    // --- 45. Shallow Repo Guard, Tri-State Ancestry & Windows Principal Strictness ---
+    console.log('\n--- 45. Shallow Repo Guard, Tri-State Ancestry & Windows Principal Strictness ---');
+    {
+      const { execFileSync } = cp;
+      const sec45Dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-sec45-'));
+      try {
+        // 1. Shallow repository detection & prevention of false clean history
+        const shallowRepoDir = path.join(sec45Dir, 'shallow-repo');
+        fs.mkdirSync(shallowRepoDir, { recursive: true });
+        execFileSync('git', ['init'], { cwd: shallowRepoDir });
+        execFileSync('git', ['checkout', '-B', 'main'], { cwd: shallowRepoDir });
+        execFileSync('git', ['config', 'user.name', 'Dev Tester'], { cwd: shallowRepoDir });
+        execFileSync('git', ['config', 'user.email', 'dev@example.com'], { cwd: shallowRepoDir });
+
+      const testSecretVal = 'akiasample' + '123456789012' + 'shallow';
+      fs.writeFileSync(path.join(shallowRepoDir, 'token.txt'), `${testSecretVal}\n`, 'utf8');
+      execFileSync('git', ['add', 'token.txt'], { cwd: shallowRepoDir });
+      execFileSync('git', ['commit', '-m', 'feat: add token'], { cwd: shallowRepoDir });
+
+      fs.writeFileSync(path.join(shallowRepoDir, 'token.txt'), 'cleaned\n', 'utf8');
+      execFileSync('git', ['add', 'token.txt'], { cwd: shallowRepoDir });
+      execFileSync('git', ['commit', '-m', 'fix: clean token from head'], { cwd: shallowRepoDir });
+
+      // Simulate shallow clone by creating .git/shallow containing HEAD sha
+      const headSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: shallowRepoDir, encoding: 'utf8' }).trim();
+      fs.writeFileSync(path.join(shallowRepoDir, '.git', 'shallow'), `${headSha}\n`, 'utf8');
+
+      const shallowEngine = new GitHistoryEngine(shallowRepoDir);
+      const isShallow = await shallowEngine.isShallowRepo();
+      assert(isShallow === true, 'isShallowRepo detects shallow repository');
+
+      // In shallow clone, token is absent from the 1 shallow commit, but engine must report PARTIAL_HISTORY
+      const shallowSearch = await shallowEngine.findCommitsContainingSecretResult(testSecretVal);
+      assert(shallowSearch.status === 'PARTIAL_HISTORY', 'findCommitsContainingSecretResult returns PARTIAL_HISTORY on shallow repo');
+      assert(shallowSearch.isPartialHistory === true, 'isPartialHistory is true on shallow repo');
+      assert(shallowSearch.isShallow === true, 'isShallow is true in search result');
+
+      const shallowTrace = await shallowEngine.traceSecret(testSecretVal);
+      assert(shallowTrace.isPresentInHistory === 'UNKNOWN', 'traceSecret sets isPresentInHistory: UNKNOWN on shallow clone');
+      assert(shallowTrace.isPresentInHead === 'UNKNOWN', 'traceSecret sets isPresentInHead: UNKNOWN on shallow clone');
+      assert(shallowTrace.isRemote === 'UNKNOWN', 'traceSecret sets isRemote: UNKNOWN on shallow clone');
+      assert(shallowTrace.searchStatus === 'PARTIAL_HISTORY', 'traceSecret searchStatus is PARTIAL_HISTORY on shallow clone');
+      assert(shallowTrace.statusDescription.includes('Shallow Git clone detected'), 'statusDescription informs user of shallow clone');
+
+      // VerificationEngine on shallow repository must not resolve finding as clean
+      const verEngine = new VerificationEngine(shallowRepoDir);
+      const fakeFinding: any = {
+        id: 'finding-shallow',
+        fullPath: path.join(shallowRepoDir, 'token.txt'),
+        rawSecret: testSecretVal,
+        gitExposure: shallowTrace,
+      };
+      const verifyRes = await verEngine.verifyFindingFix(fakeFinding);
+      assert(verifyRes.isResolved === false, 'verifyFindingFix refuses to mark shallow repo finding as resolved');
+      assert(verifyRes.historyStatus === 'UNKNOWN', 'verifyFindingFix sets historyStatus: UNKNOWN on shallow clone');
+      assert(verifyRes.details.includes('shallow clone'), 'verifyFindingFix details inform user of shallow clone history truncation');
+
+      // 2. Tri-state Git Ancestry: true, false, and UNKNOWN
+      class AncestryMockEngine extends GitHistoryEngine {
+        public mockExitCode: number = 0;
+        public mockError: any = null;
+        protected async execGit(args: string[]): Promise<{ stdout: any; stderr: any }> {
+          if (args[0] === 'merge-base' && args[1] === '--is-ancestor') {
+            if (this.mockError) throw this.mockError;
+            if (this.mockExitCode === 0) return { stdout: '', stderr: '' };
+            const err: any = new Error(`exit code ${this.mockExitCode}`);
+            err.code = this.mockExitCode;
+            throw err;
+          }
+          return super.execGit(args);
+        }
+      }
+
+      const ancMock = new AncestryMockEngine(shallowRepoDir);
+      ancMock.mockExitCode = 0;
+      const ancTrue = await ancMock.isAncestor('abc', 'HEAD');
+      assert(ancTrue === true, 'isAncestor returns true on exit code 0');
+
+      ancMock.mockExitCode = 1;
+      const ancFalse = await ancMock.isAncestor('abc', 'HEAD');
+      assert(ancFalse === false, 'isAncestor returns false on exit code 1');
+
+      ancMock.mockExitCode = 128; // Fatal git error (e.g. missing object, repository corruption)
+      const ancUnknown = await ancMock.isAncestor('abc', 'HEAD');
+      assert(ancUnknown === 'UNKNOWN', 'isAncestor returns UNKNOWN on non-1 error code');
+
+      // When ancestry fails with UNKNOWN, findRemovalCommit throws rather than claiming clean absence
+      let removalThrew = false;
+      try {
+        await ancMock.findRemovalCommit(testSecretVal, 'abc', 'HEAD');
+      } catch (err: any) {
+        removalThrew = true;
+        assert(err.message.includes('Git operational error establishing ancestry'), 'findRemovalCommit throws on UNKNOWN ancestry');
+      }
+      assert(removalThrew === true, 'findRemovalCommit refuses to treat UNKNOWN ancestry as absence');
+
+      // 3. Remediation communicates degraded security state when Windows ACLs are unsupported
+      const remEnv = path.join(shallowRepoDir, '.env');
+      fs.writeFileSync(remEnv, 'VAR="val"\n', 'utf8');
+      const degradedFinding: any = {
+        id: 'f-degraded',
+        fullPath: path.join(shallowRepoDir, 'source.ts'),
+        file: 'source.ts',
+        rawSecret: 'token_degraded_val_123',
+        type: 'Test Token',
+        remediation: { envVarName: 'TEST_TOKEN' },
+      };
+      fs.writeFileSync(path.join(shallowRepoDir, 'source.ts'), 'const t = "token_degraded_val_123";\n', 'utf8');
+
+      const unsupportedAclCp = {
+        execFileSync: () => {
+          throw new Error('The volume does not support ACLs (FAT32/exFAT)');
+        }
+      };
+      const directEnforce = enforceEnvFilePermissions(remEnv, fs, 'win32', unsupportedAclCp as any);
+      assert(directEnforce.enforced === false, 'enforceEnvFilePermissions reports enforced: false on unsupported FS');
+      assert(directEnforce.isUnsupportedFs === true, 'enforceEnvFilePermissions reports isUnsupportedFs: true');
+
+      const remResDegraded = applyControlledRemediation(
+        degradedFinding,
+        shallowRepoDir,
+        fs,
+        'win32',
+        unsupportedAclCp as any
+      );
+      assert(remResDegraded.success === true, 'applyControlledRemediation proceeds with file modification');
+      assert(remResDegraded.degradedSecurity === true, 'applyControlledRemediation marks degradedSecurity: true');
+      assert(remResDegraded.envProtection?.enforced === false, 'applyControlledRemediation records envProtection.enforced: false');
+      assert(remResDegraded.warning !== undefined && remResDegraded.warning.includes('DEGRADED FILE SECURITY'), 'applyControlledRemediation issues prominent security warning');
+      assert(remResDegraded.message.includes('[DEGRADED SECURITY]'), 'applyControlledRemediation message communicates degraded state');
+
+      // 4. Windows ACL Identity Check: Strict Principal & SID Matching
+      const mypcPrincipal = {
+        username: 'testuser',
+        domain: 'MYPC',
+        qualifiedName: 'MYPC\\testuser',
+        userSid: 'S-1-5-21-1234567890-1111111111-2222222222-1001',
+      };
+
+      // Disallow account with matching username suffix but differing domain prefix!
+      const otherDomainAuthorized = isPrincipalAuthorized('OTHERDOMAIN\\testuser', mypcPrincipal);
+      assert(otherDomainAuthorized === false, 'isPrincipalAuthorized rejects OTHERDOMAIN\\testuser when principal is MYPC\\testuser');
+
+      // Allow matching qualified domain\user
+      const mypcAuthorized = isPrincipalAuthorized('MYPC\\testuser', mypcPrincipal);
+      assert(mypcAuthorized === true, 'isPrincipalAuthorized accepts matching qualified MYPC\\testuser');
+
+      // Allow matching SID
+      const sidAuthorized = isPrincipalAuthorized('*S-1-5-21-1234567890-1111111111-2222222222-1001', mypcPrincipal);
+      assert(sidAuthorized === true, 'isPrincipalAuthorized accepts matching user SID');
+
+      // Reject non-matching SID
+      const otherSidAuthorized = isPrincipalAuthorized('*S-1-5-21-9999999999-9999999999-9999999999-9999', mypcPrincipal);
+      assert(otherSidAuthorized === false, 'isPrincipalAuthorized rejects non-matching SID');
+
+      // Allow SYSTEM
+      assert(isPrincipalAuthorized('NT AUTHORITY\\SYSTEM', mypcPrincipal) === true, 'isPrincipalAuthorized accepts NT AUTHORITY\\SYSTEM');
+      assert(isPrincipalAuthorized('*S-1-5-18', mypcPrincipal) === true, 'isPrincipalAuthorized accepts SYSTEM SID S-1-5-18');
+
+      // Enforce removal of OTHERDOMAIN account via icacls /remove
+      let otherDomainRemoved = false;
+      const domainMockCp = {
+        execFileSync: (cmd: string, args: string[]) => {
+          if (cmd === 'whoami' && args.includes('/fo')) {
+            return '"User Name","SID"\n"MYPC\\testuser","S-1-5-21-1234567890-1111111111-2222222222-1001"\n';
+          }
+          if (cmd === 'icacls') {
+            if (args.includes('/remove') && args.includes('OTHERDOMAIN\\testuser')) {
+              otherDomainRemoved = true;
+            }
+            if (args.length === 1) {
+              if (!otherDomainRemoved) {
+                return `${args[0]} OTHERDOMAIN\\testuser:(R)\n MYPC\\testuser:(F)\nSuccessfully processed 1 files;\n`;
+              }
+              return `${args[0]} MYPC\\testuser:(F)\nSuccessfully processed 1 files;\n`;
+            }
+          }
+          return Buffer.from('');
+        }
+      };
+
+      const domainEnforceRes = enforceEnvFilePermissions(remEnv, fs, 'win32', domainMockCp as any);
+      assert(domainEnforceRes.enforced === true, 'enforceEnvFilePermissions reports enforced: true after stripping other domain');
+      assert(otherDomainRemoved === true, 'enforceEnvFilePermissions actively strips OTHERDOMAIN\\testuser via icacls /remove');
+
+      } finally {
+        try { fs.rmSync(sec45Dir, { recursive: true, force: true }); } catch {}
       }
     }
 
