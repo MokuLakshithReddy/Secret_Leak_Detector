@@ -3860,6 +3860,208 @@ exit 0
       }
     }
 
+    // --- 47. Lineage Ancestry-Path, O(N) Topo Ordering, Committer Date Chronology & Worktree Fallbacks ---
+    console.log('\n--- 47. Lineage Ancestry-Path, O(N) Topo Ordering, Committer Date Chronology & Worktree Fallbacks ---');
+    {
+      const { execFileSync } = cp;
+      const fromHex = (h: string) => Buffer.from(h, 'hex').toString('utf8');
+      const sec47Dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-sec47-'));
+      try {
+        // 1. False removal attribution after merging a clean side branch
+        const mergeRepo = path.join(sec47Dir, 'merge-repo');
+        fs.mkdirSync(mergeRepo, { recursive: true });
+        execFileSync('git', ['init'], { cwd: mergeRepo });
+        execFileSync('git', ['checkout', '-B', 'main'], { cwd: mergeRepo });
+        execFileSync('git', ['config', 'user.name', 'Merge Tester'], { cwd: mergeRepo });
+        execFileSync('git', ['config', 'user.email', 'merge@example.com'], { cwd: mergeRepo });
+
+        fs.writeFileSync(path.join(mergeRepo, 'base.txt'), 'base\n', 'utf8');
+        execFileSync('git', ['add', 'base.txt'], { cwd: mergeRepo });
+        execFileSync('git', ['commit', '-m', 'chore: base commit'], { cwd: mergeRepo });
+
+        // Create feature branch and commit an unrelated file
+        execFileSync('git', ['checkout', '-b', 'feature-unrelated'], { cwd: mergeRepo });
+        fs.writeFileSync(path.join(mergeRepo, 'unrelated.txt'), 'unrelated\n', 'utf8');
+        execFileSync('git', ['add', 'unrelated.txt'], { cwd: mergeRepo });
+        execFileSync('git', ['commit', '-m', 'feat: unrelated commit on side branch'], { cwd: mergeRepo });
+        const sideBranchSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: mergeRepo, encoding: 'utf8' }).trim();
+
+        // Switch back to main, add credential
+        execFileSync('git', ['checkout', 'main'], { cwd: mergeRepo });
+        const secretVal = fromHex('6768705f') + fromHex('4d65726765536563726574546f6b656e31323334353637383930');
+        fs.writeFileSync(path.join(mergeRepo, 'secret.txt'), `TOKEN=${secretVal}\n`, 'utf8');
+        execFileSync('git', ['add', 'secret.txt'], { cwd: mergeRepo });
+        execFileSync('git', ['commit', '-m', 'feat: add credential on main'], { cwd: mergeRepo });
+        const introSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: mergeRepo, encoding: 'utf8' }).trim();
+
+        // Merge the unrelated feature branch into main without removing credential
+        execFileSync('git', ['merge', 'feature-unrelated', '-m', 'merge feature-unrelated into main'], { cwd: mergeRepo });
+        const mergeSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: mergeRepo, encoding: 'utf8' }).trim();
+
+        const mergeEngine = new GitHistoryEngine(mergeRepo);
+
+        // findRemovalCommit on main BEFORE actual removal must NOT return sideBranchSha!
+        const prematureRemoval = await mergeEngine.findRemovalCommit(secretVal, introSha, 'main');
+        assert(prematureRemoval === undefined, 'findRemovalCommit does not falsely select unrelated side branch commit as removal commit');
+
+        // Now remove the credential in a later commit on main
+        fs.writeFileSync(path.join(mergeRepo, 'secret.txt'), 'TOKEN=clean\n', 'utf8');
+        execFileSync('git', ['add', 'secret.txt'], { cwd: mergeRepo });
+        execFileSync('git', ['commit', '-m', 'fix: genuine removal commit'], { cwd: mergeRepo });
+        const genuineRemovalSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: mergeRepo, encoding: 'utf8' }).trim();
+
+        const genuineRemoval = await mergeEngine.findRemovalCommit(secretVal, introSha, 'main');
+        assert(genuineRemoval !== undefined, 'findRemovalCommit finds genuine removal commit after side branch merge');
+        assert(genuineRemoval?.sha === genuineRemovalSha, 'findRemovalCommit accurately attributes removal to genuineRemovalSha');
+        assert(genuineRemoval?.sha !== sideBranchSha, 'findRemovalCommit does not attribute removal to sideBranchSha');
+
+        // 2. O(N) Topological sorting performance test with hundreds of commits
+        const perfRepo = path.join(sec47Dir, 'perf-repo');
+        fs.mkdirSync(perfRepo, { recursive: true });
+        execFileSync('git', ['init'], { cwd: perfRepo });
+        execFileSync('git', ['checkout', '-B', 'main'], { cwd: perfRepo });
+        execFileSync('git', ['config', 'user.name', 'Perf Tester'], { cwd: perfRepo });
+        execFileSync('git', ['config', 'user.email', 'perf@example.com'], { cwd: perfRepo });
+
+        const persistentSecret = fromHex('736b2d616e742d61706930332d') + fromHex('50657266436865636b546f6b656e313233343536373839303132333435363738');
+        fs.writeFileSync(path.join(perfRepo, 'data.txt'), `KEY=${persistentSecret}\n`, 'utf8');
+        execFileSync('git', ['add', 'data.txt'], { cwd: perfRepo });
+        execFileSync('git', ['commit', '-m', 'commit 0'], { cwd: perfRepo });
+        const initialSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: perfRepo, encoding: 'utf8' }).trim();
+
+        // Create 20 consecutive commits containing the secret
+        for (let i = 1; i <= 20; i++) {
+          fs.writeFileSync(path.join(perfRepo, 'counter.txt'), `${i}\n`, 'utf8');
+          execFileSync('git', ['add', 'counter.txt'], { cwd: perfRepo });
+          execFileSync('git', ['commit', '-m', `commit ${i}`], { cwd: perfRepo });
+        }
+        const newestSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: perfRepo, encoding: 'utf8' }).trim();
+
+        const perfEngine = new GitHistoryEngine(perfRepo);
+        const startTime = Date.now();
+        const perfTrace = await perfEngine.traceSecret(persistentSecret);
+        const elapsedMs = Date.now() - startTime;
+
+        assert(perfTrace.commitCount === 21, 'traceSecret finds all 21 commits containing persistent secret');
+        assert(perfTrace.introducedCommit?.sha === initialSha, 'traceSecret identifies initial commit as introducedCommit');
+        assert(perfTrace.lastSeenCommit?.sha === newestSha, 'traceSecret identifies newest commit as lastSeenCommit');
+        assert(elapsedMs < 10000, `traceSecret topological sorting runs in linear time without quadratic subprocess delay (took ${elapsedMs}ms)`);
+
+        // 3. Committer date carried through timeline and backdated removal
+        const timeRepo = path.join(sec47Dir, 'time-repo');
+        fs.mkdirSync(timeRepo, { recursive: true });
+        execFileSync('git', ['init'], { cwd: timeRepo });
+        execFileSync('git', ['checkout', '-B', 'main'], { cwd: timeRepo });
+        execFileSync('git', ['config', 'user.name', 'Timeline Tester'], { cwd: timeRepo });
+        execFileSync('git', ['config', 'user.email', 'time@example.com'], { cwd: timeRepo });
+
+        const timeSecret = fromHex('6768705f') + fromHex('54696d656c696e65536563726574546f6b656e31323334353637383930');
+        fs.writeFileSync(path.join(timeRepo, 'auth.txt'), `AUTH=${timeSecret}\n`, 'utf8');
+        execFileSync('git', ['add', 'auth.txt'], { cwd: timeRepo });
+        execFileSync('git', ['commit', '-m', 'intro commit'], {
+          cwd: timeRepo,
+          env: {
+            ...process.env,
+            GIT_AUTHOR_DATE: '2025-01-01T12:00:00Z',
+            GIT_COMMITTER_DATE: '2025-01-01T12:00:00Z',
+          },
+        });
+        const t1Sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: timeRepo, encoding: 'utf8' }).trim();
+
+        // Commit 2: modification with backdated author date
+        fs.writeFileSync(path.join(timeRepo, 'auth.txt'), `AUTH=${timeSecret} updated\n`, 'utf8');
+        execFileSync('git', ['add', 'auth.txt'], { cwd: timeRepo });
+        execFileSync('git', ['commit', '-m', 'mod commit backdated author'], {
+          cwd: timeRepo,
+          env: {
+            ...process.env,
+            GIT_AUTHOR_DATE: '1998-01-01T12:00:00Z',
+            GIT_COMMITTER_DATE: '2025-01-05T12:00:00Z',
+          },
+        });
+        const t2Sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: timeRepo, encoding: 'utf8' }).trim();
+
+        // Commit 3: removal with backdated author date
+        fs.writeFileSync(path.join(timeRepo, 'auth.txt'), 'AUTH=clean\n', 'utf8');
+        execFileSync('git', ['add', 'auth.txt'], { cwd: timeRepo });
+        execFileSync('git', ['commit', '-m', 'removal commit backdated author'], {
+          cwd: timeRepo,
+          env: {
+            ...process.env,
+            GIT_AUTHOR_DATE: '1995-01-01T12:00:00Z',
+            GIT_COMMITTER_DATE: '2025-01-10T12:00:00Z',
+          },
+        });
+        const t3Sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: timeRepo, encoding: 'utf8' }).trim();
+
+        const timeEngine = new GitHistoryEngine(timeRepo);
+        const timeRemoval = await timeEngine.findRemovalCommit(timeSecret, t2Sha, 'main');
+        assert(timeRemoval?.sha === t3Sha, 'findRemovalCommit finds t3 removal commit');
+        assert(timeRemoval?.committerDate !== undefined, 'findRemovalCommit carries committerDate');
+
+        const tlEngine = new GitTimelineEngine(timeRepo, timeEngine);
+        const tlReport = await tlEngine.buildTimeline(timeSecret, 'ghp_••••');
+        assert(tlReport.events.length === 3, 'buildTimeline produces 3 events');
+        assert(tlReport.events[0].commitSha === t1Sha, 'buildTimeline places true ancestor t1 as INTRODUCED event despite backdated author dates');
+        assert(tlReport.events[1].commitSha === t2Sha, 'buildTimeline places child t2 as second event');
+        assert(tlReport.events[2].commitSha === t3Sha, 'buildTimeline places removal t3 as REMOVED event');
+        assert(tlReport.totalExposureDays >= 9, 'buildTimeline uses committer dates for accurate exposure calculation');
+
+        // 4. Branch inspection failures propagate into UNKNOWN and SEARCH_INCOMPLETE
+        class FailingBranchEngine extends GitHistoryEngine {
+          protected async execGit(args: string[], options: any = {}): Promise<{ stdout: any; stderr: any }> {
+            if (args[0] === 'branch' && args.includes('--contains') && args.includes(t2Sha)) {
+              throw new Error('Simulated operational failure during branch lookup on t2');
+            }
+            return super.execGit(args, options);
+          }
+        }
+        const failingBranchEngine = new FailingBranchEngine(timeRepo);
+        const fbTrace = await failingBranchEngine.traceSecret(timeSecret);
+        assert(fbTrace.isRemote === 'UNKNOWN', 'traceSecret sets isRemote: UNKNOWN when branch query fails on a commit without confirmed remote');
+        assert(fbTrace.searchStatus === 'SEARCH_INCOMPLETE', 'traceSecret sets searchStatus: SEARCH_INCOMPLETE when branch query fails');
+        assert(fbTrace.statusDescription.includes('INCOMPLETE BRANCH INSPECTION'), 'traceSecret notes INCOMPLETE BRANCH INSPECTION in statusDescription');
+
+        // 5. Shallow repository fallback resolves .git/shallow in linked worktrees
+        const wtRepo = path.join(sec47Dir, 'wt-repo');
+        fs.mkdirSync(wtRepo, { recursive: true });
+        execFileSync('git', ['init'], { cwd: wtRepo });
+        execFileSync('git', ['checkout', '-B', 'main'], { cwd: wtRepo });
+        execFileSync('git', ['config', 'user.name', 'WT Tester'], { cwd: wtRepo });
+        execFileSync('git', ['config', 'user.email', 'wt@example.com'], { cwd: wtRepo });
+        fs.writeFileSync(path.join(wtRepo, 'wt_base.txt'), 'wt\n', 'utf8');
+        execFileSync('git', ['add', 'wt_base.txt'], { cwd: wtRepo });
+        execFileSync('git', ['commit', '-m', 'wt base commit'], { cwd: wtRepo });
+
+        const wtHeadSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: wtRepo, encoding: 'utf8' }).trim();
+        // Create shallow marker in main repo's .git/shallow
+        fs.writeFileSync(path.join(wtRepo, '.git', 'shallow'), `${wtHeadSha}\n`, 'utf8');
+
+        // Create linked worktree
+        const linkedWtPath = path.join(sec47Dir, 'linked-worktree');
+        execFileSync('git', ['worktree', 'add', linkedWtPath, '-b', 'wt-test-branch'], { cwd: wtRepo });
+
+        // In linked worktree, .git is a file, not a directory
+        assert(fs.statSync(path.join(linkedWtPath, '.git')).isFile(), 'Linked worktree has .git as a file');
+
+        // Test mock engine that forces fallback path by throwing in git rev-parse --is-shallow-repository
+        class WorktreeShallowEngine extends GitHistoryEngine {
+          protected async execGit(args: string[], options: any = {}): Promise<{ stdout: any; stderr: any }> {
+            if (args[0] === 'rev-parse' && args[1] === '--is-shallow-repository') {
+              throw new Error('Unsupported command simulation');
+            }
+            return super.execGit(args, options);
+          }
+        }
+        const wtEngine = new WorktreeShallowEngine(linkedWtPath);
+        const wtIsShallow = await wtEngine.isShallowRepo();
+        assert(wtIsShallow === true, 'isShallowRepo detects shallow status in linked worktree via --git-path shallow fallback');
+
+      } finally {
+        try { fs.rmSync(sec47Dir, { recursive: true, force: true }); } catch {}
+      }
+    }
+
   console.log('\n============================================================');
   console.log(`🎉 TEST SUMMARY: ${passed} PASSED, ${failed} FAILED`);
   console.log('============================================================\n');

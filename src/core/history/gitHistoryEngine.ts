@@ -240,6 +240,16 @@ export class GitHistoryEngine {
       const { stdout } = await this.execGit(['rev-parse', '--is-shallow-repository']);
       return stdout.trim().toLowerCase() === 'true';
     } catch {
+      try {
+        const { stdout: shallowPath } = await this.execGit(['rev-parse', '--git-path', 'shallow']);
+        const trimmed = shallowPath.trim();
+        if (trimmed) {
+          const resolvedPath = path.isAbsolute(trimmed) ? trimmed : path.resolve(this.workspaceRoot, trimmed);
+          return fs.existsSync(resolvedPath);
+        }
+      } catch {
+        // Fallback to legacy path check if git rev-parse is completely unavailable
+      }
       return fs.existsSync(path.join(this.workspaceRoot, '.git', 'shallow'));
     }
   }
@@ -624,18 +634,21 @@ export class GitHistoryEngine {
     }
     if (!isAnc) return undefined;
 
-    // List commits chronologically between lastSeenSha and targetRef without credentials in arguments
+    // List commits chronologically forward on targetRef's actual ancestry path starting from lastSeenSha.
+    // Using --ancestry-path ensures that unrelated commits merged from side branches (which are not
+    // descendants of lastSeenSha) are excluded from the candidate search range.
     const { stdout: revsOut } = await this.execGit([
       'log',
       '--reverse',
-      '--format=%H|%an|%ad|%s',
+      '--ancestry-path',
+      '--format=%H|%an|%ad|%cn|%cd|%s',
       '--date=iso',
       `${lastSeenSha}..${targetRef}`,
     ]);
     const lines = revsOut.trim().split('\n').filter(Boolean);
     if (lines.length === 0) return undefined;
 
-    const commitList: Array<{ sha: string; author: string; date: string; message: string }> = [];
+    const commitList: Array<{ sha: string; author: string; date: string; committer?: string; committerDate?: string; message: string }> = [];
     for (const line of lines) {
       const parts = line.split('|');
       if (parts.length >= 4) {
@@ -643,7 +656,9 @@ export class GitHistoryEngine {
           sha: parts[0],
           author: parts[1] || 'Unknown',
           date: parts[2] || new Date().toISOString(),
-          message: parts.slice(3).join('|') || '',
+          committer: parts[3] || parts[1] || 'Unknown',
+          committerDate: parts[4] || parts[2] || new Date().toISOString(),
+          message: parts.slice(5).join('|') || parts.slice(3).join('|') || '',
         });
       }
     }
@@ -708,6 +723,8 @@ export class GitHistoryEngine {
             sha: commit.sha,
             author: commit.author,
             date: commit.date,
+            committer: commit.committer,
+            committerDate: commit.committerDate,
             message: commit.message,
           };
         }
@@ -903,8 +920,6 @@ export class GitHistoryEngine {
         };
       }
 
-      // Sort topologically newest first (descendants before ancestors) using Git ancestry and committer timestamps.
-      // This prevents deliberately backdated author timestamps (e.g. GIT_AUTHOR_DATE or --date) from distorting chronology.
       const ancestryCache = new Map<string, boolean | 'UNKNOWN'>();
       const checkAncestry = async (aSha: string, bSha: string): Promise<boolean | 'UNKNOWN'> => {
         const key = `${aSha}->${bSha}`;
@@ -914,29 +929,42 @@ export class GitHistoryEngine {
         return res;
       };
 
-      for (let i = 0; i < parsedCommits.length; i++) {
-        for (let j = i + 1; j < parsedCommits.length; j++) {
-          const a = parsedCommits[i];
-          const b = parsedCommits[j];
-          // If a is an ancestor of b, then b is newer and should come BEFORE a (newest-first ordering)
-          const aIsAncestorOfB = await checkAncestry(a.sha, b.sha);
-          if (aIsAncestorOfB === true) {
-            parsedCommits[i] = b;
-            parsedCommits[j] = a;
-            continue;
+      // Sort topologically newest first (descendants before ancestors) using Git's native topological ordering.
+      // This prevents quadratic Git-process calls (avoiding pairwise isAncestor checks across thousands of commits)
+      // and neutralizes manipulated/backdated author timestamps (e.g. GIT_AUTHOR_DATE).
+      const shaSet = new Set(parsedCommits.map((c) => c.sha));
+      try {
+        const { stdout: topoOut } = await this.execGit([
+          'rev-list',
+          '--all',
+          '--topo-order',
+        ], { maxBuffer: 30 * 1024 * 1024, encoding: 'utf8' });
+        const topoAllShas = topoOut.trim().split('\n').filter(Boolean);
+        const topoIndexMap = new Map<string, number>();
+        topoAllShas.forEach((sha: string, idx: number) => {
+          if (shaSet.has(sha)) {
+            topoIndexMap.set(sha, idx);
           }
-          const bIsAncestorOfA = await checkAncestry(b.sha, a.sha);
-          if (bIsAncestorOfA === true) {
-            continue;
+        });
+
+        parsedCommits.sort((a, b) => {
+          const idxA = topoIndexMap.has(a.sha) ? topoIndexMap.get(a.sha)! : Number.MAX_SAFE_INTEGER;
+          const idxB = topoIndexMap.has(b.sha) ? topoIndexMap.get(b.sha)! : Number.MAX_SAFE_INTEGER;
+          if (idxA !== idxB) {
+            return idxA - idxB;
           }
-          // Neither is an ancestor of the other (independent sibling branches): sort by committer timestamp
+          // Fallback to committer date if both are not in topoIndexMap
           const timeA = new Date(a.committerDate || a.date).getTime();
           const timeB = new Date(b.committerDate || b.date).getTime();
-          if (timeA < timeB) {
-            parsedCommits[i] = b;
-            parsedCommits[j] = a;
-          }
-        }
+          return timeB - timeA;
+        });
+      } catch {
+        // Fallback to committer timestamp if git rev-list fails
+        parsedCommits.sort((a, b) => {
+          const timeA = new Date(a.committerDate || a.date).getTime();
+          const timeB = new Date(b.committerDate || b.date).getTime();
+          return timeB - timeA;
+        });
       }
 
       let isPresentInHead: boolean | 'UNKNOWN' = 'UNKNOWN';
@@ -948,7 +976,8 @@ export class GitHistoryEngine {
         headCheckFailed = true;
       }
 
-      // Query containing branches across ALL matching commits independently
+      // Query containing branches across ALL matching commits independently.
+      // Use --contains to accurately determine branch containment.
       const branchSet = new Set<string>();
       const commitBranchesMap = new Map<string, string[]>();
       let branchQueryFailed = false;
@@ -976,8 +1005,14 @@ export class GitHistoryEngine {
 
       const branches = Array.from(branchSet);
       let isRemote: boolean | 'UNKNOWN' = 'UNKNOWN';
-      if (!branchQueryFailed || branches.length > 0) {
-        isRemote = branches.some((b) => b.startsWith('remotes/') || b.startsWith('origin/'));
+      const hasRemoteConfirmed = branches.some((b) => b.startsWith('remotes/') || b.startsWith('origin/'));
+      if (hasRemoteConfirmed) {
+        isRemote = true;
+      } else if (branchQueryFailed) {
+        // If a branch query failed and no remote ref was positively discovered, remote status remains UNKNOWN
+        isRemote = 'UNKNOWN';
+      } else {
+        isRemote = false;
       }
 
       // Track exposure and removal independently per branch
@@ -1032,28 +1067,42 @@ export class GitHistoryEngine {
         }
       }
 
-      // Check whether matching commits exist in HEAD's lineage
+      // Check whether matching commits exist in HEAD's lineage in O(1) queries instead of O(N)
       const commitsInHeadLineage: GitCommitInfo[] = [];
-      for (const c of parsedCommits) {
-        const isAnc = await checkAncestry(c.sha, 'HEAD');
-        if (isAnc === true) {
-          commitsInHeadLineage.push(c);
-        }
-      }
-
       let isAncestorOfHead: boolean | 'UNKNOWN' = 'UNKNOWN';
-      if (commitsInHeadLineage.length > 0) {
-        isAncestorOfHead = true;
-      } else {
-        let anyUnknown = false;
+      try {
+        const { stdout: headRevOut } = await this.execGit(
+          ['rev-list', 'HEAD'],
+          { maxBuffer: 30 * 1024 * 1024, encoding: 'utf8' }
+        );
+        const headAncestorShas = new Set(headRevOut.trim().split('\n').filter(Boolean));
         for (const c of parsedCommits) {
-          const anc = await checkAncestry(c.sha, 'HEAD');
-          if (anc === 'UNKNOWN') {
-            anyUnknown = true;
-            break;
+          if (headAncestorShas.has(c.sha)) {
+            commitsInHeadLineage.push(c);
           }
         }
-        isAncestorOfHead = anyUnknown ? 'UNKNOWN' : false;
+        isAncestorOfHead = commitsInHeadLineage.length > 0;
+      } catch {
+        // Fallback to per-commit ancestry query if bulk rev-list fails
+        for (const c of parsedCommits) {
+          const isAnc = await checkAncestry(c.sha, 'HEAD');
+          if (isAnc === true) {
+            commitsInHeadLineage.push(c);
+          }
+        }
+        if (commitsInHeadLineage.length > 0) {
+          isAncestorOfHead = true;
+        } else {
+          let anyUnknown = false;
+          for (const c of parsedCommits) {
+            const anc = await checkAncestry(c.sha, 'HEAD');
+            if (anc === 'UNKNOWN') {
+              anyUnknown = true;
+              break;
+            }
+          }
+          isAncestorOfHead = anyUnknown ? 'UNKNOWN' : false;
+        }
       }
 
       const introducedCommit = parsedCommits[parsedCommits.length - 1];
@@ -1136,6 +1185,9 @@ export class GitHistoryEngine {
       if (wtCheckFailed) {
         statusDescription += ` [Working-tree verification incomplete]`;
       }
+      if (branchQueryFailed) {
+        statusDescription += ` [INCOMPLETE BRANCH INSPECTION: branch reachability query failed for one or more commits]`;
+      }
       if (searchResult.isShallow) {
         statusDescription += ` [SHALLOW CLONE: repository history is truncated at shallow boundary; original introduction date, total exposure duration, and complete branch coverage are unverified]`;
       } else if (searchResult.isPartialHistory && maxCommits > 0) {
@@ -1143,7 +1195,7 @@ export class GitHistoryEngine {
       }
 
       const finalSearchStatus: GitExposure['searchStatus'] =
-        (failedMetadataCount > 0 || headCheckFailed || wtCheckFailed || removalCheckFailed || isAncestorOfHead === 'UNKNOWN' || searchResult.isShallow)
+        (failedMetadataCount > 0 || headCheckFailed || wtCheckFailed || removalCheckFailed || isAncestorOfHead === 'UNKNOWN' || searchResult.isShallow || branchQueryFailed)
           ? 'SEARCH_INCOMPLETE'
           : 'FOUND';
 

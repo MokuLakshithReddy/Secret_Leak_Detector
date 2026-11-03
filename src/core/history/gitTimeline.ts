@@ -12,6 +12,7 @@ export interface GitTimelineEvent {
   authorName: string;
   authorEmail: string;
   date: string;
+  committerDate?: string;
   commitMessage: string;
   isMergeCommit: boolean;
   parentShas: string[];
@@ -197,7 +198,7 @@ export class GitTimelineEngine {
       for (const sha of commitShas) {
         try {
           const { stdout: commitInfo } = await (this.gitHistory as any).execGit(
-            ['log', '-1', '--format=%H|%P|%an|%ae|%ad|%s', '--date=iso', sha],
+            ['log', '-1', '--format=%H|%P|%an|%ae|%ad|%cn|%cd|%s', '--date=iso', sha],
             { encoding: 'utf8' }
           );
           if (commitInfo.trim()) {
@@ -211,12 +212,43 @@ export class GitTimelineEngine {
         }
       }
 
-      // Sort commits chronologically ascending (oldest to newest)
-      lines.sort((a, b) => {
-        const dateA = a.split('|')[4] || '';
-        const dateB = b.split('|')[4] || '';
-        return new Date(dateA).getTime() - new Date(dateB).getTime();
-      });
+      // Sort commits chronologically ascending (oldest to newest) using Git's native topological order
+      // (with committer timestamp fallback), neutralizing manipulated/backdated author dates.
+      const commitShaSet = new Set(commitShas);
+      try {
+        const { stdout: topoOut } = await (this.gitHistory as any).execGit([
+          'rev-list',
+          '--all',
+          '--topo-order',
+        ], { maxBuffer: 30 * 1024 * 1024, encoding: 'utf8' });
+        const topoShas = topoOut.trim().split('\n').filter(Boolean);
+        const topoOrderMap = new Map<string, number>();
+        topoShas.forEach((sha: string, idx: number) => {
+          if (commitShaSet.has(sha)) {
+            topoOrderMap.set(sha, idx);
+          }
+        });
+
+        // topoShas is newest-first. For timeline ascending order (oldest first), reverse the indices!
+        lines.sort((a, b) => {
+          const shaA = a.split('|')[0];
+          const shaB = b.split('|')[0];
+          const idxA = topoOrderMap.has(shaA) ? topoOrderMap.get(shaA)! : -1;
+          const idxB = topoOrderMap.has(shaB) ? topoOrderMap.get(shaB)! : -1;
+          if (idxA !== -1 && idxB !== -1) {
+            return idxB - idxA; // larger topo index means older commit => placed first
+          }
+          const cDateA = a.split('|')[6] || a.split('|')[4] || '';
+          const cDateB = b.split('|')[6] || b.split('|')[4] || '';
+          return new Date(cDateA).getTime() - new Date(cDateB).getTime();
+        });
+      } catch {
+        lines.sort((a, b) => {
+          const cDateA = a.split('|')[6] || a.split('|')[4] || '';
+          const cDateB = b.split('|')[6] || b.split('|')[4] || '';
+          return new Date(cDateA).getTime() - new Date(cDateB).getTime();
+        });
+      }
     } catch (err: any) {
       return {
         secretRedacted: redactedSecret,
@@ -298,8 +330,14 @@ export class GitTimelineEngine {
     let branchLookupError: string | undefined;
 
     for (let i = 0; i < lines.length; i++) {
-      const [sha, parentsStr, author, email, dateStr, ...msgParts] = lines[i].split('|');
-      const message = msgParts.join('|');
+      const parts = lines[i].split('|');
+      const sha = parts[0];
+      const parentsStr = parts[1] || '';
+      const author = parts[2] || '';
+      const email = parts[3] || '';
+      const dateStr = parts[4] || '';
+      const committerDateStr = parts[6] || dateStr;
+      const message = parts.slice(7).join('|') || parts.slice(5).join('|');
       const parentShas = (parentsStr || '').split(' ').filter(Boolean);
       const isMergeCommit = parentShas.length > 1;
 
@@ -328,7 +366,7 @@ export class GitTimelineEngine {
         }
       });
 
-      const commitDate = new Date(dateStr);
+      const commitDate = new Date(committerDateStr || dateStr);
       if (!firstDate) firstDate = commitDate;
 
       const exposureDaysSoFar = Math.max(
@@ -349,6 +387,7 @@ export class GitTimelineEngine {
         authorName: author,
         authorEmail: email,
         date: dateStr,
+        committerDate: committerDateStr,
         commitMessage: message,
         isMergeCommit,
         parentShas,
@@ -407,7 +446,7 @@ export class GitTimelineEngine {
       if (actualRemoval) {
         removalCommitSha = actualRemoval.sha;
         removalCommitDate = actualRemoval.date;
-        const removalDateMs = new Date(actualRemoval.date).getTime();
+        const removalDateMs = new Date(actualRemoval.committerDate || actualRemoval.date).getTime();
         const daysToRemoval = Math.max(0, Math.round((removalDateMs - firstDateMs) / (1000 * 60 * 60 * 24)));
         events.push({
           eventType: 'REMOVED',
@@ -415,6 +454,7 @@ export class GitTimelineEngine {
           authorName: actualRemoval.author,
           authorEmail: '',
           date: actualRemoval.date,
+          committerDate: actualRemoval.committerDate,
           commitMessage: actualRemoval.message,
           isMergeCommit: false,
           parentShas: [lastEvent.commitSha],
@@ -428,7 +468,7 @@ export class GitTimelineEngine {
     const lastDateMs =
       currentStatus === 'ACTIVE_IN_HEAD'
         ? Date.now()
-        : new Date(lastEventOrRemoval?.date || Date.now()).getTime();
+        : new Date(lastEventOrRemoval?.committerDate || lastEventOrRemoval?.date || Date.now()).getTime();
 
     const totalExposureDays = Math.max(
       0,
