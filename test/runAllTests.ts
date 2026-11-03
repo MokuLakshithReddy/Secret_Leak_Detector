@@ -4602,8 +4602,33 @@ exit 0
 
       const stdoutErrEngine = new StdoutErrorRevListEngine(subProcRepo);
       const stdoutErrResult = await stdoutErrEngine.getBranchesForCommits([dummySha, 'missing-sha-0000000000'], subProcRepo);
-      assert(stdoutErrResult.failed === true, 'getBranchesForCommits reports failed: true on stdout stream error');
-      assert(stdoutErrResult.error?.includes('Simulated stdout read error'), 'Error message preserves stdout read error');
+      assert(
+        stdoutErrResult.failed === true && Boolean(stdoutErrResult.error?.includes('Simulated stdout read error')),
+        'getBranchesForCommits reports failed: true and preserves stdout read error'
+      );
+
+      // Verify stream error propagation (stderr stream error is captured and reported)
+      class StderrErrorRevListEngine extends GitHistoryEngine {
+        protected override spawnGitRevList(branch: string, cwd: string): any {
+          const proc = cp.spawn(process.execPath, [
+            '-e',
+            `console.log("${dummySha}"); setTimeout(() => process.exit(0), 100);`
+          ]);
+          setTimeout(() => {
+            if (proc.stderr) {
+              proc.stderr.emit('error', new Error('Simulated stderr stream error'));
+            }
+          }, 10);
+          return proc;
+        }
+      }
+
+      const stderrErrEngine = new StderrErrorRevListEngine(subProcRepo);
+      const stderrErrResult = await stderrErrEngine.getBranchesForCommits([dummySha, 'missing-sha-0000000000'], subProcRepo);
+      assert(
+        stderrErrResult.failed === true && Boolean(stderrErrResult.error?.includes('Simulated stderr stream error')),
+        'getBranchesForCommits reports failed: true and preserves stderr stream error'
+      );
 
       // Verify intentional early termination resolves cleanly with failed: false
       class EarlyTermRevListEngine extends GitHistoryEngine {
