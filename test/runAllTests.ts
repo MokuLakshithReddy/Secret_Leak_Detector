@@ -3286,7 +3286,8 @@ exit 0
               icaclsInvoked = true;
               allIcaclsInvocations.push(args);
               if (args.length === 1) {
-                return `${args[0]} ${process.env.USERNAME || 'testuser'}:(F)\nSuccessfully processed 1 files;\n`;
+                const u = process.env.USERNAME || process.env.USER || 'testuser';
+                return `${args[0]} ${u}:(F)\nSuccessfully processed 1 files;\n`;
               }
             }
             return Buffer.from('');
@@ -3424,12 +3425,13 @@ exit 0
                 permissionsStripped = true;
               }
               if (args.length === 1) {
+                const u = process.env.USERNAME || process.env.USER || 'testuser';
                 // First query: Everyone has explicit R
                 if (!permissionsStripped) {
-                  return `${args[0]} Everyone:(R)\n ${process.env.USERNAME || 'testuser'}:(F)\nSuccessfully processed 1 files;\n`;
+                  return `${args[0]} Everyone:(R)\n ${u}:(F)\nSuccessfully processed 1 files;\n`;
                 }
                 // Second query: after /remove Everyone
-                return `${args[0]} ${process.env.USERNAME || 'testuser'}:(F)\nSuccessfully processed 1 files;\n`;
+                return `${args[0]} ${u}:(F)\nSuccessfully processed 1 files;\n`;
               }
             }
             return Buffer.from('');
@@ -3444,7 +3446,8 @@ exit 0
         const unsafeAclCp = {
           execFileSync: (cmd: string, args: string[]) => {
             if (cmd === 'icacls' && args.length === 1) {
-              return `${args[0]} Everyone:(F)\n ${process.env.USERNAME || 'testuser'}:(F)\nSuccessfully processed 1 files;\n`;
+              const u = process.env.USERNAME || process.env.USER || 'testuser';
+              return `${args[0]} Everyone:(F)\n ${u}:(F)\nSuccessfully processed 1 files;\n`;
             }
             return Buffer.from('');
           }

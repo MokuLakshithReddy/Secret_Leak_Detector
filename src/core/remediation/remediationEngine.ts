@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as cp from 'child_process';
 import * as path from 'path';
+import * as os from 'os';
 import { RuleDefinition, RemediationPlan, SecretFinding } from '../types';
 import { redactSecret } from '../redactor/redactor';
 
@@ -232,7 +233,12 @@ export function enforceEnvFilePermissions(
 ): { enforced: boolean; isUnsupportedFs?: boolean; details?: string } {
   if (targetPlatform === 'win32') {
     fsModule.accessSync(envPath, fs.constants.R_OK | fs.constants.W_OK);
-    const username = process.env.USERNAME || process.env.USER;
+    let username = process.env.USERNAME || process.env.USER;
+    if (!username) {
+      try {
+        username = os.userInfo().username;
+      } catch {}
+    }
     if (!username) {
       throw new Error('Failed to enforce Windows ACLs: neither USERNAME nor USER environment variable is set');
     }
