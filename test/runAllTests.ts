@@ -4010,7 +4010,7 @@ exit 0
         // 4. Branch inspection failures propagate into UNKNOWN and SEARCH_INCOMPLETE
         class FailingBranchEngine extends GitHistoryEngine {
           protected async execGit(args: string[], options: any = {}): Promise<{ stdout: any; stderr: any }> {
-            if (args[0] === 'branch' && args.includes('--contains') && args.includes(t2Sha)) {
+            if (args[0] === 'branch' && (args.includes('-a') || args.includes('--contains'))) {
               throw new Error('Simulated operational failure during branch lookup on t2');
             }
             return super.execGit(args, options);
@@ -4239,6 +4239,14 @@ exit 0
         assert(sibTrace.branchRemovals['branch-beta']?.introducedCommit?.sha === betaIntroSha, 'branch-beta intro commit tracked');
         assert(sibTrace.branchRemovals['branch-beta']?.removalCommit?.sha === betaRemovalSha, 'branch-beta removal commit tracked');
         assert(sibTrace.branchRemovals['branch-beta']?.exposureDurationDays === 10, 'branch-beta duration is 10 days');
+        assert(sibTrace.exposureDurationDays === 10, 'sibTrace.exposureDurationDays aggregates to max confirmed branch duration (10 days)');
+
+        const sibTlEngine = new GitTimelineEngine(siblingRepo, siblingEngine);
+        const sibTl = await sibTlEngine.buildTimeline(sharedSecret, 'ghp_••••');
+        const alphaEvent = sibTl.events.find((e) => e.commitSha === alphaIntroSha);
+        const betaEvent = sibTl.events.find((e) => e.commitSha === betaIntroSha);
+        assert(alphaEvent?.eventType === 'INTRODUCED', 'branch-alpha intro is labeled INTRODUCED');
+        assert(betaEvent?.eventType === 'INTRODUCED', 'branch-beta independent sibling intro is labeled INTRODUCED');
 
         // 4. Positive matches in depth-limited searches report SEARCH_INCOMPLETE
         const limRepo = path.join(sec48Dir, 'lim-repo');
@@ -4289,6 +4297,183 @@ exit 0
 
       } finally {
         try { fs.rmSync(sec48Dir, { recursive: true, force: true }); } catch {}
+      }
+    }
+
+    // --- 49. Ongoing Branch Exposure, Independent Timeline Introductions, O(branches) Discovery & Risk Incomplete Flags ---
+    console.log('\n--- 49. Ongoing Branch Exposure, Independent Timeline Introductions, O(branches) Discovery & Risk Incomplete Flags ---');
+    {
+      const { execFileSync } = cp;
+      const fromHex = (h: string) => Buffer.from(h, 'hex').toString('utf8');
+      const sec49Dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-sec49-'));
+      try {
+        // 1. Ongoing branch exposure through current time when active branch has no removal commit
+        const ongoingRepo = path.join(sec49Dir, 'ongoing-repo');
+        fs.mkdirSync(ongoingRepo, { recursive: true });
+        execFileSync('git', ['init'], { cwd: ongoingRepo });
+        execFileSync('git', ['checkout', '-B', 'main'], { cwd: ongoingRepo });
+        execFileSync('git', ['config', 'user.name', 'Ongoing Tester'], { cwd: ongoingRepo });
+        execFileSync('git', ['config', 'user.email', 'ongoing@example.com'], { cwd: ongoingRepo });
+
+        fs.writeFileSync(path.join(ongoingRepo, 'root.txt'), 'root\n', 'utf8');
+        execFileSync('git', ['add', 'root.txt'], { cwd: ongoingRepo });
+        execFileSync('git', ['commit', '-m', 'root commit'], { cwd: ongoingRepo });
+
+        // Create active branch with secret introduced 100 days ago, no removal commit
+        execFileSync('git', ['checkout', '-b', 'feat/ongoing-leak'], { cwd: ongoingRepo });
+        const ongoingSecret = fromHex('6768705f') + fromHex('4f6e676f696e674c65616b53656372657431323334353637383930');
+        const introDate100DaysAgo = new Date(Date.now() - 100 * 24 * 60 * 60 * 1000).toISOString();
+        fs.writeFileSync(path.join(ongoingRepo, 'key.txt'), `KEY=${ongoingSecret}\n`, 'utf8');
+        execFileSync('git', ['add', 'key.txt'], { cwd: ongoingRepo });
+        execFileSync('git', ['commit', '-m', 'ongoing intro'], {
+          cwd: ongoingRepo,
+          env: {
+            ...process.env,
+            GIT_AUTHOR_DATE: introDate100DaysAgo,
+            GIT_COMMITTER_DATE: introDate100DaysAgo,
+          },
+        });
+        const ongoingIntroSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: ongoingRepo, encoding: 'utf8' }).trim();
+
+        // Switch to main (where secret was never present)
+        execFileSync('git', ['checkout', 'main'], { cwd: ongoingRepo });
+
+        const ongoingEngine = new GitHistoryEngine(ongoingRepo);
+        const ongoingTrace = await ongoingEngine.traceSecret(ongoingSecret);
+        assert(ongoingTrace.branchRemovals !== undefined, 'branchRemovals is defined for ongoing leak');
+        const branchInfo = ongoingTrace.branchRemovals['feat/ongoing-leak'];
+        assert(branchInfo !== undefined, 'feat/ongoing-leak branch tracked');
+        assert(branchInfo?.isRemoved === false, 'active branch without removal commit is marked isRemoved: false');
+        assert(branchInfo?.exposureDurationDays !== undefined && branchInfo.exposureDurationDays >= 99, `branch duration calculates ongoing exposure through current time (got ${branchInfo?.exposureDurationDays} days)`);
+        assert(ongoingTrace.exposureDurationDays >= 99, `aggregate exposureDurationDays uses maximum confirmed ongoing duration (got ${ongoingTrace.exposureDurationDays} days)`);
+
+        // 2. Sibling branch independent introductions with subsequent modifications
+        const sibRepo = path.join(sec49Dir, 'sib-repo');
+        fs.mkdirSync(sibRepo, { recursive: true });
+        execFileSync('git', ['init'], { cwd: sibRepo });
+        execFileSync('git', ['checkout', '-B', 'main'], { cwd: sibRepo });
+        execFileSync('git', ['config', 'user.name', 'Sib Tester'], { cwd: sibRepo });
+        execFileSync('git', ['config', 'user.email', 'sib@example.com'], { cwd: sibRepo });
+
+        fs.writeFileSync(path.join(sibRepo, 'init.txt'), 'init\n', 'utf8');
+        execFileSync('git', ['add', 'init.txt'], { cwd: sibRepo });
+        execFileSync('git', ['commit', '-m', 'init commit'], { cwd: sibRepo });
+
+        const multiIntroSecret = fromHex('6768705f') + fromHex('4d756c7469496e74726f53656372657431323334353637383930');
+
+        // Branch 1: introduces secret in C1, modifies it in C2
+        execFileSync('git', ['checkout', '-b', 'branch-1'], { cwd: sibRepo });
+        fs.writeFileSync(path.join(sibRepo, 'sec.txt'), `KEY=${multiIntroSecret}\n`, 'utf8');
+        execFileSync('git', ['add', 'sec.txt'], { cwd: sibRepo });
+        execFileSync('git', ['commit', '-m', 'b1: intro secret'], {
+          cwd: sibRepo,
+          env: { ...process.env, GIT_AUTHOR_DATE: '2025-01-01T10:00:00Z', GIT_COMMITTER_DATE: '2025-01-01T10:00:00Z' },
+        });
+        const b1IntroSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: sibRepo, encoding: 'utf8' }).trim();
+
+        fs.writeFileSync(path.join(sibRepo, 'sec.txt'), `KEY=${multiIntroSecret} mod\n`, 'utf8');
+        execFileSync('git', ['add', 'sec.txt'], { cwd: sibRepo });
+        execFileSync('git', ['commit', '-m', 'b1: mod secret'], {
+          cwd: sibRepo,
+          env: { ...process.env, GIT_AUTHOR_DATE: '2025-01-02T10:00:00Z', GIT_COMMITTER_DATE: '2025-01-02T10:00:00Z' },
+        });
+        const b1ModSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: sibRepo, encoding: 'utf8' }).trim();
+
+        // Branch 2: branched from clean main, independently introduces secret in C3, modifies in C4
+        execFileSync('git', ['checkout', 'main'], { cwd: sibRepo });
+        execFileSync('git', ['checkout', '-b', 'branch-2'], { cwd: sibRepo });
+        fs.writeFileSync(path.join(sibRepo, 'sec.txt'), `KEY=${multiIntroSecret}\n`, 'utf8');
+        execFileSync('git', ['add', 'sec.txt'], { cwd: sibRepo });
+        execFileSync('git', ['commit', '-m', 'b2: intro secret'], {
+          cwd: sibRepo,
+          env: { ...process.env, GIT_AUTHOR_DATE: '2025-01-03T10:00:00Z', GIT_COMMITTER_DATE: '2025-01-03T10:00:00Z' },
+        });
+        const b2IntroSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: sibRepo, encoding: 'utf8' }).trim();
+
+        fs.writeFileSync(path.join(sibRepo, 'sec.txt'), `KEY=${multiIntroSecret} mod2\n`, 'utf8');
+        execFileSync('git', ['add', 'sec.txt'], { cwd: sibRepo });
+        execFileSync('git', ['commit', '-m', 'b2: mod secret'], {
+          cwd: sibRepo,
+          env: { ...process.env, GIT_AUTHOR_DATE: '2025-01-04T10:00:00Z', GIT_COMMITTER_DATE: '2025-01-04T10:00:00Z' },
+        });
+        const b2ModSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: sibRepo, encoding: 'utf8' }).trim();
+
+        execFileSync('git', ['checkout', 'main'], { cwd: sibRepo });
+
+        const sibTlEngine = new GitTimelineEngine(sibRepo);
+        const sibReport = await sibTlEngine.buildTimeline(multiIntroSecret, 'ghp_••••');
+
+        const evB1Intro = sibReport.events.find((e) => e.commitSha === b1IntroSha);
+        const evB1Mod = sibReport.events.find((e) => e.commitSha === b1ModSha);
+        const evB2Intro = sibReport.events.find((e) => e.commitSha === b2IntroSha);
+        const evB2Mod = sibReport.events.find((e) => e.commitSha === b2ModSha);
+
+        assert(evB1Intro?.eventType === 'INTRODUCED', 'b1 intro commit is labeled INTRODUCED');
+        assert(evB1Mod?.eventType === 'MODIFIED', 'b1 child commit is labeled MODIFIED');
+        assert(evB2Intro?.eventType === 'INTRODUCED', 'b2 independent sibling intro commit is labeled INTRODUCED');
+        assert(evB2Mod?.eventType === 'MODIFIED', 'b2 child commit is labeled MODIFIED');
+
+        // 3. Efficient O(branches) branch discovery
+        const discEngine = new GitHistoryEngine(sibRepo);
+        const startDisc = Date.now();
+        const discResult = await discEngine.getBranchesForCommits([b1IntroSha, b1ModSha, b2IntroSha, b2ModSha]);
+        const elapsedDisc = Date.now() - startDisc;
+
+        assert(discResult.failed === false, 'getBranchesForCommits executes successfully');
+        assert(discResult.commitBranchesMap.get(b1IntroSha)?.includes('branch-1'), 'b1Intro mapped to branch-1');
+        assert(discResult.commitBranchesMap.get(b2IntroSha)?.includes('branch-2'), 'b2Intro mapped to branch-2');
+        assert(!discResult.commitBranchesMap.get(b1IntroSha)?.includes('branch-2'), 'b1Intro not mapped to branch-2');
+        assert(elapsedDisc < 2000, `getBranchesForCommits completes in < 2000ms (took ${elapsedDisc}ms)`);
+
+        // 4. Risk engine preserves uncertainty when history flags indicate incomplete / unverified history
+        const dummyRule = DETECTOR_RULES.find((r) => r.id === 'github-pat')!;
+        const dummyContext = { isTest: false, isDoc: false, isConfig: false, isSensitiveName: false, extension: '.ts' };
+
+        // Test A: Incomplete search with only 1 confirmed day
+        const partialExposure: GitExposure = {
+          isPresentInHead: true,
+          isPresentInHistory: true,
+          exposureDurationDays: 1,
+          branches: ['main'],
+          isRemote: false,
+          statusDescription: 'Partial history search',
+          isPartialHistory: true,
+          searchStatus: 'SEARCH_INCOMPLETE',
+        };
+        const partialRisk = calculateRiskAssessment(dummyRule, 100, dummyContext, partialExposure);
+        assert(partialRisk.blastRadius.factors.some((f: string) => f.includes('Exposure duration unverified due to incomplete history')), 'Blast radius factor notes unverified exposure duration on SEARCH_INCOMPLETE');
+        assert(partialRisk.factors.some((f) => f.factor === 'EXPOSURE_REACH' && f.explanation.includes('unverified exposure')), 'Risk factor explanation notes unverified exposure');
+
+        // Test B: isIntroductionUnverified: true
+        const unverifiedIntroExposure: GitExposure = {
+          isPresentInHead: true,
+          isPresentInHistory: true,
+          exposureDurationDays: 2,
+          branches: ['main'],
+          isRemote: false,
+          statusDescription: 'Shallow clone',
+          isIntroductionUnverified: true,
+          searchStatus: 'FOUND',
+        };
+        const unverifiedRisk = calculateRiskAssessment(dummyRule, 100, dummyContext, unverifiedIntroExposure);
+        assert(unverifiedRisk.blastRadius.factors.some((f: string) => f.includes('Exposure duration unverified due to incomplete history')), 'Blast radius factor notes unverified exposure on isIntroductionUnverified');
+
+        // Test C: Fully verified short exposure (1 day) does NOT flag unverified duration
+        const cleanExposure: GitExposure = {
+          isPresentInHead: true,
+          isPresentInHistory: true,
+          exposureDurationDays: 1,
+          branches: ['main'],
+          isRemote: false,
+          statusDescription: 'Complete search',
+          searchStatus: 'FOUND',
+        };
+        const cleanRisk = calculateRiskAssessment(dummyRule, 100, dummyContext, cleanExposure);
+        assert(!cleanRisk.blastRadius.factors.some((f: string) => f.includes('Exposure duration unverified')), 'Fully verified 1-day exposure does not flag unverified duration');
+        assert(!cleanRisk.blastRadius.factors.some((f: string) => f.includes('without rotation')), '1-day exposure does not exceed 7 days');
+
+      } finally {
+        try { fs.rmSync(sec49Dir, { recursive: true, force: true }); } catch {}
       }
     }
 

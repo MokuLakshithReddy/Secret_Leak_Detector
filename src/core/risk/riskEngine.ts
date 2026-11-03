@@ -69,7 +69,14 @@ export function calculateRiskAssessment(
       gitDesc = 'Pushed to remote repository branch (external exposure risk)';
     } else if (gitExposure.isPresentInHistory === true) {
       gitScore = 16;
-      gitDesc = `Committed to Git history across ${gitExposure.branches.length || 1} branch(es) (${gitExposure.exposureDurationDays} days exposure)`;
+      const isUnverifiedDuration = gitExposure.isIntroductionUnverified === true ||
+        gitExposure.isPartialHistory === true ||
+        gitExposure.searchStatus === 'SEARCH_INCOMPLETE' ||
+        gitExposure.searchStatus === 'PARTIAL_HISTORY';
+      const durationText = isUnverifiedDuration
+        ? `≥${gitExposure.exposureDurationDays} days unverified exposure (history search incomplete/truncated)`
+        : `${gitExposure.exposureDurationDays} days exposure`;
+      gitDesc = `Committed to Git history across ${gitExposure.branches.length || 1} branch(es) (${durationText})`;
     } else if (gitExposure.isPresentInHistory === 'UNKNOWN') {
       gitScore = 16;
       gitDesc = 'Git history exposure could not be fully verified (conservative risk rating applied)';
@@ -152,7 +159,17 @@ export function computeBlastRadius(riskScore: number, gitExposure?: GitExposure)
     factors.push('Secret has been synchronized to remote tracking branches');
     score += 25;
   }
-  if (exposureDurationDays > 7) {
+  const isUnverifiedDuration = gitExposure
+    ? (gitExposure.isIntroductionUnverified === true ||
+       gitExposure.isPartialHistory === true ||
+       gitExposure.searchStatus === 'SEARCH_INCOMPLETE' ||
+       gitExposure.searchStatus === 'PARTIAL_HISTORY')
+    : false;
+
+  if (isUnverifiedDuration) {
+    factors.push(`Exposure duration unverified due to incomplete history (minimum confirmed ${exposureDurationDays} day(s); conservative exposure risk applied)`);
+    score += 10;
+  } else if (exposureDurationDays > 7) {
     factors.push(`Exposure duration exceeds ${exposureDurationDays} days without rotation`);
     score += 10;
   }
