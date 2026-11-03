@@ -550,7 +550,7 @@ async function runTrace(cmdArgs: string[], cwd: string) {
 
   let remoteStatus = 'UNKNOWN ⚠️ (Could not verify remote tracking)';
   if (exposure.isRemote === true) remoteStatus = 'YES (External exposure!)';
-  else if (exposure.isRemote === false) remoteStatus = 'Local only';
+  else if (exposure.isRemote === false) remoteStatus = 'Local only (no matching remote tracking branch found locally)';
 
   let wtStatus = 'Clean';
   if (exposure.isSecretInWorkingTree === true) wtStatus = 'YES 🚨 (Uncommitted in working tree)';

@@ -101,7 +101,7 @@ export class GitTimelineEngine {
           totalExposureDays: 0,
           currentStatus: searchResult.status,
           reachableBranches: [],
-          isPushedToRemote: false,
+          isPushedToRemote: 'UNKNOWN',
           timelineAscii: `Git history search was incomplete: ${searchResult.error || 'operational failure'}${matchesNote}`,
           graph: {
             nodes: [],
@@ -111,7 +111,7 @@ export class GitTimelineEngine {
               introducedCommit: searchResult.commitShas[0] || '',
               durationDays: 0,
               branchesContaminated: [],
-              isPushedToRemote: false,
+              isPushedToRemote: 'UNKNOWN',
             },
           },
           isPartialHistory: searchResult.isPartialHistory,
@@ -220,8 +220,8 @@ export class GitTimelineEngine {
         events: [],
         totalExposureDays: 0,
         currentStatus: 'ERROR',
-        reachableBranches: ['local'],
-        isPushedToRemote: false,
+        reachableBranches: [],
+        isPushedToRemote: 'UNKNOWN',
         timelineAscii: `Git history timeline query failed: ${err?.message || String(err)}`,
         graph: {
           nodes: [],
@@ -230,8 +230,8 @@ export class GitTimelineEngine {
             totalExposedCommits: 0,
             introducedCommit: '',
             durationDays: 0,
-            branchesContaminated: ['local'],
-            isPushedToRemote: false,
+            branchesContaminated: [],
+            isPushedToRemote: 'UNKNOWN',
           },
         },
       };
@@ -245,7 +245,7 @@ export class GitTimelineEngine {
           totalExposureDays: 0,
           currentStatus: 'SEARCH_INCOMPLETE',
           reachableBranches: [],
-          isPushedToRemote: false,
+          isPushedToRemote: 'UNKNOWN',
           timelineAscii: `Credential was detected in ${commitShas.length} commit(s), but commit metadata retrieval failed.`,
           graph: {
             nodes: [],
@@ -255,7 +255,7 @@ export class GitTimelineEngine {
               introducedCommit: commitShas[0] || '',
               durationDays: 0,
               branchesContaminated: [],
-              isPushedToRemote: false,
+              isPushedToRemote: 'UNKNOWN',
             },
           },
           isPartialHistory: searchResult.isPartialHistory,
@@ -466,13 +466,15 @@ export class GitTimelineEngine {
       }
     }
 
+    const isPositivelyRemoved = isPresentInHead === false && currentStatus === 'REMOVED_FROM_HEAD_PRESENT_IN_HISTORY';
+
     const graph: GitExposureGraph = {
       nodes,
       edges,
       summary: {
         totalExposedCommits: events.length,
         introducedCommit: events[0]?.commitSha || '',
-        removedCommit: currentStatus !== 'ACTIVE_IN_HEAD' ? lastEvent?.commitSha : undefined,
+        removedCommit: isPositivelyRemoved ? lastEvent?.commitSha : undefined,
         durationDays: totalExposureDays,
         branchesContaminated: Array.from(allReachableBranches),
         isPushedToRemote,
@@ -483,7 +485,7 @@ export class GitTimelineEngine {
       secretRedacted: redactedSecret,
       events,
       firstIntroducedDate: firstDate?.toISOString(),
-      removalDate: currentStatus !== 'ACTIVE_IN_HEAD' ? lastEvent?.date : undefined,
+      removalDate: isPositivelyRemoved ? lastEvent?.date : undefined,
       totalExposureDays,
       currentStatus,
       reachableBranches: Array.from(allReachableBranches),

@@ -2538,14 +2538,45 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
         assert(totalFailTrace.isPresentInHistory === 'UNKNOWN', 'traceSecret sets isPresentInHistory to UNKNOWN when search fails without discovered matches');
         assert(totalFailTrace.isPresentInHead === 'UNKNOWN', 'traceSecret sets isPresentInHead to UNKNOWN on incomplete search');
 
-        // 18. Timeline branch reachability query failure sets isPushedToRemote 'UNKNOWN' and does not fabricate 'main'
+        // 18. Timeline HEAD verification failure in loop preserves events and sets SEARCH_INCOMPLETE
         const timelineWithFailHistory = new GitTimelineEngine(sec40Repo, headFailureEngine);
         const timelineReportHeadFail = await timelineWithFailHistory.buildTimeline(metaSecret, 'ghp_****');
         assert(timelineReportHeadFail.currentStatus === 'SEARCH_INCOMPLETE', 'buildTimeline returns SEARCH_INCOMPLETE when isSecretInHead throws in timeline loop');
         assert(timelineReportHeadFail.events.length > 0, 'buildTimeline preserves available events even when isSecretInHead throws');
         assert(timelineReportHeadFail.timelineAscii.includes('HEAD Verification:  INCOMPLETE'), 'buildTimeline ASCII notes incomplete HEAD verification');
+        assert(timelineReportHeadFail.graph.summary.removedCommit === undefined, 'buildTimeline does not falsely claim removedCommit on SEARCH_INCOMPLETE');
 
-        // 19. Disappearing candidate file in working tree throws error and sets isSecretInWorkingTree 'UNKNOWN'
+        // 19. Timeline branch reachability query failure sets isPushedToRemote 'UNKNOWN' and does not fabricate 'main'
+        const fakeSha = execFileSync('git', ['-C', sec40Repo, 'rev-parse', 'HEAD']).toString().trim();
+        let branchQueryAttempted = false;
+        let branchQueryFailed = false;
+        try {
+          execFileSync('git', ['-C', sec40Repo, 'branch', '-a', '--contains', fakeSha + '_corrupt']);
+        } catch {
+          branchQueryFailed = true;
+        }
+        assert(branchQueryFailed, 'git branch --contains on invalid object triggers an error');
+
+        // Verify gitTimeline handles branch lookup error without fabricating ['main']
+        const originalExecFile = require('child_process').execFile;
+        // Test branch failure via a mock gitHistory and timeline inspection
+        class BranchFailureHistoryEngine extends GitHistoryEngine {
+          public override async findCommitsContainingSecretResult(secret: string, maxCommits = 0): Promise<any> {
+            return {
+              status: 'FOUND',
+              commitShas: [fakeSha],
+              isPartialHistory: false,
+            };
+          }
+        }
+        const branchFailEngine = new BranchFailureHistoryEngine(sec40Repo);
+        // In this test, we can pass a corrupted/non-existent repo path or simulate branch error in buildTimeline
+        const timelineBranchFail = new GitTimelineEngine(sec40Repo + '_nonexistent', branchFailEngine);
+        const branchFailReport = await timelineBranchFail.buildTimeline(metaSecret, 'ghp_****');
+        assert(branchFailReport.isPushedToRemote === 'UNKNOWN', 'buildTimeline reports isPushedToRemote UNKNOWN on query failure');
+        assert(branchFailReport.currentStatus === 'SEARCH_INCOMPLETE' || branchFailReport.currentStatus === 'ERROR', 'buildTimeline reports non-clean status on query failure');
+
+        // 20. Disappearing candidate file in working tree throws error and sets isSecretInWorkingTree 'UNKNOWN'
         class DisappearingCandidateEngine extends GitHistoryEngine {
           public override async isSecretInWorkingTree(secret: string): Promise<boolean> {
             throw new Error("Candidate untracked file disappeared during inspection: 'disappeared.txt'");
@@ -2555,6 +2586,46 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
         const disappearingTrace = await disappearingEngine.traceSecret(fromHex('6768705f646973617070656172696e67746f6b656e3132333435363738393061626364'));
         assert(disappearingTrace.isSecretInWorkingTree === 'UNKNOWN', 'traceSecret sets isSecretInWorkingTree to UNKNOWN when candidate file disappears');
         assert(disappearingTrace.searchStatus === 'ERROR', 'traceSecret searchStatus is ERROR when working tree inspection throws on disappearing file');
+
+        // 21. Partial history with zero matches returns isPresentInHistory 'UNKNOWN'
+        const absentSecret = fromHex('6768705f616273656e7473656372657431323334353637383930616263646566313233');
+        const partialTraceZero = await gitHistory.traceSecret(absentSecret, 1);
+        assert(partialTraceZero.isPartialHistory === true, 'traceSecret with limit 1 is partial history');
+        assert(partialTraceZero.isPresentInHistory === 'UNKNOWN', 'traceSecret returns isPresentInHistory UNKNOWN when depth is limited and 0 matches found');
+        assert(partialTraceZero.searchStatus === 'PARTIAL_HISTORY', 'traceSecret searchStatus is PARTIAL_HISTORY when depth is limited');
+
+        // 22. VerificationEngine with unknown history sets isResolved false and historyStatus UNKNOWN
+        class UnknownHistoryVerificationEngine extends GitHistoryEngine {
+          public override async traceSecret(secret: string, maxCommits = 0): Promise<any> {
+            return {
+              isPresentInHead: false,
+              isPresentInHistory: 'UNKNOWN',
+              isPresentInWorkingTree: false,
+              isSecretInWorkingTree: false,
+              exposureDurationDays: 0,
+              branches: [],
+              isRemote: false,
+              statusDescription: 'Git history search was incomplete',
+              searchStatus: 'SEARCH_INCOMPLETE',
+            };
+          }
+        }
+        const unknownHistEngine = new UnknownHistoryVerificationEngine(sec40Repo);
+        const { VerificationEngine } = require('../src/core/verification/verificationEngine');
+        const verifier = new VerificationEngine(sec40Repo);
+        (verifier as any).historyEngine = unknownHistEngine;
+        const fakeCleanFinding = {
+          file: 'clean.ts',
+          fullPath: path.join(sec40Repo, 'clean.ts'),
+          line: 1,
+          type: 'github-pat',
+          rawSecret: metaSecret,
+          fingerprint: 'fp123',
+          confidence: 100,
+        };
+        const verificationRes = await verifier.verifyFindingFix(fakeCleanFinding);
+        assert(verificationRes.isResolved === false, 'VerificationEngine rejects resolution when Git history is UNKNOWN');
+        assert(verificationRes.historyStatus === 'UNKNOWN', 'VerificationEngine reports historyStatus UNKNOWN on incomplete history');
       } finally {
         try {
           fs.rmSync(sec40Repo, { recursive: true, force: true });

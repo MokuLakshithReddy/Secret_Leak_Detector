@@ -67,12 +67,18 @@ export function calculateRiskAssessment(
     if (gitExposure.isRemote === true) {
       gitScore = 20;
       gitDesc = 'Pushed to remote repository branch (external exposure risk)';
-    } else if (gitExposure.isPresentInHistory === true || gitExposure.isPresentInHistory === 'UNKNOWN') {
+    } else if (gitExposure.isPresentInHistory === true) {
       gitScore = 16;
       gitDesc = `Committed to Git history across ${gitExposure.branches.length || 1} branch(es) (${gitExposure.exposureDurationDays} days exposure)`;
-    } else if (gitExposure.isPresentInHead === true || gitExposure.isPresentInHead === 'UNKNOWN') {
+    } else if (gitExposure.isPresentInHistory === 'UNKNOWN') {
+      gitScore = 16;
+      gitDesc = 'Git history exposure could not be fully verified (conservative risk rating applied)';
+    } else if (gitExposure.isPresentInHead === true) {
       gitScore = 12;
       gitDesc = 'Committed in current HEAD commit';
+    } else if (gitExposure.isPresentInHead === 'UNKNOWN') {
+      gitScore = 12;
+      gitDesc = 'Current HEAD commit exposure could not be fully verified (conservative risk rating applied)';
     }
   }
   score += gitScore;
@@ -110,7 +116,10 @@ export function computeBlastRadius(riskScore: number, gitExposure?: GitExposure)
   let score = Math.round(riskScore * 0.5);
 
   const workingTreeExposed = gitExposure
-    ? (gitExposure.isPresentInHead === true || gitExposure.isPresentInHead === 'UNKNOWN')
+    ? (gitExposure.isSecretInWorkingTree === true ||
+       gitExposure.isPresentInWorkingTree === true ||
+       gitExposure.isSecretInWorkingTree === 'UNKNOWN' ||
+       gitExposure.isPresentInWorkingTree === 'UNKNOWN')
     : true;
   const gitHistoryExposed = gitExposure
     ? (gitExposure.isPresentInHistory === true || gitExposure.isPresentInHistory === 'UNKNOWN')
@@ -122,11 +131,19 @@ export function computeBlastRadius(riskScore: number, gitExposure?: GitExposure)
   const exposureDurationDays = gitExposure?.exposureDurationDays || 0;
 
   if (workingTreeExposed) {
-    factors.push('Active working tree contains exposed secret');
+    if (gitExposure?.isSecretInWorkingTree === 'UNKNOWN' || gitExposure?.isPresentInWorkingTree === 'UNKNOWN') {
+      factors.push('Working tree status unverified (conservative exposure assumed)');
+    } else {
+      factors.push('Active working tree contains exposed secret');
+    }
     score += 15;
   }
   if (gitHistoryExposed) {
-    factors.push(`Git history contains commit records across ${branchCount} branch(es)`);
+    if (gitExposure?.isPresentInHistory === 'UNKNOWN') {
+      factors.push('Git history status unverified (conservative exposure assumed)');
+    } else {
+      factors.push(`Git history contains commit records across ${branchCount} branch(es)`);
+    }
     score += 20;
   }
   if (remoteExposed) {

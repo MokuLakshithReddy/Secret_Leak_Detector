@@ -637,7 +637,7 @@ export class GitHistoryEngine {
         } else if (searchResult.status === 'PARTIAL_HISTORY') {
           return {
             isPresentInHead: false,
-            isPresentInHistory: false,
+            isPresentInHistory: 'UNKNOWN',
             isPresentInWorkingTree: false,
             isSecretInWorkingTree: false,
             exposureDurationDays: 0,
