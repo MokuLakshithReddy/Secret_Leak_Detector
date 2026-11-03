@@ -46,12 +46,12 @@ export interface EvidenceModel {
 export interface BlastRadius {
   level: 'CONTAINED' | 'MODERATE' | 'EXTENSIVE' | 'SEVERE';
   score: number; // 0 - 100
-  workingTreeExposed: boolean;
-  gitHistoryExposed: boolean;
+  workingTreeExposed: boolean | 'UNKNOWN';
+  gitHistoryExposed: boolean | 'UNKNOWN';
   commitCount: number;
   branchCount: number;
   branches: string[];
-  remoteExposed: boolean;
+  remoteExposed: boolean | 'UNKNOWN';
   exposureDurationDays: number;
   summary: string;
   factors: string[];
@@ -82,6 +82,7 @@ export interface GitCommitInfo {
 export interface GitExposure {
   introducedCommit?: GitCommitInfo;
   lastModifiedCommit?: GitCommitInfo;
+  lastSeenCommit?: GitCommitInfo;
   removedCommit?: GitCommitInfo;
   isPresentInHead: boolean | 'UNKNOWN';
   isPresentInHistory: boolean | 'UNKNOWN';

@@ -274,10 +274,16 @@ export function activate(context: vscode.ExtensionContext) {
             });
           }
 
-          // Atomic batch update to findings and diagnostics
-          diagnosticProvider.setBatchFindings(batchMap);
-
           const isCapped = files.length >= MAX_SCAN_FILES;
+
+          // If scan is capped, merge batch findings to avoid wiping out findings from unscanned files.
+          // If scan is full and complete, atomic set replaces all findings.
+          if (isCapped) {
+            diagnosticProvider.mergeBatchFindings(batchMap);
+          } else {
+            diagnosticProvider.setBatchFindings(batchMap);
+          }
+
           let notice = `Scanned ${scannedCount} files.`;
           if (isCapped) {
             notice += ` ⚠️ Scan was capped at ${MAX_SCAN_FILES} files.`;
@@ -289,13 +295,17 @@ export function activate(context: vscode.ExtensionContext) {
           const ignoredSet = new Set(diagnosticProvider.getIgnoredFindings());
           const unignoredFindings = allFindings.filter((f) => !ignoredSet.has(f.id));
 
-          if (scannedCount === 0) {
-            vscode.window.showWarningMessage(`⚠️ Workspace scan complete: 0 files were scanned. ${notice}`);
-          } else if (unignoredFindings.length === 0) {
-            vscode.window.showInformationMessage(
-              `✅ Scan complete: ${notice} No unignored secrets or credentials detected!`
-            );
+          type ScanState = 'FINDINGS' | 'INCOMPLETE' | 'CLEAN';
+          let scanState: ScanState;
+          if (unignoredFindings.length > 0) {
+            scanState = 'FINDINGS';
+          } else if (isCapped || skippedCount > 0 || scannedCount === 0) {
+            scanState = 'INCOMPLETE';
           } else {
+            scanState = 'CLEAN';
+          }
+
+          if (scanState === 'FINDINGS') {
             const criticalCount = unignoredFindings.filter((f) => f.risk === 'CRITICAL').length;
             vscode.window
               .showErrorMessage(
@@ -310,6 +320,14 @@ export function activate(context: vscode.ExtensionContext) {
                   vscode.commands.executeCommand('workbench.view.extension.secret-leak-detector-sidebar');
                 }
               });
+          } else if (scanState === 'INCOMPLETE') {
+            vscode.window.showWarningMessage(
+              `⚠️ Incomplete workspace scan: ${notice} No credentials detected in inspected files, but inspection was not exhaustive.`
+            );
+          } else {
+            vscode.window.showInformationMessage(
+              `✅ Workspace scan clean: ${notice} No unignored secrets or credentials detected!`
+            );
           }
         }
       );

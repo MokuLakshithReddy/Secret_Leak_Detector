@@ -2690,6 +2690,273 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
       }
     }
 
+    // --- 41. Security Audit Release Readiness: JSON Sanitization, Merge Diffs, Symlink Confinement & Verification ---
+    console.log('\n--- 41. Security Audit Release Readiness: JSON Sanitization, Merge Diffs, Symlink Confinement & Verification ---');
+    {
+      const { scanContent } = require('../src/core/scanner/scanner');
+      const { toSafeJsonFinding, collectFiles } = require('../src/cli/index');
+      const { GitHistoryEngine } = require('../src/core/history/gitHistoryEngine');
+      const { enforceEnvFilePermissions } = require('../src/core/remediation/remediationEngine');
+      const { calculateRiskAssessment } = require('../src/core/risk/riskEngine');
+      const { VerificationEngine } = require('../src/core/verification/verificationEngine');
+      const { getIgnorePatterns, BUILD_ARTIFACT_PATTERNS } = require('../src/core/ignore/ignoreEngine');
+      const { CORE_RULES } = require('../src/core/detectors/rules');
+      const { execFileSync } = require('child_process');
+      const fromHex = (h: string) => Buffer.from(h, 'hex').toString('utf8');
+
+      // 1. JSON output sanitization: split concatenation, array join, template literal, and base64
+      const p1 = fromHex('6768705f3132333435'); // "ghp_12345"
+      const p2 = fromHex('36373839303132333435363738393031323334353637383930313233343536'); // 31 chars
+      const codeConcat = `const token = "${p1}" + "${p2}";`;
+      const findingsConcat = scanContent(codeConcat, 'testConcat.js');
+      assert(findingsConcat.length > 0, 'Split concatenation detected');
+      const safeConcat = toSafeJsonFinding(findingsConcat[0]);
+      assert(safeConcat.rawSecret === undefined, 'toSafeJsonFinding strips rawSecret on concatenation finding');
+      assert(safeConcat.sourceExpression === undefined, 'toSafeJsonFinding strips sourceExpression on concatenation finding');
+      assert((safeConcat as any).evidence?.surroundingCode === undefined, 'toSafeJsonFinding strips surroundingCode');
+      assert((safeConcat as any).remediation?.diffPreview === undefined, 'toSafeJsonFinding strips diffPreview');
+      const jsonConcat = JSON.stringify(safeConcat);
+      assert(!jsonConcat.includes(p1 + p2), 'Serialized JSON does not contain raw concatenated secret');
+      assert(!jsonConcat.includes(p1), 'Serialized JSON does not contain token prefix fragment');
+
+      const codeArray = `const token = ["${p1}", "${p2}"].join("");`;
+      const findingsArray = scanContent(codeArray, 'testArray.js');
+      assert(findingsArray.length > 0, 'Array join detected');
+      const safeArray = toSafeJsonFinding(findingsArray[0]);
+      assert(safeArray.rawSecret === undefined, 'toSafeJsonFinding strips rawSecret on array join finding');
+      assert(safeArray.sourceExpression === undefined, 'toSafeJsonFinding strips sourceExpression on array join finding');
+      assert(!JSON.stringify(safeArray).includes(p1 + p2), 'Serialized JSON does not contain array joined secret');
+
+      const codeTpl = 'const token = `' + p1 + '${"' + p2 + '"}`;\n';
+      const findingsTpl = scanContent(codeTpl, 'testTpl.js');
+      assert(findingsTpl.length > 0, 'Template interpolation detected');
+      const safeTpl = toSafeJsonFinding(findingsTpl[0]);
+      assert(safeTpl.rawSecret === undefined, 'toSafeJsonFinding strips rawSecret on template finding');
+      assert(safeTpl.sourceExpression === undefined, 'toSafeJsonFinding strips sourceExpression on template finding');
+      assert(!JSON.stringify(safeTpl).includes(p1 + p2), 'Serialized JSON does not contain interpolated secret');
+
+      const rawSecret = p1 + p2;
+      const b64 = Buffer.from(rawSecret).toString('base64');
+      const codeB64 = `const apiKey = Buffer.from("${b64}", "base64").toString();`;
+      const findingsB64 = scanContent(codeB64, 'testB64.js');
+      assert(findingsB64.length > 0, 'Base64 credential detected');
+      const safeB64 = toSafeJsonFinding(findingsB64[0]);
+      assert(safeB64.rawSecret === undefined, 'toSafeJsonFinding strips rawSecret on base64 finding');
+      assert(safeB64.sourceExpression === undefined, 'toSafeJsonFinding strips sourceExpression on base64 finding');
+      assert(!JSON.stringify(safeB64).includes(rawSecret), 'Serialized JSON does not contain decoded base64 secret');
+
+      // 2. Merge commit diff inspection (-m)
+      const sec41MergeRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-hist-merge-'));
+      try {
+        execFileSync('git', ['init', sec41MergeRepo]);
+        execFileSync('git', ['-C', sec41MergeRepo, 'config', 'user.name', 'Merge Tester']);
+        execFileSync('git', ['-C', sec41MergeRepo, 'config', 'user.email', 'merge@test.com']);
+
+        fs.writeFileSync(path.join(sec41MergeRepo, 'app.ts'), '// initial file\nexport const v = 1;\n', 'utf8');
+        execFileSync('git', ['-C', sec41MergeRepo, 'add', 'app.ts']);
+        execFileSync('git', ['-C', sec41MergeRepo, 'commit', '-m', 'chore: initial commit']);
+
+        execFileSync('git', ['-C', sec41MergeRepo, 'checkout', '-b', 'branch-a']);
+        fs.writeFileSync(path.join(sec41MergeRepo, 'app.ts'), '// branch-a change\nexport const v = 2;\n', 'utf8');
+        execFileSync('git', ['-C', sec41MergeRepo, 'add', 'app.ts']);
+        execFileSync('git', ['-C', sec41MergeRepo, 'commit', '-m', 'chore: branch-a edit']);
+
+        const mainBranchName = execFileSync('git', ['-C', sec41MergeRepo, 'branch', '--show-current'], { encoding: 'utf8' }).trim() || 'master';
+        try {
+          execFileSync('git', ['-C', sec41MergeRepo, 'checkout', 'master'], { stdio: 'pipe' });
+        } catch {
+          execFileSync('git', ['-C', sec41MergeRepo, 'checkout', 'main']);
+        }
+        fs.writeFileSync(path.join(sec41MergeRepo, 'app.ts'), '// main change\nexport const v = 3;\n', 'utf8');
+        execFileSync('git', ['-C', sec41MergeRepo, 'add', 'app.ts']);
+        execFileSync('git', ['-C', sec41MergeRepo, 'commit', '-m', 'chore: main edit']);
+
+        try {
+          execFileSync('git', ['-C', sec41MergeRepo, 'merge', 'branch-a']);
+        } catch {}
+
+        const mergeSecret = fromHex('6768705f6d657267653132333435363738393031323334353637383930313233');
+        fs.writeFileSync(path.join(sec41MergeRepo, 'app.ts'), `// resolved with secret\nexport const apiKey = "${mergeSecret}";\n`, 'utf8');
+        execFileSync('git', ['-C', sec41MergeRepo, 'add', 'app.ts']);
+        execFileSync('git', ['-C', sec41MergeRepo, 'commit', '-m', 'Merge branch-a resolving conflict with secret']);
+
+        const gitHistory = new GitHistoryEngine(sec41MergeRepo);
+        const findings = await gitHistory.scanHistoryCommits();
+        const mergeFinding = findings.find((f: any) => f.rawSecret === mergeSecret);
+        assert(mergeFinding !== undefined, 'scanHistoryCommits detects credential introduced in merge-resolution commit diff (-m)');
+        assert(mergeFinding?.gitExposure?.isPresentInHead === true, 'Merge-commit secret correctly identified in HEAD');
+      } finally {
+        try {
+          fs.rmSync(sec41MergeRepo, { recursive: true, force: true });
+        } catch {}
+      }
+
+      // 3. Workspace symlink confinement
+      const wsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-ws-sym-'));
+      const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-outside-sym-'));
+      try {
+        fs.writeFileSync(path.join(outsideDir, 'external_leak.ts'), '// external content\n');
+        fs.writeFileSync(path.join(wsDir, 'internal.ts'), '// internal content\n');
+
+        let symlinkCreated = false;
+        const linkPath = path.join(wsDir, 'symlink_outside');
+        try {
+          fs.symlinkSync(outsideDir, linkPath, 'junction');
+          symlinkCreated = true;
+        } catch {
+          try {
+            fs.symlinkSync(outsideDir, linkPath, 'dir');
+            symlinkCreated = true;
+          } catch {}
+        }
+
+        if (symlinkCreated) {
+          const res = collectFiles(wsDir, [], wsDir, { allowExternalSymlinks: false });
+          assert(res.traversalErrors.length > 0, 'collectFiles flags external symlink with traversal error');
+          assert(res.traversalErrors[0].operation === 'symlink', 'Traversal error operation is symlink');
+          assert(res.traversalErrors[0].error.includes('Symlink escapes workspace root'), 'Error explains symlink escapes root');
+
+          const relaxedRes = collectFiles(wsDir, [], wsDir, { allowExternalSymlinks: true });
+          assert(relaxedRes.traversalErrors.length === 0, 'collectFiles allows external symlink when allowExternalSymlinks: true');
+          assert(relaxedRes.files.some((f: string) => f.includes('external_leak.ts')), 'External file collected when allowed');
+        }
+      } finally {
+        try {
+          fs.rmSync(wsDir, { recursive: true, force: true });
+          fs.rmSync(outsideDir, { recursive: true, force: true });
+        } catch {}
+      }
+
+      // 4. Genuine removal commit vs lastSeenCommit
+      const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-hist-remov-'));
+      try {
+        execFileSync('git', ['init', repoDir]);
+        execFileSync('git', ['-C', repoDir, 'config', 'user.name', 'Removal Tester']);
+        execFileSync('git', ['-C', repoDir, 'config', 'user.email', 'removal@test.com']);
+
+        const secretToken = fromHex('6768705f72656d6f76616c313233343536373839303132333435363738393031');
+
+        fs.writeFileSync(path.join(repoDir, 'service.ts'), `export const token = "${secretToken}";\n`, 'utf8');
+        execFileSync('git', ['-C', repoDir, 'add', 'service.ts']);
+        execFileSync('git', ['-C', repoDir, 'commit', '-m', 'feat: introduce secret']);
+
+        fs.writeFileSync(path.join(repoDir, 'service.ts'), `// comment\nexport const token = "${secretToken}";\n`, 'utf8');
+        execFileSync('git', ['-C', repoDir, 'add', 'service.ts']);
+        execFileSync('git', ['-C', repoDir, 'commit', '-m', 'refactor: keep secret in file']);
+        const lastSeenSha = execFileSync('git', ['-C', repoDir, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+
+        fs.writeFileSync(path.join(repoDir, 'service.ts'), `// removed\nexport const token = process.env.TOKEN;\n`, 'utf8');
+        execFileSync('git', ['-C', repoDir, 'add', 'service.ts']);
+        execFileSync('git', ['-C', repoDir, 'commit', '-m', 'fix: remove secret from HEAD']);
+        const removalSha = execFileSync('git', ['-C', repoDir, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+
+        const gitHistory = new GitHistoryEngine(repoDir);
+        const trace = await gitHistory.traceSecret(secretToken);
+        assert(trace.isPresentInHead === false, 'Secret is absent from HEAD');
+        assert(trace.isPresentInHistory === true, 'Secret is present in history');
+        assert(trace.lastSeenCommit !== undefined, 'traceSecret identifies lastSeenCommit');
+        assert(trace.lastSeenCommit?.sha === lastSeenSha, 'lastSeenCommit is commit 2 (where secret still existed)');
+        assert(trace.removedCommit !== undefined, 'traceSecret identifies genuine removedCommit');
+        assert(trace.removedCommit?.sha === removalSha, 'removedCommit is commit 3 (where secret was deleted)');
+        assert(trace.lastSeenCommit?.sha !== trace.removedCommit?.sha, 'lastSeenCommit is distinct from removedCommit');
+      } finally {
+        try {
+          fs.rmSync(repoDir, { recursive: true, force: true });
+        } catch {}
+      }
+
+      // 5. enforceEnvFilePermissions
+      const tempEnv = path.join(os.tmpdir(), `sld-test-env-${Date.now()}.env`);
+      fs.writeFileSync(tempEnv, 'TEST_VAR="val"\n', 'utf8');
+      try {
+        enforceEnvFilePermissions(tempEnv);
+        assert(true, 'enforceEnvFilePermissions succeeds on valid file');
+
+        let posixErrorThrown = false;
+        const fakeFs = {
+          statSync: () => ({ mode: 0o100644 }),
+          chmodSync: () => { throw new Error('chmod simulated failure'); },
+          accessSync: () => {},
+          constants: fs.constants,
+        };
+        try {
+          enforceEnvFilePermissions(tempEnv, fakeFs as any, 'linux');
+        } catch (err: any) {
+          posixErrorThrown = true;
+          assert(err.message.includes('0600'), 'Error specifies 0600 mode requirement');
+        }
+        assert(posixErrorThrown, 'enforceEnvFilePermissions throws when POSIX mode is not 0600');
+
+        const cleanFs = {
+          statSync: () => ({ mode: 0o100600 }),
+          accessSync: () => {},
+          chmodSync: () => {},
+          constants: fs.constants,
+        };
+        enforceEnvFilePermissions(tempEnv, cleanFs as any, 'linux');
+        assert(true, 'enforceEnvFilePermissions succeeds when mode is 0600');
+      } finally {
+        try {
+          fs.unlinkSync(tempEnv);
+        } catch {}
+      }
+
+      // 6. Risk Engine Blast Radius UNKNOWN preservation
+      const dummyExposure = {
+        isPresentInHead: 'UNKNOWN' as const,
+        isPresentInHistory: 'UNKNOWN' as const,
+        exposureDurationDays: 0,
+        branches: [],
+        isRemote: 'UNKNOWN' as const,
+        statusDescription: 'Incomplete inspection',
+      };
+      const dummyFileContext = {
+        fileExtension: '.ts',
+        isConfig: false,
+        isTest: false,
+        isDoc: false,
+        isSensitiveName: false,
+        isExampleOrSample: false,
+      };
+      const assessment = calculateRiskAssessment(CORE_RULES[0], 100, dummyFileContext, dummyExposure);
+      assert(assessment.blastRadius.remoteExposed === 'UNKNOWN', 'blastRadius preserves UNKNOWN remoteExposed');
+      assert(assessment.blastRadius.gitHistoryExposed === 'UNKNOWN', 'blastRadius preserves UNKNOWN gitHistoryExposed');
+      assert(assessment.blastRadius.factors.some((f: string) => f.includes('Remote tracking branch status unverified')), 'Conservative risk factor applied for unverified remote status');
+
+      // 7. VerificationEngine onSkippedFile handling
+      const verDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-ver-skip-'));
+      try {
+        const verifier = new VerificationEngine(verDir);
+        const finding = {
+          file: 'huge.ts',
+          fullPath: path.join(verDir, 'huge.ts'),
+          line: 1,
+          type: 'github-pat',
+          rawSecret: fromHex('6768705f64756d6d7931323334353637383930313233343536373839303132'),
+          fingerprint: 'fp_huge',
+          confidence: 100,
+        };
+        fs.writeFileSync(path.join(verDir, 'huge.ts'), Buffer.alloc(1000, 0));
+        const res = await verifier.verifyFindingFix(finding as any);
+        assert(res.isResolved === false, 'verifyFindingFix returns isResolved: false when file was skipped');
+        assert(res.historyStatus === 'UNKNOWN', 'verifyFindingFix returns historyStatus: UNKNOWN when file was skipped');
+        assert(res.details.includes('Target file inspection incomplete'), 'verifyFindingFix notes inspection incomplete in details');
+      } finally {
+        try {
+          fs.rmSync(verDir, { recursive: true, force: true });
+        } catch {}
+      }
+
+      // 8. IgnoreEngine configurable build artifacts
+      const defaultPatterns = getIgnorePatterns();
+      assert(defaultPatterns.includes('dist/**'), 'Default ignore includes dist/**');
+      assert(defaultPatterns.includes('build/**'), 'Default ignore includes build/**');
+      const includedPatterns = getIgnorePatterns({ includeBuildArtifacts: true });
+      assert(!includedPatterns.includes('dist/**'), 'includeBuildArtifacts excludes dist/** from ignore list');
+      assert(!includedPatterns.includes('build/**'), 'includeBuildArtifacts excludes build/** from ignore list');
+      assert(BUILD_ARTIFACT_PATTERNS.includes('dist/**'), 'BUILD_ARTIFACT_PATTERNS contains dist/**');
+    }
+
   console.log('\n============================================================');
   console.log(`🎉 TEST SUMMARY: ${passed} PASSED, ${failed} FAILED`);
   console.log('============================================================\n');
