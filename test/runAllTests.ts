@@ -4584,12 +4584,12 @@ exit 0
         `Error message preserves stderr failure details (got: "${faultyResult.error}")`
       );
 
-      // Verify stream error propagation (stdout stream error is captured and reported)
+      // Verify stream error propagation (stdout stream error terminates long-running child immediately)
       class StdoutErrorRevListEngine extends GitHistoryEngine {
         protected override spawnGitRevList(branch: string, cwd: string): any {
           const proc = cp.spawn(process.execPath, [
             '-e',
-            `console.log("${dummySha}"); setTimeout(() => process.exit(0), 100);`
+            `console.log("${dummySha}"); setTimeout(() => process.exit(0), 5000);`
           ]);
           setTimeout(() => {
             if (proc.stdout) {
@@ -4601,18 +4601,24 @@ exit 0
       }
 
       const stdoutErrEngine = new StdoutErrorRevListEngine(subProcRepo);
+      const stdoutErrStart = Date.now();
       const stdoutErrResult = await stdoutErrEngine.getBranchesForCommits([dummySha, 'missing-sha-0000000000'], subProcRepo);
+      const stdoutErrElapsed = Date.now() - stdoutErrStart;
       assert(
         stdoutErrResult.failed === true && Boolean(stdoutErrResult.error?.includes('Simulated stdout read error')),
         'getBranchesForCommits reports failed: true and preserves stdout read error'
       );
+      assert(
+        stdoutErrElapsed < 2000,
+        `Long-running child is terminated promptly after stream failure without waiting for delay (took ${stdoutErrElapsed}ms)`
+      );
 
-      // Verify stream error propagation (stderr stream error is captured and reported)
+      // Verify stream error propagation (stderr stream error terminates long-running child immediately)
       class StderrErrorRevListEngine extends GitHistoryEngine {
         protected override spawnGitRevList(branch: string, cwd: string): any {
           const proc = cp.spawn(process.execPath, [
             '-e',
-            `console.log("${dummySha}"); setTimeout(() => process.exit(0), 100);`
+            `console.log("${dummySha}"); setTimeout(() => process.exit(0), 5000);`
           ]);
           setTimeout(() => {
             if (proc.stderr) {
@@ -4624,10 +4630,16 @@ exit 0
       }
 
       const stderrErrEngine = new StderrErrorRevListEngine(subProcRepo);
+      const stderrErrStart = Date.now();
       const stderrErrResult = await stderrErrEngine.getBranchesForCommits([dummySha, 'missing-sha-0000000000'], subProcRepo);
+      const stderrErrElapsed = Date.now() - stderrErrStart;
       assert(
         stderrErrResult.failed === true && Boolean(stderrErrResult.error?.includes('Simulated stderr stream error')),
         'getBranchesForCommits reports failed: true and preserves stderr stream error'
+      );
+      assert(
+        stderrErrElapsed < 2000,
+        `Long-running child is terminated promptly after stderr stream failure without waiting for delay (took ${stderrErrElapsed}ms)`
       );
 
       // Verify intentional early termination resolves cleanly with failed: false

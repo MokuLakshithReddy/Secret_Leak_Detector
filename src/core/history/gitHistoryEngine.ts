@@ -826,6 +826,25 @@ export class GitHistoryEngine {
         let stdoutError: Error | null = null;
         let stderrError: Error | null = null;
         let spawnError: Error | null = null;
+        let rl: readline.Interface | null = null;
+
+        const terminateOnStreamError = (err: any, isStderr = false) => {
+          if (isStderr) {
+            if (!stderrError) stderrError = err;
+          } else {
+            if (!stdoutError) stdoutError = err;
+          }
+          if (rl) {
+            try {
+              rl.close();
+            } catch {}
+          }
+          if (!child.killed) {
+            try {
+              child.kill();
+            } catch {}
+          }
+        };
 
         if (child.stderr) {
           child.stderr.on('data', (chunk: Buffer | string) => {
@@ -834,30 +853,32 @@ export class GitHistoryEngine {
             }
           });
           child.stderr.on('error', (err: any) => {
-            stderrError = err;
+            terminateOnStreamError(err, true);
           });
         }
         if (child.stdout) {
           child.stdout.on('error', (err: any) => {
-            stdoutError = err;
+            terminateOnStreamError(err, false);
           });
         }
 
-        const rl = readline.createInterface({
+        rl = readline.createInterface({
           input: child.stdout,
           crlfDelay: Infinity,
         });
 
         rl.on('error', (err: any) => {
-          stdoutError = err;
+          terminateOnStreamError(err, false);
         });
 
         const finish = (isErr = false, errMsg?: string) => {
           if (settled) return;
           settled = true;
-          try {
-            rl.close();
-          } catch {}
+          if (rl) {
+            try {
+              rl.close();
+            } catch {}
+          }
           if (!child.killed) {
             try {
               child.kill();
