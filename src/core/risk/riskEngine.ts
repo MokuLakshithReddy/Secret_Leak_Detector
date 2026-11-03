@@ -8,6 +8,25 @@ import {
 } from '../types';
 import { FileContext } from '../context/contextAnalyzer';
 
+/**
+ * Calculates the multi-factor risk assessment for a secret finding.
+ *
+ * Architectural Distinction — Risk Score vs. Blast Radius Score:
+ * 1. Intrinsic Finding Severity (RiskAssessment.score: 0–100, Tier: LOW/MEDIUM/HIGH/CRITICAL):
+ *    Measures the intrinsic exploit likelihood and severity based on four strictly calibrated,
+ *    mathematically independent structural weights summing to 100:
+ *      - CREDENTIAL_SEVERITY (0–40): Privilege level of the credential type (e.g. AWS root, Stripe private).
+ *      - CONFIDENCE_LEVEL (0–25): Multi-signal verification certainty (entropy, pattern, checksum, AST).
+ *      - STORAGE_ENVIRONMENT (0–15): Contextual sensitivity of the location (.env/config vs. src vs. test).
+ *      - EXPOSURE_REACH (0–20): Physical reach of the artifact (working tree vs. head vs. history vs. remote).
+ *    When Git history is incomplete or shallow, the reach factor records the conservative rating
+ *    and unverified duration explicitly in its explanation without distorting the calibrated 4-factor sum.
+ *
+ * 2. Operational Containment Breadth (BlastRadius.score: 0–100, Level: CONTAINED/MODERATE/EXTENSIVE/SEVERE):
+ *    Evaluates operational containment and incident response attack surface breadth. Unlike the intrinsic
+ *    risk score, BlastRadius penalizes unverified history bounds (+10 points) because uncontained or
+ *    unverifiable exposure history forces security teams to treat containment as compromised.
+ */
 export function calculateRiskAssessment(
   rule: RuleDefinition,
   confidence: number,
@@ -118,6 +137,22 @@ export function calculateRiskAssessment(
   };
 }
 
+/**
+ * Computes the operational Blast Radius (containment breadth and attack surface) of an exposed secret.
+ *
+ * Operational Scoring Architecture:
+ * - Baseline: 50% of the intrinsic riskScore (providing initial coupling to credential severity).
+ * - Working Tree Containment (+15): Active local uncommitted working tree exposure.
+ * - History Containment (+20): Propagation into local Git commits across repository branches.
+ * - Remote Sync Reach (+25): Exposure synchronized to remote tracking branches (`origin/*`).
+ * - Exposure Duration / Uncertainty Penalty (+10):
+ *     - If exposure exceeds 7 days without rotation, +10 points are added.
+ *     - If history is partial/shallow/incomplete (`isPartialHistory`, `isIntroductionUnverified`,
+ *       `searchStatus === 'SEARCH_INCOMPLETE'`), +10 points are applied immediately as a conservative
+ *       operational uncertainty penalty. Because older commits are missing or truncated, incident
+ *       responders cannot guarantee containment, elevating the operational blast radius score while
+ *       keeping the 4-factor intrinsic risk score calibrated.
+ */
 export function computeBlastRadius(riskScore: number, gitExposure?: GitExposure): BlastRadius {
   const factors: string[] = [];
   let score = Math.round(riskScore * 0.5);

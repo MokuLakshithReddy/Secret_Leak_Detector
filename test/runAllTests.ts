@@ -18,7 +18,7 @@ import * as cp from 'child_process';
 import * as os from 'os';
 import { DEFAULT_FAIL_ON, BLOCKING_POLICY, resolveFailOn, meetsThreshold, shouldBlock } from '../src/core/policy';
 import { buildPreCommitHook, SLD_HOOK_MARKER } from '../src/git/preCommitHook';
-import { Risk } from '../src/core/types';
+import { Risk, GitExposure } from '../src/core/types';
 
 /** Locate a POSIX shell so we can execute the generated hook script directly. */
 function findPosixShell(): string | null {
@@ -4475,6 +4475,147 @@ exit 0
       } finally {
         try { fs.rmSync(sec49Dir, { recursive: true, force: true }); } catch {}
       }
+    }
+
+    // ============================================================
+    // SECTION 50: LARGE-REPOSITORY SCALE BENCHMARK & RISK/BLAST RADIUS SEPARATION
+    // ============================================================
+    console.log('\n--- Section 50: Large-Repository Scale Benchmark & Risk/Blast Radius Separation ---');
+    const sec50Dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-sec50-scale-'));
+    try {
+      const { execFileSync, spawn } = cp;
+      execFileSync('git', ['init'], { cwd: sec50Dir, stdio: 'ignore' });
+      execFileSync('git', ['config', 'user.name', 'Scale Tester'], { cwd: sec50Dir, stdio: 'ignore' });
+      execFileSync('git', ['config', 'user.email', 'scale@example.com'], { cwd: sec50Dir, stdio: 'ignore' });
+
+      // 1. Synthetic scale repository generation via fast-import (2,000 commits + 50 branches)
+      const fiStart = Date.now();
+      const fi = spawn('git', ['fast-import'], {
+        cwd: sec50Dir,
+        stdio: ['pipe', 'ignore', 'ignore'],
+      });
+
+      const commitCount = 2000;
+      for (let i = 1; i <= commitCount; i++) {
+        const authorTime = 1700000000 + i;
+        const msg = `Commit ${i}\n`;
+        const content = `content ${i}\n`;
+        let commitStr = `commit refs/heads/main\nmark :${i}\n`;
+        commitStr += `author Test <test@test.com> ${authorTime} +0000\n`;
+        commitStr += `committer Test <test@test.com> ${authorTime} +0000\n`;
+        commitStr += `data ${Buffer.byteLength(msg)}\n${msg}`;
+        if (i > 1) {
+          commitStr += `from :${i - 1}\n`;
+        }
+        commitStr += `M 100644 inline file.txt\ndata ${Buffer.byteLength(content)}\n${content}\n`;
+        fi.stdin.write(commitStr);
+      }
+
+      // Create 25 local branches and 25 remote tracking branches sharing history
+      for (let b = 1; b <= 25; b++) {
+        const targetMark = Math.max(1, commitCount - (b * 20));
+        fi.stdin.write(`reset refs/heads/branch-local-${b}\nfrom :${targetMark}\n\n`);
+        fi.stdin.write(`reset refs/remotes/origin/remote-branch-${b}\nfrom :${targetMark}\n\n`);
+      }
+      fi.stdin.end();
+
+      await new Promise<void>((resolve) => fi.on('close', () => resolve()));
+      const fiDuration = Date.now() - fiStart;
+      assert(fiDuration < 8000, `fast-import generated 2,000 commits and 50 branches rapidly (${fiDuration}ms)`);
+
+      // Retrieve test commit SHAs
+      const shaHead = execFileSync('git', ['rev-parse', 'refs/heads/main'], { cwd: sec50Dir, encoding: 'utf8' }).trim();
+      const shaMid = execFileSync('git', ['rev-parse', 'refs/heads/main~500'], { cwd: sec50Dir, encoding: 'utf8' }).trim();
+      const shaOld = execFileSync('git', ['rev-parse', 'refs/heads/main~1500'], { cwd: sec50Dir, encoding: 'utf8' }).trim();
+
+      // 2. Performance & Flat-Memory Streaming Benchmark
+      const scaleEngine = new GitHistoryEngine(sec50Dir);
+      const memBefore = process.memoryUsage().heapUsed;
+      const benchStart = Date.now();
+
+      const scaleResult = await scaleEngine.getBranchesForCommits([shaHead, shaMid, shaOld], sec50Dir);
+      const benchDuration = Date.now() - benchStart;
+      const memAfter = process.memoryUsage().heapUsed;
+      const memDeltaMb = (memAfter - memBefore) / (1024 * 1024);
+
+      assert(scaleResult.failed === false, 'getBranchesForCommits executes without failure on large repo');
+      assert(scaleResult.allBranches.length >= 50, `Discovered at least 50 branches (found ${scaleResult.allBranches.length})`);
+      assert(scaleResult.commitBranchesMap.get(shaHead)?.includes('main'), 'shaHead is contained in main');
+      assert((scaleResult.commitBranchesMap.get(shaMid)?.length ?? 0) >= 25, `shaMid contained in >= 25 branches (found ${scaleResult.commitBranchesMap.get(shaMid)?.length})`);
+      assert((scaleResult.commitBranchesMap.get(shaOld)?.length ?? 0) >= 45, `shaOld contained in >= 45 branches (found ${scaleResult.commitBranchesMap.get(shaOld)?.length})`);
+      assert(benchDuration < 4000, `getBranchesForCommits on 51 branches completes in < 4000ms (took ${benchDuration}ms)`);
+      assert(memDeltaMb < 30, `Streaming heap memory consumption remains flat and bounded (< 30 MB delta, measured ${memDeltaMb.toFixed(2)} MB)`);
+
+      // 3. Graceful error handling and edge cases
+      const emptyResult = await scaleEngine.getBranchesForCommits([], sec50Dir);
+      assert(emptyResult.failed === false && emptyResult.allBranches.length === 0, 'Empty commit input returns empty cleanly');
+
+      const nonGitEngine = new GitHistoryEngine(path.join(os.tmpdir(), 'non-existent-dir-' + Date.now()));
+      const failResult = await nonGitEngine.getBranchesForCommits(['abcdef1234567890']);
+      assert(failResult.failed === true, 'getBranchesForCommits fails gracefully on invalid git repo');
+
+      // 4. Exact Mathematical Separation of Risk Assessment vs. Blast Radius
+      const testRule = DETECTOR_RULES.find((r) => r.id === 'github-pat')!;
+      const testCtx = { isTest: false, isDoc: false, isConfig: false, isSensitiveName: false, extension: '.ts' };
+
+      const incompleteExp: GitExposure = {
+        isPresentInHead: true,
+        isPresentInHistory: true,
+        exposureDurationDays: 1,
+        branches: ['main'],
+        isRemote: false,
+        statusDescription: 'Truncated history search',
+        isPartialHistory: true,
+        searchStatus: 'SEARCH_INCOMPLETE',
+      };
+
+      const completeExp: GitExposure = {
+        isPresentInHead: true,
+        isPresentInHistory: true,
+        exposureDurationDays: 1,
+        branches: ['main'],
+        isRemote: false,
+        statusDescription: 'Complete history search',
+        searchStatus: 'FOUND',
+      };
+
+      const incompleteAssessment = calculateRiskAssessment(testRule, 100, testCtx, incompleteExp);
+      const completeAssessment = calculateRiskAssessment(testRule, 100, testCtx, completeExp);
+
+      // Intrinsic Risk Score invariance:
+      // Both have identical intrinsic credentials, confidence, storage, and physical reach (committed to git history).
+      // Therefore their intrinsic RiskAssessment.score and tier must be exactly identical!
+      assert(incompleteAssessment.score === 84, `Incomplete history risk score is exactly 84 (got ${incompleteAssessment.score})`);
+      assert(completeAssessment.score === 84, `Complete history risk score is exactly 84 (got ${completeAssessment.score})`);
+      assert(incompleteAssessment.tier === 'CRITICAL', 'Incomplete history tier is CRITICAL');
+      assert(completeAssessment.tier === 'CRITICAL', 'Complete history tier is CRITICAL');
+      assert(incompleteAssessment.score === completeAssessment.score, 'Intrinsic risk score is invariant to history truncation');
+
+      // Factor 4 preserves transparent explanation without inflating structural weights:
+      const incompleteReach = incompleteAssessment.factors.find((f) => f.factor === 'EXPOSURE_REACH');
+      const completeReach = completeAssessment.factors.find((f) => f.factor === 'EXPOSURE_REACH');
+      assert(incompleteReach?.scoreContribution === 16, 'Reach contribution is 16 for incomplete history');
+      assert(completeReach?.scoreContribution === 16, 'Reach contribution is 16 for complete history');
+      assert(incompleteReach?.explanation.includes('≥1 days unverified exposure'), 'Reach factor notes unverified duration');
+      assert(completeReach?.explanation.includes('1 days exposure'), 'Reach factor notes verified 1 day duration');
+
+      // Operational Blast Radius Separation:
+      // BlastRadius penalizes unverified containment bounds (+10 points) because containment cannot be guaranteed.
+      assert(incompleteAssessment.blastRadius.score === 72, `Incomplete history blast radius score is 72 (got ${incompleteAssessment.blastRadius.score})`);
+      assert(completeAssessment.blastRadius.score === 62, `Complete history blast radius score is 62 (got ${completeAssessment.blastRadius.score})`);
+      assert(incompleteAssessment.blastRadius.score - completeAssessment.blastRadius.score === 10, 'Blast radius reflects exact +10 operational uncertainty penalty');
+      assert(incompleteAssessment.blastRadius.level === 'EXTENSIVE', 'Incomplete blast radius level is EXTENSIVE');
+      assert(completeAssessment.blastRadius.level === 'EXTENSIVE', 'Complete blast radius level is EXTENSIVE');
+
+      // Uncommitted Working Tree Baseline:
+      const localUncommitted = calculateRiskAssessment(testRule, 100, testCtx, undefined);
+      assert(localUncommitted.score === 73, `Local uncommitted risk score is 73 (got ${localUncommitted.score})`);
+      assert(localUncommitted.tier === 'HIGH', 'Local uncommitted tier is HIGH');
+      assert(localUncommitted.blastRadius.score === 52, `Local uncommitted blast radius is 52 (got ${localUncommitted.blastRadius.score})`);
+      assert(localUncommitted.blastRadius.level === 'EXTENSIVE', 'Local uncommitted blast radius level is EXTENSIVE');
+      assert(localUncommitted.blastRadius.summary.includes('Contained to local working tree'), 'Blast radius summary confirms local containment');
+    } finally {
+      try { fs.rmSync(sec50Dir, { recursive: true, force: true }); } catch {}
     }
 
   console.log('\n============================================================');

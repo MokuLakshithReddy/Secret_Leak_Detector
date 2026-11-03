@@ -743,6 +743,18 @@ export class GitHistoryEngine {
   /**
    * Discovers branch containment for a set of commit SHAs efficiently in O(branches)
    * instead of launching a separate Git process for every commit.
+   *
+   * Scalability & Architectural Guarantees:
+   * 1. Memory bound: Uses streaming child process stdout (spawn + readline) so commit SHAs
+   *    are processed incrementally with O(1) buffer overhead, eliminating Node.js buffer
+   *    overflows (RangeError ERR_CHILD_PROCESS_STDIO_MAXBUFFER) even on repositories with
+   *    millions of commits or commit outputs exceeding 30 MB.
+   * 2. Early termination: For each branch, once all requested target commit SHAs have been
+   *    encountered in the revision stream, the child process is terminated immediately via
+   *    child.kill() and readline.close(), preventing unnecessary traversal of older history.
+   * 3. Bounded concurrency: Traverses branches across a pool of concurrent workers (default 8)
+   *    to minimize execution time across repositories with dozens or hundreds of branches
+   *    without unbounded process explosion.
    */
   public async getBranchesForCommits(commitShas: string[], targetRoot?: string): Promise<{
     commitBranchesMap: Map<string, string[]>;
@@ -763,20 +775,22 @@ export class GitHistoryEngine {
     const allBranchesSet = new Set<string>();
     let failed = false;
     let error: string | undefined;
-    const execOptions = targetRoot ? { cwd: targetRoot } : {};
+    const cwd = targetRoot || this.workspaceRoot;
 
     let branchNames: string[] = [];
     try {
       const { stdout: bOut } = await this.execGit(['branch', '-a'], {
         maxBuffer: 10 * 1024 * 1024,
         encoding: 'utf8',
-        ...execOptions,
+        cwd,
       });
-      branchNames = String(bOut)
-        .split('\n')
-        .map((b: string) => b.trim())
-        .filter((b: string) => b.length > 0 && !b.includes(' -> ') && !b.includes('(HEAD detached'))
-        .map((b: string) => b.replace(/^\*\s+/, ''));
+      branchNames = Array.from(new Set(
+        String(bOut)
+          .split('\n')
+          .map((b: string) => b.trim())
+          .filter((b: string) => b.length > 0 && !b.includes(' -> ') && !b.includes('(HEAD detached'))
+          .map((b: string) => b.replace(/^\*\s+/, ''))
+      ));
     } catch (err: any) {
       return {
         commitBranchesMap,
@@ -786,29 +800,104 @@ export class GitHistoryEngine {
       };
     }
 
-    for (const branch of branchNames) {
-      try {
-        const { stdout: revOut } = await this.execGit(['rev-list', branch], {
-          maxBuffer: 30 * 1024 * 1024,
-          encoding: 'utf8',
-          ...execOptions,
+    const scanBranch = async (branch: string): Promise<void> => {
+      return new Promise<void>((resolve) => {
+        let settled = false;
+        let earlyTerminated = false;
+        const branchFoundShas = new Set<string>();
+
+        const child = spawn('git', ['rev-list', branch], {
+          cwd,
+          stdio: ['ignore', 'pipe', 'pipe'],
         });
-        const revLines = String(revOut).split('\n');
-        for (let i = 0; i < revLines.length; i++) {
-          const rev = revLines[i].trim();
-          if (targetShas.has(rev)) {
+
+        let stderrBuf = '';
+        if (child.stderr) {
+          child.stderr.on('data', (chunk) => {
+            if (stderrBuf.length < 1024) {
+              stderrBuf += chunk.toString();
+            }
+          });
+          child.stderr.on('error', () => {});
+        }
+        if (child.stdout) {
+          child.stdout.on('error', () => {});
+        }
+
+        const rl = readline.createInterface({
+          input: child.stdout,
+          crlfDelay: Infinity,
+        });
+
+        const finish = (isErr = false, errMsg?: string) => {
+          if (settled) return;
+          settled = true;
+          try {
+            rl.close();
+          } catch {}
+          if (!child.killed) {
+            try {
+              child.kill();
+            } catch {}
+          }
+          if (isErr && !earlyTerminated) {
+            failed = true;
+            if (errMsg) {
+              error = errMsg;
+            }
+          }
+          resolve();
+        };
+
+        rl.on('line', (line: string) => {
+          const rev = line.trim();
+          if (rev && targetShas.has(rev)) {
             const list = commitBranchesMap.get(rev);
             if (list && !list.includes(branch)) {
               list.push(branch);
             }
             allBranchesSet.add(branch);
+            branchFoundShas.add(rev);
+
+            // Early termination: stop walking this branch once all target commits were found
+            if (branchFoundShas.size >= targetShas.size) {
+              earlyTerminated = true;
+              finish();
+            }
           }
+        });
+
+        rl.on('close', () => {
+          finish();
+        });
+
+        child.on('error', (err: any) => {
+          finish(true, err?.message || String(err));
+        });
+
+        child.on('close', (code: number | null) => {
+          if (code !== 0 && code !== null && !earlyTerminated) {
+            finish(true, stderrBuf.trim() || `git rev-list exited with code ${code}`);
+          } else {
+            finish();
+          }
+        });
+      });
+    };
+
+    // Bounded concurrency pool (up to 8 concurrent workers)
+    const concurrency = Math.min(8, Math.max(1, branchNames.length));
+    const queue = [...branchNames];
+    const workers = Array.from({ length: concurrency }, async () => {
+      while (queue.length > 0) {
+        const nextBranch = queue.shift();
+        if (nextBranch) {
+          await scanBranch(nextBranch);
         }
-      } catch (err: any) {
-        failed = true;
-        error = err?.message || String(err);
       }
-    }
+    });
+
+    await Promise.all(workers);
 
     return {
       commitBranchesMap,

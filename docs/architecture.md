@@ -57,20 +57,28 @@ Rather than asserting "Secret Detected", every finding produces an explainable *
 - Resulting in a composite **Confidence Score (0 - 100%)**.
 
 ### Stage 3: RISK (Multi-Factor Risk Scoring & Blast Radius)
-Static mappings (`AWS = CRITICAL`) are replaced with a dynamic calculation:
+Static mappings (`AWS = CRITICAL`) are replaced with a dual-engine dynamic evaluation distinguishing intrinsic finding severity from operational containment:
 
 $$\text{Risk Score} = w_{\text{type}} \cdot S_{\text{type}} + w_{\text{conf}} \cdot C + w_{\text{env}} \cdot E_{\text{env}} + w_{\text{git}} \cdot G_{\text{git}}$$
 
-- **Score Tiers:**
-  - `0 - 25`: LOW
-  - `26 - 50`: MEDIUM
-  - `51 - 75`: HIGH
-  - `76 - 100`: CRITICAL
-- **Blast Radius Evaluation:**
-  - Evaluates active working-tree status
-  - Measures historical commit presence and exposure duration (days)
-  - Identifies branch spread and remote branch tracking (`origin/*`)
-  - Classifies blast radius into: `CONTAINED`, `MODERATE`, `EXTENSIVE`, or `SEVERE`.
+- **Intrinsic Risk Score (0 - 100):**
+  - Evaluates inherent exploit capability based on four calibrated structural weights:
+    - `CREDENTIAL_SEVERITY` ($w=40$): Privilege capability of the credential type.
+    - `CONFIDENCE_LEVEL` ($w=25$): Multi-signal verification certainty.
+    - `STORAGE_ENVIRONMENT` ($w=15$): Sensitivity of file location (.env/config vs. code vs. test).
+    - `EXPOSURE_REACH` ($w=20$): Physical containment (working tree vs. HEAD vs. history vs. remote).
+  - **Score Tiers:** `0 - 25`: LOW | `26 - 50`: MEDIUM | `51 - 75`: HIGH | `76 - 100`: CRITICAL.
+  - When history is incomplete, `EXPOSURE_REACH` notes unverified duration in its factor explanation while strictly preserving the calibrated 4-factor sum.
+
+- **Operational Blast Radius Score (0 - 100):**
+  - Evaluates operational containment, incident response blast radius, and attack surface breadth.
+  - Derives from a baseline of $0.5 \times \text{Risk Score}$ and stacks operational containment penalties:
+    - Active working-tree presence: $+15$
+    - Local Git commit history presence: $+20$
+    - Remote tracking branch synchronization (`origin/*`): $+25$
+    - Unrotated exposure (>7 days) OR incomplete/unverified history bounds (`isPartialHistory`, `isIntroductionUnverified`, `searchStatus === 'SEARCH_INCOMPLETE'`): $+10$
+  - Operational uncertainty (+10) is deliberately applied here: when historical commit bounds cannot be fully verified (e.g. shallow clone or search truncated), security responders must treat containment as compromised.
+  - **Containment Levels:** `0 - 24`: CONTAINED | `25 - 49`: MODERATE | `50 - 74`: EXTENSIVE | `75 - 100`: SEVERE.
 
 ### Stage 4: TRACE (Git History & Provenance Analysis)
 Integrates Git DAG analysis to trace credential lifecycle:
