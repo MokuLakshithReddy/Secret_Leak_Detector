@@ -552,25 +552,44 @@ export class GitHistoryEngine {
   }
 
   /**
-   * Establishes whether a genuine removal commit exists between lastSeenSha and HEAD.
+   * Establishes whether ancestorSha is an ancestor of targetRef (defaults to 'HEAD').
+   * Uses git merge-base --is-ancestor, exiting 0 if true, 1 if false.
    */
+  public async isAncestor(ancestorSha: string, targetRef = 'HEAD'): Promise<boolean> {
+    if (!ancestorSha || !targetRef) return false;
+    try {
+      await this.execGit(['merge-base', '--is-ancestor', ancestorSha, targetRef]);
+      return true;
+    } catch (err: any) {
+      if (err && (err.code === 1 || err.code === '1' || (typeof err.message === 'string' && err.message.includes('exit code 1')))) {
+        return false;
+      }
+      return false;
+    }
+  }
+
   /**
-   * Establishes whether a genuine removal commit exists between lastSeenSha and HEAD
+   * Establishes whether a genuine removal commit exists between lastSeenSha and targetRef (default HEAD)
    * using secure pattern-file matching without passing credentials or pattern fragments
-   * in command-line arguments. Distinguishes clean no-match conditions from operational
-   * Git execution errors.
+   * in command-line arguments. Before searching commits, establishes that lastSeenSha is actually
+   * an ancestor of targetRef so unrelated branch commits are never falsely attributed as removal commits.
    */
-  public async findRemovalCommit(secret: string, lastSeenSha: string): Promise<GitCommitInfo | undefined> {
+  public async findRemovalCommit(secret: string, lastSeenSha: string, targetRef = 'HEAD'): Promise<GitCommitInfo | undefined> {
     const patternLine = this.pickDistinctiveSearchLine(secret);
     if (!patternLine) return undefined;
 
-    // List commits chronologically between lastSeenSha and HEAD without credentials in arguments
+    // Establish ancestry: lastSeenSha MUST be an ancestor of targetRef.
+    // If lastSeenSha is not in targetRef's history, targetRef did not remove it!
+    const isAnc = await this.isAncestor(lastSeenSha, targetRef);
+    if (!isAnc) return undefined;
+
+    // List commits chronologically between lastSeenSha and targetRef without credentials in arguments
     const { stdout: revsOut } = await this.execGit([
       'log',
       '--reverse',
       '--format=%H|%an|%ad|%s',
       '--date=iso',
-      `${lastSeenSha}..HEAD`,
+      `${lastSeenSha}..${targetRef}`,
     ]);
     const lines = revsOut.trim().split('\n').filter(Boolean);
     if (lines.length === 0) return undefined;
@@ -639,7 +658,7 @@ export class GitHistoryEngine {
       }
 
       // lastSeenSha is known to contain the secret.
-      // Walk forward chronologically through commits between lastSeenSha and HEAD.
+      // Walk forward chronologically through commits between lastSeenSha and targetRef.
       let previousHadSecret = true;
       for (const commit of commitList) {
         const containsSecret = commitsContainingSecret.has(commit.sha);
@@ -868,13 +887,56 @@ export class GitHistoryEngine {
       let removalError: string | undefined;
       let endDate = Date.now();
 
-      if (isPresentInHead === false) {
+      // Check whether lastSeenCommit is an ancestor of HEAD
+      let isAncestorOfHead = false;
+      try {
+        isAncestorOfHead = await this.isAncestor(lastSeenCommit.sha, 'HEAD');
+      } catch {
+        isAncestorOfHead = false;
+      }
+
+      // Track removal per branch across all containing branches
+      const branchRemovals: Record<string, { isAncestor: boolean; isRemoved: boolean; removalCommit?: GitCommitInfo }> = {};
+      const containingBranches = branches.filter((b) => !b.includes('(HEAD detached'));
+
+      for (const branch of containingBranches) {
         try {
-          removedCommit = await this.findRemovalCommit(secret, lastSeenCommit.sha);
-        } catch (remErr: any) {
-          removalCheckFailed = true;
-          removalError = remErr?.message || String(remErr);
+          const isAnc = await this.isAncestor(lastSeenCommit.sha, branch);
+          if (isAnc) {
+            const bRemoval = await this.findRemovalCommit(secret, lastSeenCommit.sha, branch);
+            branchRemovals[branch] = {
+              isAncestor: true,
+              isRemoved: !!bRemoval,
+              removalCommit: bRemoval,
+            };
+          } else {
+            branchRemovals[branch] = {
+              isAncestor: false,
+              isRemoved: false,
+            };
+          }
+        } catch {
+          branchRemovals[branch] = {
+            isAncestor: false,
+            isRemoved: false,
+          };
         }
+      }
+
+      if (isPresentInHead === false) {
+        if (isAncestorOfHead) {
+          try {
+            removedCommit = await this.findRemovalCommit(secret, lastSeenCommit.sha, 'HEAD');
+          } catch (remErr: any) {
+            removalCheckFailed = true;
+            removalError = remErr?.message || String(remErr);
+          }
+        } else {
+          // If not an ancestor of HEAD, HEAD never passed through this commit lineage.
+          // Therefore HEAD did NOT remove the credential; removal cannot be attributed to HEAD.
+          removedCommit = undefined;
+        }
+
         if (removedCommit) {
           endDate = new Date(removedCommit.date).getTime();
         } else {
@@ -892,6 +954,8 @@ export class GitHistoryEngine {
         statusDescription = `INCOMPLETE HEAD VERIFICATION: Present in commit history (${exposureDurationDays} days exposure, ${parsedCommits.length} commit(s)), but HEAD verification failed`;
       } else if (isPresentInHead === true) {
         statusDescription = `ACTIVE IN HEAD & COMMITTED (Introduced ${exposureDurationDays} days ago by ${introducedCommit.author} in ${introducedCommit.sha.substring(0, 7)})`;
+      } else if (!isAncestorOfHead) {
+        statusDescription = `UNMERGED BRANCH EXPOSURE: Credential present in history on branch(es) [${containingBranches.join(', ') || 'unmerged'}], but never merged into HEAD (Introduced ${exposureDurationDays} days ago by ${introducedCommit.author} in ${introducedCommit.sha.substring(0, 7)})`;
       } else {
         statusDescription = `REMOVED FROM HEAD BUT STILL PRESENT IN GIT HISTORY! (Introduced ${exposureDurationDays} days ago by ${introducedCommit.author} in ${introducedCommit.sha.substring(0, 7)})`;
       }
@@ -940,6 +1004,8 @@ export class GitHistoryEngine {
         commitCount: parsedCommits.length,
         searchStatus: finalSearchStatus,
         isPartialHistory: searchResult.isPartialHistory || failedMetadataCount > 0,
+        isAncestorOfHead,
+        branchRemovals,
       };
     } catch (err: any) {
       return {

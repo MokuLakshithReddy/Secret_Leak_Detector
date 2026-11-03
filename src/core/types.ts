@@ -79,6 +79,12 @@ export interface GitCommitInfo {
   message: string;
 }
 
+export interface BranchRemovalInfo {
+  isAncestor: boolean;
+  isRemoved: boolean;
+  removalCommit?: GitCommitInfo;
+}
+
 export interface GitExposure {
   introducedCommit?: GitCommitInfo;
   lastModifiedCommit?: GitCommitInfo;
@@ -95,6 +101,8 @@ export interface GitExposure {
   commitCount?: number;
   isPartialHistory?: boolean;
   searchStatus?: 'FOUND' | 'NOT_FOUND' | 'PARTIAL_HISTORY' | 'SEARCH_INCOMPLETE' | 'ERROR';
+  isAncestorOfHead?: boolean;
+  branchRemovals?: Record<string, BranchRemovalInfo>;
 }
 
 export interface RemediationPlan {

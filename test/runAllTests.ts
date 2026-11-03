@@ -3279,12 +3279,16 @@ exit 0
         fs.writeFileSync(mockEnvFile, 'SECRET="val"\n', 'utf8');
 
         let icaclsInvoked = false;
-        let icaclsArgs: string[] = [];
+        let allIcaclsInvocations: string[][] = [];
         const mockCp = {
           execFileSync: (cmd: string, args: string[]) => {
             if (cmd === 'icacls') {
               icaclsInvoked = true;
-              icaclsArgs = args;
+              allIcaclsInvocations.push(args);
+              if (args.length === 1) {
+                const u = process.env.USERNAME || process.env.USER || 'testuser';
+                return `${args[0]} ${u}:(F)\nSuccessfully processed 1 files;\n`;
+              }
             }
             return Buffer.from('');
           }
@@ -3292,8 +3296,8 @@ exit 0
 
         enforceEnvFilePermissions(mockEnvFile, fs, 'win32', mockCp as any);
         assert(icaclsInvoked === true, 'enforceEnvFilePermissions executes icacls on win32');
-        assert(icaclsArgs.includes('/inheritance:r'), 'icacls invocation removes inherited ACLs');
-        assert(icaclsArgs.some((a: string) => a.startsWith('/grant:r')), 'icacls invocation explicitly grants current user permissions');
+        assert(allIcaclsInvocations.some((args) => args.includes('/inheritance:r')), 'icacls invocation removes inherited ACLs');
+        assert(allIcaclsInvocations.some((args) => args.some((a: string) => a.startsWith('/grant:r'))), 'icacls invocation explicitly grants current user permissions');
 
         // Graceful fallback when icacls fails (non-NTFS filesystem)
         const failingCp = {
@@ -3319,6 +3323,184 @@ exit 0
         try {
           fs.rmSync(sec43Repo, { recursive: true, force: true });
         } catch {}
+      }
+    }
+
+    // --- 44. Unmerged Branch Removal Lineage, Windows Explicit ACL Stripping & Hook-Gated Parser Copying ---
+    console.log('\n--- 44. Unmerged Branch Removal Lineage, Windows Explicit ACL Stripping & Hook-Gated Parser Copying ---');
+    {
+      const { GitHistoryEngine } = require('../src/core/history/gitHistoryEngine');
+      const { GitTimelineEngine } = require('../src/core/history/gitTimeline');
+      const { enforceEnvFilePermissions } = require('../src/core/remediation/remediationEngine');
+      const { execFileSync } = require('child_process');
+      const fromHex = (h: string) => Buffer.from(h, 'hex').toString('utf8');
+
+      const sec44Repo = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-sec44-'));
+      try {
+        execFileSync('git', ['init'], { cwd: sec44Repo });
+        execFileSync('git', ['checkout', '-B', 'main'], { cwd: sec44Repo });
+        execFileSync('git', ['config', 'user.name', 'Dev Tester'], { cwd: sec44Repo });
+        execFileSync('git', ['config', 'user.email', 'dev@example.com'], { cwd: sec44Repo });
+
+        // Commit M1 on main
+        fs.writeFileSync(path.join(sec44Repo, 'main.txt'), 'console.log("main clean");\n', 'utf8');
+        execFileSync('git', ['add', 'main.txt'], { cwd: sec44Repo });
+        execFileSync('git', ['commit', '-m', 'chore: initial commit on main'], { cwd: sec44Repo });
+
+        // Create feature branch: feat/secret-branch
+        execFileSync('git', ['checkout', '-b', 'feat/secret-branch'], { cwd: sec44Repo });
+        const featSecret = fromHex('6768705f666561747572657365637265743132333435363738393061626364656667');
+        fs.writeFileSync(path.join(sec44Repo, 'feature.ts'), `export const TOKEN = "${featSecret}";\n`, 'utf8');
+        execFileSync('git', ['add', 'feature.ts'], { cwd: sec44Repo });
+        execFileSync('git', ['commit', '-m', 'feat: add token on feature branch'], { cwd: sec44Repo });
+        const f1Sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: sec44Repo, encoding: 'utf8' }).trim();
+
+        fs.writeFileSync(path.join(sec44Repo, 'feature-extra.ts'), 'export const extra = true;\n', 'utf8');
+        execFileSync('git', ['add', 'feature-extra.ts'], { cwd: sec44Repo });
+        execFileSync('git', ['commit', '-m', 'feat: extra commit on feature branch'], { cwd: sec44Repo });
+        const f2Sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: sec44Repo, encoding: 'utf8' }).trim();
+
+        // Switch back to main; do unrelated work
+        execFileSync('git', ['checkout', 'main'], { cwd: sec44Repo });
+        fs.writeFileSync(path.join(sec44Repo, 'unrelated.txt'), 'console.log("unrelated main work");\n', 'utf8');
+        execFileSync('git', ['add', 'unrelated.txt'], { cwd: sec44Repo });
+        execFileSync('git', ['commit', '-m', 'feat: unrelated work on main'], { cwd: sec44Repo });
+
+        // 1. Lineage & Ancestry verification:
+        const histEngine = new GitHistoryEngine(sec44Repo);
+        const isF1AncestorOfHead = await histEngine.isAncestor(f1Sha, 'HEAD');
+        const isF2AncestorOfHead = await histEngine.isAncestor(f2Sha, 'HEAD');
+        assert(isF1AncestorOfHead === false, 'Feature branch commit F1 is not an ancestor of main HEAD');
+        assert(isF2AncestorOfHead === false, 'Feature branch commit F2 is not an ancestor of main HEAD');
+
+        const isF1AncestorOfFeat = await histEngine.isAncestor(f1Sha, 'feat/secret-branch');
+        assert(isF1AncestorOfFeat === true, 'Feature branch commit F1 is an ancestor of feat/secret-branch');
+
+        // 2. findRemovalCommit refuses to attribute removal to unrelated HEAD commits
+        const removalAgainstHead = await histEngine.findRemovalCommit(featSecret, f2Sha, 'HEAD');
+        assert(removalAgainstHead === undefined, 'findRemovalCommit returns undefined when lastSeenSha is not an ancestor of HEAD');
+
+        // 3. traceSecret correctly identifies unmerged branch exposure
+        const featTrace = await histEngine.traceSecret(featSecret);
+        assert(featTrace.isPresentInHistory === true, 'traceSecret detects presence in Git history across branches');
+        assert(featTrace.isPresentInHead === false, 'traceSecret confirms secret is absent from HEAD');
+        assert(featTrace.isAncestorOfHead === false, 'traceSecret establishes isAncestorOfHead: false');
+        assert(featTrace.removedCommit === undefined, 'traceSecret does not attribute removedCommit to unrelated HEAD commit');
+        assert(featTrace.statusDescription.includes('UNMERGED BRANCH EXPOSURE'), 'traceSecret reports UNMERGED BRANCH EXPOSURE in statusDescription');
+        assert(Boolean(featTrace.branchRemovals && featTrace.branchRemovals['feat/secret-branch']), 'traceSecret tracks removal separately per branch');
+        assert(featTrace.branchRemovals!['feat/secret-branch'].isRemoved === false, 'traceSecret notes secret is not removed on feat/secret-branch');
+
+        // 4. Timeline correctly avoids false removal event for unmerged branch
+        const timelineEngine = new GitTimelineEngine(sec44Repo, histEngine);
+        const featTimeline = await timelineEngine.buildTimeline(featSecret, 'ghp_••••');
+        const hasRemovedEvent = featTimeline.graph.nodes.some((n: any) => n.label.startsWith('REMOVED'));
+        assert(hasRemovedEvent === false, 'buildTimeline does not synthesize a false REMOVED node for unmerged branch');
+        assert(featTimeline.timelineAscii.includes('UNMERGED BRANCH'), 'buildTimeline ASCII notes unmerged branch exposure');
+
+        // 5. On the feature branch itself, removal commit is properly tracked when removed
+        execFileSync('git', ['checkout', 'feat/secret-branch'], { cwd: sec44Repo });
+        fs.writeFileSync(path.join(sec44Repo, 'feature.ts'), 'export const TOKEN = process.env.TOKEN;\n', 'utf8');
+        execFileSync('git', ['add', 'feature.ts'], { cwd: sec44Repo });
+        execFileSync('git', ['commit', '-m', 'fix: remove secret on feature branch'], { cwd: sec44Repo });
+        const f3Sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: sec44Repo, encoding: 'utf8' }).trim();
+
+        execFileSync('git', ['checkout', 'main'], { cwd: sec44Repo });
+        const branchRemoval = await histEngine.findRemovalCommit(featSecret, f2Sha, 'feat/secret-branch');
+        assert(branchRemoval !== undefined, 'findRemovalCommit finds genuine removal commit on feature branch');
+        assert(branchRemoval?.sha === f3Sha, 'Removal commit SHA on feature branch is F3');
+
+        const postFixTrace = await histEngine.traceSecret(featSecret);
+        assert(postFixTrace.branchRemovals!['feat/secret-branch'].isRemoved === true, 'traceSecret reports isRemoved: true on feat/secret-branch');
+        assert(postFixTrace.branchRemovals!['feat/secret-branch'].removalCommit?.sha === f3Sha, 'traceSecret records removalCommit on feat/secret-branch');
+
+        // 6. Windows ACL: Stripping broad explicit permissions
+        const sec44Env = path.join(sec44Repo, '.env');
+        fs.writeFileSync(sec44Env, 'KEY="secret"\n', 'utf8');
+
+        let permissionsStripped = false;
+        const aclMockCp = {
+          execFileSync: (cmd: string, args: string[]) => {
+            if (cmd === 'icacls') {
+              if (args.includes('/remove') && args.includes('Everyone')) {
+                permissionsStripped = true;
+              }
+              if (args.length === 1) {
+                const u = process.env.USERNAME || process.env.USER || 'testuser';
+                // First query: Everyone has explicit R
+                if (!permissionsStripped) {
+                  return `${args[0]} Everyone:(R)\n ${u}:(F)\nSuccessfully processed 1 files;\n`;
+                }
+                // Second query: after /remove Everyone
+                return `${args[0]} ${u}:(F)\nSuccessfully processed 1 files;\n`;
+              }
+            }
+            return Buffer.from('');
+          }
+        };
+
+        const aclRes = enforceEnvFilePermissions(sec44Env, fs, 'win32', aclMockCp as any);
+        assert(aclRes.enforced === true, 'enforceEnvFilePermissions reports enforced: true');
+        assert(permissionsStripped === true, 'enforceEnvFilePermissions actively strips explicit Everyone permissions via icacls /remove');
+
+        // 7. Windows ACL: Failure to secure throws security error rather than succeeding
+        const unsafeAclCp = {
+          execFileSync: (cmd: string, args: string[]) => {
+            if (cmd === 'icacls' && args.length === 1) {
+              const u = process.env.USERNAME || process.env.USER || 'testuser';
+              return `${args[0]} Everyone:(F)\n ${u}:(F)\nSuccessfully processed 1 files;\n`;
+            }
+            return Buffer.from('');
+          }
+        };
+        let unsafeThrew = false;
+        try {
+          enforceEnvFilePermissions(sec44Env, fs, 'win32', unsafeAclCp as any);
+        } catch (err: any) {
+          unsafeThrew = true;
+          assert(err.message.includes('Security error: Windows ACL enforcement failed'), 'Throws descriptive error when unsafe permissions persist');
+        }
+        assert(unsafeThrew === true, 'enforceEnvFilePermissions refuses to succeed when unsafe accounts persist');
+
+        // 8. Windows ACL: Operational failures throw instead of returning clean
+        const failingAccessCp = {
+          execFileSync: () => {
+            const err: any = new Error('EACCES: permission denied, icacls execution prohibited');
+            err.code = 'EACCES';
+            throw err;
+          }
+        };
+        let accessThrew = false;
+        try {
+          enforceEnvFilePermissions(sec44Env, fs, 'win32', failingAccessCp as any);
+        } catch (err: any) {
+          accessThrew = true;
+          assert(err.message.includes('permission denied'), 'Operational error is thrown rather than swallowed');
+        }
+        assert(accessThrew === true, 'enforceEnvFilePermissions does not swallow real operational errors');
+
+        // 9. Windows ACL: Unsupported filesystem returns isUnsupportedFs: true without throwing
+        const fat32Cp = {
+          execFileSync: () => {
+            throw new Error('The volume does not support ACLs (FAT32/exFAT)');
+          }
+        };
+        const fat32Res = enforceEnvFilePermissions(sec44Env, fs, 'win32', fat32Cp as any);
+        assert(fat32Res.enforced === false, 'enforceEnvFilePermissions returns enforced: false on unsupported FS');
+        assert(fat32Res.isUnsupportedFs === true, 'enforceEnvFilePermissions identifies unsupported filesystem gracefully');
+
+        // 10. Hook-gated parser copying in extension.ts
+        const extSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'extension.ts'), 'utf8');
+        const pinFuncSlice = extSource.slice(
+          extSource.indexOf('async function pinHooksInAllFolders'),
+          extSource.indexOf('if (fs.existsSync(activeCliPath))', extSource.indexOf('async function pinHooksInAllFolders'))
+        );
+        assert(pinFuncSlice.includes('hasManagedHook'), 'pinHooksInAllFolders checks for hasManagedHook');
+        assert(pinFuncSlice.includes('includes(SLD_HOOK_MARKER)'), 'pinHooksInAllFolders verifies SLD_HOOK_MARKER before copying parser');
+        const hookCheckIdx = pinFuncSlice.indexOf('hasManagedHook');
+        const parserCallIdx = pinFuncSlice.indexOf('await ensureGlobalAstParser()');
+        assert(parserCallIdx > hookCheckIdx, 'ensureGlobalAstParser is deferred until AFTER verifying an SLD managed hook exists');
+      } finally {
+        try { fs.rmSync(sec44Repo, { recursive: true, force: true }); } catch {}
       }
     }
 

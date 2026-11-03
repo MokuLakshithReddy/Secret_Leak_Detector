@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as cp from 'child_process';
 import * as path from 'path';
+import * as os from 'os';
 import { RuleDefinition, RemediationPlan, SecretFinding } from '../types';
 import { redactSecret } from '../redactor/redactor';
 
@@ -211,28 +212,134 @@ export function ensureGitignoreProtectsEnv(workspaceRoot: string): void {
  *   permissions and restricting explicit access to the current executing user only.
  *   On non-NTFS volumes (e.g. FAT32/exFAT) where Windows ACLs are not supported, verifies read/write access.
  */
+/**
+ * Enforces strict 0600 file permissions on POSIX, and user-exclusive ACLs on Windows:
+ * - On POSIX: sets mode to 0600 (owner read/write only, zero permissions for group/others)
+ *   and verifies the resulting mode using statSync.
+ * - On Windows (NTFS):
+ *   1. Strips inherited permissions and explicitly grants the current user Full Control (:F).
+ *   2. Queries existing explicit Access Control Entries (ACEs) via icacls.
+ *   3. Actively strips any broad or unsafe explicit permissions granted to other accounts/groups
+ *      (e.g. Everyone, BUILTIN\Users, Guest, secondary accounts).
+ *   4. Verifies effective ACLs, ensuring only the current user (and SYSTEM) retains access.
+ *   5. Distinguishes genuinely unsupported filesystems (e.g. FAT32/exFAT) from security or
+ *      operational errors, throwing descriptive errors when ACL protection cannot be enforced.
+ */
 export function enforceEnvFilePermissions(
   envPath: string,
   fsModule: typeof fs = fs,
   targetPlatform: string = process.platform,
   cpModule: typeof cp = cp
-): void {
+): { enforced: boolean; isUnsupportedFs?: boolean; details?: string } {
   if (targetPlatform === 'win32') {
+    fsModule.accessSync(envPath, fs.constants.R_OK | fs.constants.W_OK);
+    let username = process.env.USERNAME || process.env.USER;
+    if (!username) {
+      try {
+        username = os.userInfo().username;
+      } catch {}
+    }
+    if (!username) {
+      throw new Error('Failed to enforce Windows ACLs: neither USERNAME nor USER environment variable is set');
+    }
+
     try {
-      fsModule.accessSync(envPath, fs.constants.R_OK | fs.constants.W_OK);
-      const username = process.env.USERNAME || process.env.USER;
-      if (username) {
+      // 1. Remove inherited ACLs and grant exclusive Full Control to the current user
+      cpModule.execFileSync('icacls', [envPath, '/inheritance:r', '/grant:r', `${username}:F`], {
+        stdio: 'pipe',
+        windowsHide: true,
+      });
+
+      // 2. Query effective ACLs to discover any explicit permissions granted to other accounts
+      const queryOut = cpModule
+        .execFileSync('icacls', [envPath], {
+          encoding: 'utf8',
+          stdio: 'pipe',
+          windowsHide: true,
+        })
+        .toString();
+
+      const lines = queryOut.split(/\r?\n/).filter((l: string) => l.trim().length > 0);
+      const unsafeAccounts: string[] = [];
+      const userLower = username.toLowerCase();
+
+      for (const line of lines) {
+        if (/successfully processed|failed processing|processed file/i.test(line)) continue;
+        const match = line.match(/(?:^|[^\\]\s+|^.+?\s+)([A-Za-z0-9_\\\-\.\$@ ]+?):(\([^\)]+\)+)/);
+        if (match) {
+          const rawAccount = match[1].trim();
+          const accountBare = rawAccount.split('\\').pop()?.toLowerCase() || '';
+          const accountFull = rawAccount.toLowerCase();
+          const isCurrentUser =
+            accountBare === userLower || accountFull.endsWith(`\\${userLower}`) || accountFull === userLower;
+          const isSystem = accountFull === 'nt authority\\system' || accountBare === 'system';
+
+          if (!isCurrentUser && !isSystem) {
+            unsafeAccounts.push(rawAccount);
+          }
+        }
+      }
+
+      // 3. Remove all discovered unsafe explicit accounts
+      for (const unsafeAcc of unsafeAccounts) {
         try {
-          cpModule.execFileSync('icacls', [envPath, '/inheritance:r', '/grant:r', `${username}:F`], {
+          cpModule.execFileSync('icacls', [envPath, '/remove', unsafeAcc], {
             stdio: 'pipe',
             windowsHide: true,
           });
-        } catch {
-          // Fallback gracefully on filesystems without ACL support (e.g. FAT32, exFAT, network shares)
+        } catch (removeErr: any) {
+          throw new Error(`Failed to remove unsafe explicit ACL for account '${unsafeAcc}': ${removeErr?.message || removeErr}`);
         }
       }
+
+      // 4. Verify effective permissions after cleanup
+      const verifyOut = cpModule
+        .execFileSync('icacls', [envPath], {
+          encoding: 'utf8',
+          stdio: 'pipe',
+          windowsHide: true,
+        })
+        .toString();
+
+      const remainingUnsafe: string[] = [];
+      for (const line of verifyOut.split(/\r?\n/).filter(Boolean)) {
+        if (/successfully processed|failed processing|processed file/i.test(line)) continue;
+        const match = line.match(/(?:^|[^\\]\s+|^.+?\s+)([A-Za-z0-9_\\\-\.\$@ ]+?):(\([^\)]+\)+)/);
+        if (match) {
+          const rawAccount = match[1].trim();
+          const accountBare = rawAccount.split('\\').pop()?.toLowerCase() || '';
+          const accountFull = rawAccount.toLowerCase();
+          const isCurrentUser =
+            accountBare === userLower || accountFull.endsWith(`\\${userLower}`) || accountFull === userLower;
+          const isSystem = accountFull === 'nt authority\\system' || accountBare === 'system';
+          if (!isCurrentUser && !isSystem) {
+            remainingUnsafe.push(rawAccount);
+          }
+        }
+      }
+
+      if (remainingUnsafe.length > 0) {
+        throw new Error(
+          `Security error: Windows ACL enforcement failed on '${envPath}'. Unsafe explicit permissions remain for: ${remainingUnsafe.join(', ')}`
+        );
+      }
+
+      return { enforced: true, details: `ACL hardened exclusively for ${username}` };
     } catch (err: any) {
-      throw new Error(`Failed to verify permissions on Windows .env file: ${err?.message || err}`);
+      const errMsg = err?.message || String(err);
+      const isUnsupportedFs =
+        /does not support ACL|not supported|Incorrect function|No security ID|0x80070001|The volume does not support/i.test(errMsg);
+
+      if (isUnsupportedFs) {
+        return {
+          enforced: false,
+          isUnsupportedFs: true,
+          details: `Volume does not support ACLs (FAT32/exFAT): ${errMsg}`,
+        };
+      }
+
+      // Operational or security failure on supported volume: do NOT swallow!
+      throw new Error(`Failed to enforce Windows ACL protection on '${envPath}': ${errMsg}`);
     }
   } else {
     try {
@@ -245,6 +352,7 @@ export function enforceEnvFilePermissions(
     if ((mode & 0o077) !== 0) {
       throw new Error(`Permission enforcement failed: .env file mode is 0o${mode.toString(8)}, expected 0o600`);
     }
+    return { enforced: true, details: 'POSIX mode set to 0600' };
   }
 }
 
