@@ -947,7 +947,7 @@ async function runHook(cmdArgs: string[], cwd: string) {
 
 export interface TraversalError {
   path: string;
-  operation: 'realpath' | 'stat' | 'readdir';
+  operation: 'realpath' | 'stat' | 'readdir' | 'symlink';
   error: string;
 }
 
