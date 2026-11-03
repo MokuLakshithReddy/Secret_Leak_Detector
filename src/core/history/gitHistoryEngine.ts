@@ -772,11 +772,11 @@ export class GitHistoryEngine {
         encoding: 'utf8',
         ...execOptions,
       });
-      branchNames = bOut
+      branchNames = String(bOut)
         .split('\n')
-        .map((b) => b.trim())
-        .filter((b) => b.length > 0 && !b.includes(' -> ') && !b.includes('(HEAD detached'))
-        .map((b) => b.replace(/^\*\s+/, ''));
+        .map((b: string) => b.trim())
+        .filter((b: string) => b.length > 0 && !b.includes(' -> ') && !b.includes('(HEAD detached'))
+        .map((b: string) => b.replace(/^\*\s+/, ''));
     } catch (err: any) {
       return {
         commitBranchesMap,
@@ -793,7 +793,7 @@ export class GitHistoryEngine {
           encoding: 'utf8',
           ...execOptions,
         });
-        const revLines = revOut.split('\n');
+        const revLines = String(revOut).split('\n');
         for (let i = 0; i < revLines.length; i++) {
           const rev = revLines[i].trim();
           if (targetShas.has(rev)) {
