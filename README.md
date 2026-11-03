@@ -321,7 +321,7 @@ Secret Leak Detector is engineered against 6 primary security threats:
 
 ## 🧪 Testing & Verification
 
-Run the comprehensive security engineering test suite (769 tests: 712 core unit/AST/risk/baseline/history tests across 48 sections, 40 Git hook scenario tests, and 17 VS Code manifest & mock tests):
+Run the comprehensive security engineering test suite (791 tests: 734 core unit/AST/risk/baseline/history tests across 49 sections, 40 Git hook scenario tests, and 17 VS Code manifest & mock tests):
 
 ```bash
 npm test

@@ -324,11 +324,22 @@ export class GitTimelineEngine {
 
     const events: GitTimelineEvent[] = [];
     let firstDate: Date | undefined;
-    let allReachableBranches = new Set<string>();
+    const allReachableBranches = new Set<string>();
     let isPushedToRemote: boolean | 'UNKNOWN';
     let pushedConfirmed = false;
     let branchLookupFailed = false;
     let branchLookupError: string | undefined;
+
+    const allSecretCommitShas = new Set(commitShas);
+    const commitShasInTimeline = lines.map((l) => l.split('|')[0]);
+
+    // Discover branches efficiently in O(branches) instead of launching a separate Git process per commit
+    const { commitBranchesMap, allBranches: discoveredBranches, failed: bLookupFailed, error: bLookupErr } =
+      await this.gitHistory.getBranchesForCommits(commitShasInTimeline, this.workspaceRoot);
+    if (bLookupFailed) {
+      branchLookupFailed = true;
+      branchLookupError = bLookupErr;
+    }
 
     for (let i = 0; i < lines.length; i++) {
       const parts = lines[i].split('|');
@@ -343,22 +354,7 @@ export class GitTimelineEngine {
       const isMergeCommit = parentShas.length > 1;
 
       // Branches containing this commit
-      let branches: string[] = [];
-      try {
-        const { stdout: bOut } = await execFileAsync(
-          'git',
-          ['branch', '-a', '--contains', sha],
-          { cwd: this.workspaceRoot }
-        );
-        branches = bOut
-          .split('\n')
-          .map((b) => b.trim().replace(/^[\*\s]+/, ''))
-          .filter(Boolean);
-      } catch (err: any) {
-        branchLookupFailed = true;
-        branchLookupError = err?.message || String(err);
-        branches = [];
-      }
+      const branches = commitBranchesMap.get(sha) || [];
 
       branches.forEach((b) => {
         allReachableBranches.add(b);
@@ -370,17 +366,24 @@ export class GitTimelineEngine {
       const commitDate = new Date(committerDateStr || dateStr);
       if (!firstDate) firstDate = commitDate;
 
-      const exposureDaysSoFar = Math.max(
-        0,
-        Math.round((commitDate.getTime() - firstDate.getTime()) / (1000 * 60 * 60 * 24))
-      );
-
+      // Determine introduction separately from each branch's parent history
+      // rather than classifying events purely by global index position.
+      const hasSecretParent = parentShas.some((p) => allSecretCommitShas.has(p));
       let eventType: GitTimelineEvent['eventType'] = 'MODIFIED';
-      if (i === 0) {
+      if (i === 0 || !hasSecretParent) {
         eventType = 'INTRODUCED';
       } else if (isMergeCommit) {
         eventType = 'MERGED_IN';
+      } else {
+        eventType = 'MODIFIED';
       }
+
+      const exposureDaysSoFar = eventType === 'INTRODUCED'
+        ? 0
+        : Math.max(
+            0,
+            Math.round((commitDate.getTime() - firstDate.getTime()) / (1000 * 60 * 60 * 24))
+          );
 
       events.push({
         eventType,

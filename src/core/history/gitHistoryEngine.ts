@@ -741,6 +741,84 @@ export class GitHistoryEngine {
   }
 
   /**
+   * Discovers branch containment for a set of commit SHAs efficiently in O(branches)
+   * instead of launching a separate Git process for every commit.
+   */
+  public async getBranchesForCommits(commitShas: string[], targetRoot?: string): Promise<{
+    commitBranchesMap: Map<string, string[]>;
+    allBranches: string[];
+    failed: boolean;
+    error?: string;
+  }> {
+    const commitBranchesMap = new Map<string, string[]>();
+    for (const sha of commitShas) {
+      commitBranchesMap.set(sha, []);
+    }
+
+    if (commitShas.length === 0) {
+      return { commitBranchesMap, allBranches: [], failed: false };
+    }
+
+    const targetShas = new Set(commitShas);
+    const allBranchesSet = new Set<string>();
+    let failed = false;
+    let error: string | undefined;
+    const execOptions = targetRoot ? { cwd: targetRoot } : {};
+
+    let branchNames: string[] = [];
+    try {
+      const { stdout: bOut } = await this.execGit(['branch', '-a'], {
+        maxBuffer: 10 * 1024 * 1024,
+        encoding: 'utf8',
+        ...execOptions,
+      });
+      branchNames = bOut
+        .split('\n')
+        .map((b) => b.trim())
+        .filter((b) => b.length > 0 && !b.includes(' -> ') && !b.includes('(HEAD detached'))
+        .map((b) => b.replace(/^\*\s+/, ''));
+    } catch (err: any) {
+      return {
+        commitBranchesMap,
+        allBranches: [],
+        failed: true,
+        error: err?.message || String(err),
+      };
+    }
+
+    for (const branch of branchNames) {
+      try {
+        const { stdout: revOut } = await this.execGit(['rev-list', branch], {
+          maxBuffer: 30 * 1024 * 1024,
+          encoding: 'utf8',
+          ...execOptions,
+        });
+        const revLines = revOut.split('\n');
+        for (let i = 0; i < revLines.length; i++) {
+          const rev = revLines[i].trim();
+          if (targetShas.has(rev)) {
+            const list = commitBranchesMap.get(rev);
+            if (list && !list.includes(branch)) {
+              list.push(branch);
+            }
+            allBranchesSet.add(branch);
+          }
+        }
+      } catch (err: any) {
+        failed = true;
+        error = err?.message || String(err);
+      }
+    }
+
+    return {
+      commitBranchesMap,
+      allBranches: Array.from(allBranchesSet),
+      failed,
+      error,
+    };
+  }
+
+  /**
    * Traces the provenance and historical exposure lifecycle of a specific secret.
    * Default searches full history without silently capping at 200 commits.
    */
@@ -979,34 +1057,12 @@ export class GitHistoryEngine {
         headCheckFailed = true;
       }
 
-      // Query containing branches across ALL matching commits independently.
-      // Use --contains to accurately determine branch containment.
-      const branchSet = new Set<string>();
-      const commitBranchesMap = new Map<string, string[]>();
-      let branchQueryFailed = false;
+      // Discover containing branches efficiently in O(branches) instead of launching a separate Git process per commit
+      const branchDiscovery = await this.getBranchesForCommits(parsedCommits.map((c) => c.sha));
+      const commitBranchesMap = branchDiscovery.commitBranchesMap;
+      const branches = branchDiscovery.allBranches;
+      const branchQueryFailed = branchDiscovery.failed;
 
-      for (const c of parsedCommits) {
-        try {
-          const { stdout: branchOut } = await this.execGit([
-            'branch',
-            '-a',
-            '--contains',
-            c.sha,
-          ]);
-          const bList = String(branchOut)
-            .split('\n')
-            .map((b) => b.trim().replace(/^[\*\s]+/, ''))
-            .filter((b) => b.length > 0 && !b.includes('(HEAD detached'));
-          commitBranchesMap.set(c.sha, bList);
-          for (const b of bList) {
-            branchSet.add(b);
-          }
-        } catch {
-          branchQueryFailed = true;
-        }
-      }
-
-      const branches = Array.from(branchSet);
       let isRemote: boolean | 'UNKNOWN' = 'UNKNOWN';
       const hasRemoteConfirmed = branches.some((b) => b.startsWith('remotes/') || b.startsWith('origin/'));
       if (hasRemoteConfirmed) {
@@ -1045,7 +1101,7 @@ export class GitHistoryEngine {
             const branchIntroTime = new Date(branchIntroCommit.committerDate || branchIntroCommit.date).getTime();
             const branchEndTime = bRemoval
               ? new Date(bRemoval.committerDate || bRemoval.date).getTime()
-              : new Date(branchLastSeenCommit.committerDate || branchLastSeenCommit.date).getTime();
+              : Date.now();
             const branchDuration = Math.max(0, Math.round((branchEndTime - branchIntroTime) / (1000 * 60 * 60 * 24)));
             branchRemovals[branch] = {
               isAncestor: true,
@@ -1149,10 +1205,19 @@ export class GitHistoryEngine {
       }
 
       const introDate = new Date(introducedCommit.committerDate || introducedCommit.date).getTime();
-      const exposureDurationDays = Math.max(
+      const globalExposureDuration = Math.max(
         0,
         Math.round((endDate - introDate) / (1000 * 60 * 60 * 24))
       );
+
+      // Use the maximum confirmed branch duration for the aggregate risk calculation
+      const confirmedBranchDurations = Object.values(branchRemovals)
+        .map((b) => b.exposureDurationDays)
+        .filter((d): d is number => typeof d === 'number');
+
+      const exposureDurationDays = confirmedBranchDurations.length > 0
+        ? Math.max(globalExposureDuration, ...confirmedBranchDurations)
+        : globalExposureDuration;
 
       let statusDescription = '';
       if (headCheckFailed) {
