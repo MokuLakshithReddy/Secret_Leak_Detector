@@ -382,6 +382,44 @@ export async function runGitHookIntegrationTests(): Promise<void> {
     console.log('');
   }
 
+  // ── Test group 13: Electron-pinned runtime execution with ELECTRON_RUN_AS_NODE=1 ──
+  if (bash) {
+    console.log('── Test group 13: Electron-pinned runtime execution ─────────');
+    const group13Repo = createTempRepo();
+    const fakeElectronDir = path.join(group13Repo, 'mock-electron-bin');
+    fs.mkdirSync(fakeElectronDir, { recursive: true });
+
+    // Mock Electron binary that executes scripts ONLY when ELECTRON_RUN_AS_NODE=1 is present
+    const mockElectronPath = path.join(fakeElectronDir, 'electron-runner').replace(/\\/g, '/');
+    fs.writeFileSync(
+      mockElectronPath,
+      `#!/bin/sh
+if [ "$ELECTRON_RUN_AS_NODE" != "1" ]; then
+  echo "Error: Electron binary invoked without ELECTRON_RUN_AS_NODE=1" >&2
+  exit 1
+fi
+exec node "$@"
+`,
+      { mode: 0o755 }
+    );
+
+    // Install hook pinned to the mock electron runner
+    const electronHook = buildPreCommitHook('HIGH', cliPath.replace(/\\/g, '/'), mockElectronPath);
+    const hookPath13 = path.join(group13Repo, '.git', 'hooks', 'pre-commit');
+    fs.writeFileSync(hookPath13, electronHook, { mode: 0o755 });
+
+    // Add safe file and commit
+    fs.writeFileSync(path.join(group13Repo, 'safe.ts'), 'export const cleanValue = 42;\n', 'utf8');
+    execFileSync('git', ['add', 'safe.ts'], { cwd: group13Repo, stdio: 'pipe' });
+
+    const electronCommit = tryCommit(group13Repo, 'commit with electron-pinned runtime');
+    assert(electronCommit.status === 0, 'Clean commit allowed using Electron-pinned runtime with ELECTRON_RUN_AS_NODE=1');
+    assert(countCommits(group13Repo) === 1, 'Commit recorded successfully');
+
+    try { fs.rmSync(group13Repo, { recursive: true, force: true }); } catch {}
+    console.log('');
+  }
+
   // ── Cleanup ───────────────────────────────────────────────────────────────
   try { fs.rmSync(repoDir, { recursive: true, force: true }); } catch { /* ignore */ }
 

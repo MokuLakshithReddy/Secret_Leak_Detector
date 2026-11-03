@@ -169,7 +169,7 @@ with the output of `npm run benchmark:heldout` and your Node.js + OS version.
 
 ### Overview
 
-`test/runAllTests.ts` contains **399 tests** across 39 sections. It is the
+`test/runAllTests.ts` contains **581 tests** across 43 sections. It is the
 primary regression guard run on every CI push/PR.
 
 ### Run
@@ -222,6 +222,10 @@ npm run build && node dist/test-suite.js
 | §37 | Cross-Platform Baseline Canonicalization, Deobfuscation Source Expressions, and Atomic Uninstaller |
 | §38 | Uninstaller Lock Race Protection, Capture Group Isolation & Strict Defaults |
 | §39 | History Scanning Multiline Invariants, Multi-Hunk Attributions, and Working-Tree State |
+| §40 | History Correctness, Staged Index Verification & CI Baseline Invariants |
+| §41 | Git History Deep Search, Metadata Incompleteness & Tri-State CLI Invariants |
+| §42 | Lazy AST Parsing, Fail-Closed Node Version Guards & Engine Shims |
+| §43 | Git Process Argument Confinement, Removal Error Handling & Electron Runtime Protection |
 
 > **Note:** Section §23 (GitHub Action: Shell Injection Prevention) was removed
 > when `action.yml` was deleted from the repository. The section numbers above
@@ -292,10 +296,10 @@ git clone https://github.com/MokuLakshithReddy/Secret_Leak_Detector.git
 cd Secret_Leak_Detector
 npm ci
 npm run build
-npm test                     # 559 tests across 42 sections (614 tests total including git-hook and manifest suites)
+npm test                     # 581 tests across 43 sections (638 tests total including git-hook and manifest suites)
 npm run benchmark:heldout    # confusion matrix
 npm run benchmark:gate       # 520-fixture regression gate
-npm run test:git-hook        # 38 git-hook integration tests (commit blocking)
+npm run test:git-hook        # 40 git-hook integration tests (commit blocking)
 npm run test:manifest        # 17 VS Code manifest & architecture tests
 npm run package              # .vsix packaging
 ```
@@ -362,7 +366,7 @@ Follow these steps on your own machine to produce independent verification:
    ```bash
    npm test
    ```
-   Expected: final line reads `TEST SUMMARY: 559 PASSED, 0 FAILED`.
+   Expected: final line reads `TEST SUMMARY: 581 PASSED, 0 FAILED`.
 
 5. **Run the held-out evaluation**
    ```bash

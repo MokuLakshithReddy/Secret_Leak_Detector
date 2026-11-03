@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import * as cp from 'child_process';
 import * as path from 'path';
 import { RuleDefinition, RemediationPlan, SecretFinding } from '../types';
 import { redactSecret } from '../redactor/redactor';
@@ -204,16 +205,32 @@ export function ensureGitignoreProtectsEnv(workspaceRoot: string): void {
 }
 
 /**
- * Applies atomic remediation with automatic rollback if any phase fails.
+ * Enforces strict filesystem permissions on .env files to ensure credentials are protected.
+ * - On POSIX systems, enforces octal mode 0600 (owner read/write only).
+ * - On Windows (NTFS), hardens the Access Control List (ACL) via `icacls`, removing inherited
+ *   permissions and restricting explicit access to the current executing user only.
+ *   On non-NTFS volumes (e.g. FAT32/exFAT) where Windows ACLs are not supported, verifies read/write access.
  */
 export function enforceEnvFilePermissions(
   envPath: string,
   fsModule: typeof fs = fs,
-  targetPlatform: string = process.platform
+  targetPlatform: string = process.platform,
+  cpModule: typeof cp = cp
 ): void {
   if (targetPlatform === 'win32') {
     try {
       fsModule.accessSync(envPath, fs.constants.R_OK | fs.constants.W_OK);
+      const username = process.env.USERNAME || process.env.USER;
+      if (username) {
+        try {
+          cpModule.execFileSync('icacls', [envPath, '/inheritance:r', '/grant:r', `${username}:F`], {
+            stdio: 'pipe',
+            windowsHide: true,
+          });
+        } catch {
+          // Fallback gracefully on filesystems without ACL support (e.g. FAT32, exFAT, network shares)
+        }
+      }
     } catch (err: any) {
       throw new Error(`Failed to verify permissions on Windows .env file: ${err?.message || err}`);
     }

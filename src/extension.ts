@@ -90,9 +90,9 @@ export function activate(context: vscode.ExtensionContext) {
     }
   } catch {}
 
-  // Helper to ensure ast-parser.js exists in global storage only when needed (e.g. hook pinning/install),
-  // avoiding eager synchronous 3.4MB file copy overhead on extension activation.
-  function ensureGlobalAstParser(): void {
+  // Helper to ensure ast-parser.js exists in global storage asynchronously only when needed
+  // (e.g. hook pinning/install on an actual Git repo), avoiding eager synchronous 3.4MB I/O.
+  async function ensureGlobalAstParser(): Promise<void> {
     try {
       const globalStorage = context.globalStorageUri.fsPath;
       const astParserSrc = path.join(context.extensionPath, 'dist', 'ast-parser.js');
@@ -100,17 +100,17 @@ export function activate(context: vscode.ExtensionContext) {
       if (fs.existsSync(astParserSrc)) {
         let needsCopy = true;
         if (fs.existsSync(stableAstParser)) {
-          const srcStat = fs.statSync(astParserSrc);
-          const destStat = fs.statSync(stableAstParser);
+          const srcStat = await fs.promises.stat(astParserSrc);
+          const destStat = await fs.promises.stat(stableAstParser);
           if (srcStat.size === destStat.size && srcStat.mtimeMs <= destStat.mtimeMs) {
             needsCopy = false;
           }
         }
         if (needsCopy) {
           if (!fs.existsSync(globalStorage)) {
-            fs.mkdirSync(globalStorage, { recursive: true });
+            await fs.promises.mkdir(globalStorage, { recursive: true });
           }
-          fs.copyFileSync(astParserSrc, stableAstParser);
+          await fs.promises.copyFile(astParserSrc, stableAstParser);
         }
       }
     } catch {}
@@ -118,7 +118,6 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Re-pin pre-commit hooks in all workspace folders that are Git repositories
   async function pinHooksInAllFolders(cli: string) {
-    ensureGlobalAstParser();
     const folders = vscode.workspace.workspaceFolders || [];
     const blockCommits = getConfig().get<boolean>('blockGitCommits', true);
     const configuredFailOn = resolveFailOn(getConfig().get<string>('failOn', DEFAULT_FAIL_ON));
@@ -139,10 +138,15 @@ export function activate(context: vscode.ExtensionContext) {
     } catch {}
 
     const allHooks = new Set<string>(existingHooks);
+    let parserEnsured = false;
 
     for (const folder of folders) {
       const gs = new GitService(folder.uri.fsPath, (msg) => outputChannel.appendLine(msg));
       if (await gs.isGitRepo()) {
+        if (!parserEnsured) {
+          await ensureGlobalAstParser();
+          parserEnsured = true;
+        }
         await gs.ensureHookIsPinned(cli, process.execPath, blockCommits, configuredFailOn, disallowInline, failOnSkipped).catch(() => {});
         try {
           const hookFile = await gs.getHookPath();
@@ -476,7 +480,7 @@ export function activate(context: vscode.ExtensionContext) {
       const configuredFailOn = resolveFailOn(getConfig().get<string>('failOn', DEFAULT_FAIL_ON));
       const disallowInline = getConfig().get<boolean>('disallowInlineIgnore', true);
       const failOnSkipped = getConfig().get<boolean>('failOnSkipped', false);
-      ensureGlobalAstParser();
+      await ensureGlobalAstParser();
       const result = await gitService.installPreCommitHook(
         activeCliPath,
         process.execPath,
@@ -519,7 +523,7 @@ export function activate(context: vscode.ExtensionContext) {
       }
       const blockCommits = getConfig().get<boolean>('blockGitCommits', true);
       const configuredFailOn = resolveFailOn(getConfig().get<string>('failOn', DEFAULT_FAIL_ON));
-      ensureGlobalAstParser();
+      await ensureGlobalAstParser();
       const result = await gitService.installPreCommitHook(
         activeCliPath,
         process.execPath,

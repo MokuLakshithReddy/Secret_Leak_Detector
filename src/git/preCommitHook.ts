@@ -67,7 +67,7 @@ if [ -n "$PINNED_CLI" ] && [ -f "$PINNED_CLI" ]; then
     echo "   Ensure 'node' is in your PATH or configure your Git client environment."
     exit 127
   fi
-  if ! NODE_MAJOR=$("$NODE_CMD" -p 'process.versions.node.split(".")[0]' 2>/dev/null); then
+  if ! NODE_MAJOR=$(ELECTRON_RUN_AS_NODE=1 "$NODE_CMD" -p 'process.versions.node.split(".")[0]' 2>/dev/null); then
     echo ""
     echo "❌ COMMIT BLOCKED: Cannot determine Node.js version. Commit blocked."
     exit 2
@@ -143,7 +143,7 @@ if [ -n "$SLD_CLI_PATH" ] && [ -f "$SLD_CLI_PATH" ]; then
     echo "   The pre-commit hook requires Node.js (>=18) to execute the scanner."
     exit 127
   fi
-  if ! NODE_MAJOR=$("$NODE_CMD" -p 'process.versions.node.split(".")[0]' 2>/dev/null); then
+  if ! NODE_MAJOR=$(ELECTRON_RUN_AS_NODE=1 "$NODE_CMD" -p 'process.versions.node.split(".")[0]' 2>/dev/null); then
     echo ""
     echo "❌ COMMIT BLOCKED: Cannot determine Node.js version. Commit blocked."
     exit 2
