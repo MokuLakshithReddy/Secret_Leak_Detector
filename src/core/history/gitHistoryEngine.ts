@@ -554,45 +554,109 @@ export class GitHistoryEngine {
   /**
    * Establishes whether a genuine removal commit exists between lastSeenSha and HEAD.
    */
+  /**
+   * Establishes whether a genuine removal commit exists between lastSeenSha and HEAD
+   * using secure pattern-file matching without passing credentials or pattern fragments
+   * in command-line arguments. Distinguishes clean no-match conditions from operational
+   * Git execution errors.
+   */
   public async findRemovalCommit(secret: string, lastSeenSha: string): Promise<GitCommitInfo | undefined> {
+    const patternLine = this.pickDistinctiveSearchLine(secret);
+    if (!patternLine) return undefined;
+
+    // List commits chronologically between lastSeenSha and HEAD without credentials in arguments
+    const { stdout: revsOut } = await this.execGit([
+      'log',
+      '--reverse',
+      '--format=%H|%an|%ad|%s',
+      '--date=iso',
+      `${lastSeenSha}..HEAD`,
+    ]);
+    const lines = revsOut.trim().split('\n').filter(Boolean);
+    if (lines.length === 0) return undefined;
+
+    const commitList: Array<{ sha: string; author: string; date: string; message: string }> = [];
+    for (const line of lines) {
+      const parts = line.split('|');
+      if (parts.length >= 4) {
+        commitList.push({
+          sha: parts[0],
+          author: parts[1] || 'Unknown',
+          date: parts[2] || new Date().toISOString(),
+          message: parts.slice(3).join('|') || '',
+        });
+      }
+    }
+    if (commitList.length === 0) return undefined;
+
+    const pat = createSecurePatternFile(patternLine);
+    const normSecret = secret.replace(/\r\n/g, '\n');
+
     try {
-      const patternLine = this.pickDistinctiveSearchLine(secret);
-      if (!patternLine) return undefined;
-      const pat = createSecurePatternFile(patternLine);
-      try {
-        const { stdout } = await this.execGit([
-          'log',
-          `-S${patternLine}`,
-          '--reverse',
-          '--format=%H|%an|%ad|%s',
-          '--date=iso',
-          `${lastSeenSha}..HEAD`,
-        ]);
-        const lines = stdout.trim().split('\n').filter(Boolean);
-        for (const line of lines) {
-          const parts = line.split('|');
-          if (parts.length >= 4) {
-            const sha = parts[0];
-            const inCommit = await this.execGit(['grep', '-F', '-l', '-f', pat.filePath, sha])
-              .then(() => true)
-              .catch(() => false);
-            if (!inCommit) {
-              return {
-                sha,
-                author: parts[1] || 'Unknown',
-                date: parts[2] || new Date().toISOString(),
-                message: parts.slice(3).join('|') || '',
-              };
+      // Chunk commits to check presence efficiently with git grep using the pattern file
+      const chunkSize = 40;
+      const commitsContainingSecret = new Set<string>();
+
+      for (let i = 0; i < commitList.length; i += chunkSize) {
+        const chunk = commitList.slice(i, i + chunkSize);
+        const chunkShas = chunk.map((c) => c.sha);
+        try {
+          const { stdout: grepOut } = await this.execGit(
+            ['grep', '-F', '-l', '-f', pat.filePath, ...chunkShas],
+            { maxBuffer: 15 * 1024 * 1024, encoding: 'utf8' }
+          );
+          const matches = grepOut.trim().split('\n').filter(Boolean);
+          for (const m of matches) {
+            const colonIdx = m.indexOf(':');
+            if (colonIdx !== -1) {
+              const cSha = m.substring(0, colonIdx);
+              const cPath = m.substring(colonIdx + 1);
+              if (secret.includes('\n')) {
+                try {
+                  const { stdout: content } = await this.execGit(
+                    ['show', `${cSha}:${cPath}`],
+                    { maxBuffer: 10 * 1024 * 1024, encoding: 'utf8' }
+                  );
+                  if (content.replace(/\r\n/g, '\n').includes(normSecret)) {
+                    commitsContainingSecret.add(cSha);
+                  }
+                } catch (showErr: any) {
+                  throw new Error(`Failed to inspect blob '${cSha}:${cPath}': ${showErr?.message || showErr}`);
+                }
+              } else {
+                commitsContainingSecret.add(cSha);
+              }
             }
           }
+        } catch (err: any) {
+          if (err && err.code === 1) {
+            // Exit code 1 indicates normal no-match condition in git grep
+            continue;
+          }
+          // Do NOT treat unexpected Git errors as absence! Propagate as operational error.
+          throw new Error(`Git error during removal commit grep: ${err?.message || err}`);
         }
-      } finally {
-        pat.cleanup();
       }
-    } catch {
+
+      // lastSeenSha is known to contain the secret.
+      // Walk forward chronologically through commits between lastSeenSha and HEAD.
+      let previousHadSecret = true;
+      for (const commit of commitList) {
+        const containsSecret = commitsContainingSecret.has(commit.sha);
+        if (previousHadSecret && !containsSecret) {
+          return {
+            sha: commit.sha,
+            author: commit.author,
+            date: commit.date,
+            message: commit.message,
+          };
+        }
+        previousHadSecret = containsSecret;
+      }
       return undefined;
+    } finally {
+      pat.cleanup();
     }
-    return undefined;
   }
 
   /**
@@ -800,10 +864,17 @@ export class GitHistoryEngine {
       const introDate = new Date(introducedCommit.date).getTime();
       const lastSeenCommit = parsedCommits[0];
       let removedCommit: GitCommitInfo | undefined;
+      let removalCheckFailed = false;
+      let removalError: string | undefined;
       let endDate = Date.now();
 
       if (isPresentInHead === false) {
-        removedCommit = await this.findRemovalCommit(secret, lastSeenCommit.sha);
+        try {
+          removedCommit = await this.findRemovalCommit(secret, lastSeenCommit.sha);
+        } catch (remErr: any) {
+          removalCheckFailed = true;
+          removalError = remErr?.message || String(remErr);
+        }
         if (removedCommit) {
           endDate = new Date(removedCommit.date).getTime();
         } else {
@@ -828,6 +899,9 @@ export class GitHistoryEngine {
       if (failedMetadataCount > 0) {
         statusDescription += ` [INCOMPLETE METADATA: ${failedMetadataCount} of ${commitShas.length} metadata request(s) failed: ${metadataError}]`;
       }
+      if (removalCheckFailed) {
+        statusDescription += ` [INCOMPLETE REMOVAL VERIFICATION: ${removalError}]`;
+      }
 
       let inWorkingTree: boolean | 'UNKNOWN' = false;
       let wtCheckFailed = false;
@@ -846,7 +920,7 @@ export class GitHistoryEngine {
       }
 
       const finalSearchStatus: GitExposure['searchStatus'] =
-        (failedMetadataCount > 0 || headCheckFailed || wtCheckFailed)
+        (failedMetadataCount > 0 || headCheckFailed || wtCheckFailed || removalCheckFailed)
           ? 'SEARCH_INCOMPLETE'
           : 'FOUND';
 

@@ -2970,7 +2970,7 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
 
       // 1. Hook contains fail-closed Node version verification
       const hookScript = buildPreCommitHook();
-      assert(hookScript.includes('NODE_MAJOR=$("$NODE_CMD" -p \'process.versions.node.split(".")[0]\' 2>/dev/null)'), 'Hook checks Node version using fail-closed process.versions.node');
+      assert(hookScript.includes('NODE_MAJOR=$(ELECTRON_RUN_AS_NODE=1 "$NODE_CMD" -p \'process.versions.node.split(".")[0]\' 2>/dev/null)'), 'Hook checks Node version using fail-closed process.versions.node with ELECTRON_RUN_AS_NODE=1');
       assert(hookScript.includes('Cannot determine Node.js version. Commit blocked.'), 'Hook blocks when Node version query fails');
       assert(hookScript.includes('Invalid Node.js version. Commit blocked.'), 'Hook blocks on non-numeric or empty Node version');
       assert(hookScript.includes('Node.js 18+ required'), 'Hook blocks on Node version < 18');
@@ -3008,7 +3008,7 @@ fi
           const script = `
 NODE_CMD='${mockNode}'
 export MOCK_MODE='${mode}'
-if ! NODE_MAJOR=$("$NODE_CMD" -p 'process.versions.node.split(".")[0]' 2>/dev/null); then
+if ! NODE_MAJOR=$(ELECTRON_RUN_AS_NODE=1 "$NODE_CMD" -p 'process.versions.node.split(".")[0]' 2>/dev/null); then
   echo "FAIL_DETERMINE"
   exit 2
 fi
@@ -3118,6 +3118,208 @@ export function getFullName(user: UserProfile): string {
       assert(!activateBody.includes('ensureGlobalAstParser()'), 'activate() does not eagerly invoke ensureGlobalAstParser()');
       assert(!activateBody.includes('ast-parser.js'), 'activate() does not copy ast-parser.js during activation');
       assert(extensionSrc.includes('function ensureGlobalAstParser'), 'extension.ts defines ensureGlobalAstParser for on-demand copying');
+    }
+
+    // --- 43. Git Process Argument Confinement, Removal Error Handling & Electron Runtime Protection ---
+    console.log('\n--- 43. Git Process Argument Confinement, Removal Error Handling & Electron Runtime Protection ---');
+    {
+      const { GitHistoryEngine } = require('../src/core/history/gitHistoryEngine');
+      const { enforceEnvFilePermissions } = require('../src/core/remediation/remediationEngine');
+      const { buildPreCommitHook } = require('../src/git/preCommitHook');
+      const { execFileSync } = require('child_process');
+      const fromHex = (h: string) => Buffer.from(h, 'hex').toString('utf8');
+
+      // 1. Process Argument Confinement & Safe Removal Commit Attribution
+      const sec43Repo = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-sec43-repo-'));
+      try {
+        execFileSync('git', ['init', sec43Repo]);
+        execFileSync('git', ['-C', sec43Repo, 'config', 'user.name', 'Arg Sniffer Tester']);
+        execFileSync('git', ['-C', sec43Repo, 'config', 'user.email', 'argtester@test.com']);
+
+        // 40 chars GitHub token
+        const secretToken = fromHex('6768705f313233343536373839303132333435363738393031323334353637383930313233343536');
+
+        // Commit 1: introduce secret
+        fs.writeFileSync(path.join(sec43Repo, 'token.ts'), `export const key = "${secretToken}";\n`, 'utf8');
+        execFileSync('git', ['-C', sec43Repo, 'add', 'token.ts']);
+        execFileSync('git', ['-C', sec43Repo, 'commit', '-m', 'feat: add token']);
+
+        // Commit 2: edit comment, keep secret
+        fs.writeFileSync(path.join(sec43Repo, 'token.ts'), `// updated comment\nexport const key = "${secretToken}";\n`, 'utf8');
+        execFileSync('git', ['-C', sec43Repo, 'add', 'token.ts']);
+        execFileSync('git', ['-C', sec43Repo, 'commit', '-m', 'docs: update comment']);
+        const c2Sha = execFileSync('git', ['-C', sec43Repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+
+        // Commit 3: remove secret
+        fs.writeFileSync(path.join(sec43Repo, 'token.ts'), `export const key = process.env.KEY;\n`, 'utf8');
+        execFileSync('git', ['-C', sec43Repo, 'add', 'token.ts']);
+        execFileSync('git', ['-C', sec43Repo, 'commit', '-m', 'fix: remove secret from HEAD']);
+        const c3Sha = execFileSync('git', ['-C', sec43Repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+
+        // Commit 4: additional clean work
+        fs.writeFileSync(path.join(sec43Repo, 'readme.md'), `# Docs\n`, 'utf8');
+        execFileSync('git', ['-C', sec43Repo, 'add', 'readme.md']);
+        execFileSync('git', ['-C', sec43Repo, 'commit', '-m', 'docs: add readme']);
+
+        // Sniff all Git command arguments
+        class ArgumentSnifferEngine extends GitHistoryEngine {
+          public loggedArgs: string[][] = [];
+          protected override async execGit(args: string[], options: any = {}): Promise<{ stdout: any; stderr: any }> {
+            this.loggedArgs.push(args);
+            return super.execGit(args, options);
+          }
+        }
+
+        const sniffer = new ArgumentSnifferEngine(sec43Repo);
+        const removed = await sniffer.findRemovalCommit(secretToken, c2Sha);
+        assert(removed !== undefined, 'findRemovalCommit locates genuine removal commit');
+        assert(removed?.sha === c3Sha, 'Removal commit SHA correctly identified as commit 3');
+
+        // Verify credentials NEVER appear in any spawned process argument
+        const patternLine = sniffer.pickDistinctiveSearchLine(secretToken);
+        for (const args of sniffer.loggedArgs) {
+          const hasSecretInArg = args.some((a: string) => a.includes(secretToken) || a.includes(patternLine));
+          assert(!hasSecretInArg, `Git process arguments do not expose secret or patternLine: [${args.join(' ')}]`);
+          assert(!args.some((a: string) => a.startsWith('-S')), `Git process arguments do not use -S flag`);
+        }
+
+        // 2. Operational Git error during removal detection: do NOT treat as absence!
+        class FailingGrepRemovalEngine extends GitHistoryEngine {
+          public failGrepOnRemoval = false;
+          private inRemoval = false;
+          public override async findRemovalCommit(secret: string, lastSeenSha: string): Promise<GitCommitInfo | undefined> {
+            if (this.failGrepOnRemoval) {
+              this.inRemoval = true;
+              try {
+                return await super.findRemovalCommit(secret, lastSeenSha);
+              } finally {
+                this.inRemoval = false;
+              }
+            }
+            return super.findRemovalCommit(secret, lastSeenSha);
+          }
+          protected override async execGit(args: string[], options: any = {}): Promise<{ stdout: any; stderr: any }> {
+            if (this.inRemoval && args[0] === 'grep') {
+              const err: any = new Error('fatal: simulated packfile corruption during git grep');
+              err.code = 128;
+              throw err;
+            }
+            return super.execGit(args, options);
+          }
+        }
+
+        const failingEngine = new FailingGrepRemovalEngine(sec43Repo);
+        failingEngine.failGrepOnRemoval = true;
+        let findRemovalThrew = false;
+        try {
+          await failingEngine.findRemovalCommit(secretToken, c2Sha);
+        } catch (err: any) {
+          findRemovalThrew = true;
+          assert(err.message.includes('fatal: simulated packfile corruption'), 'findRemovalCommit throws on operational Git error');
+        }
+        assert(findRemovalThrew === true, 'findRemovalCommit refuses to treat Git execution errors as clean absence');
+
+        const failingTrace = await failingEngine.traceSecret(secretToken);
+        assert(failingTrace.searchStatus === 'SEARCH_INCOMPLETE', 'traceSecret reports SEARCH_INCOMPLETE when removal detection encounters operational failure');
+        assert(failingTrace.isPresentInHistory === true, 'traceSecret preserves isPresentInHistory: true when removal detection fails');
+
+        // 3. Electron-pinned runtime version probe execution
+        const sh = findPosixShell();
+        if (sh) {
+          const mockElectronDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-mock-electron-'));
+          const mockElectron = path.join(mockElectronDir, 'mock_electron.sh').replace(/\\/g, '/');
+          fs.writeFileSync(
+            mockElectron,
+            `#!/bin/sh
+if [ "$ELECTRON_RUN_AS_NODE" != "1" ]; then
+  echo "Error: Electron binary executed without ELECTRON_RUN_AS_NODE=1" >&2
+  exit 1
+fi
+echo "20"
+exit 0
+`,
+            { mode: 0o755 }
+          );
+
+          try {
+            const electronProbeScript = `
+NODE_CMD='${mockElectron}'
+if ! NODE_MAJOR=$(ELECTRON_RUN_AS_NODE=1 "$NODE_CMD" -p 'process.versions.node.split(".")[0]' 2>/dev/null); then
+  echo "FAIL_DETERMINE"
+  exit 2
+fi
+echo "SUCCESS:$NODE_MAJOR"
+exit 0
+`;
+            const electronProbeRes = cp.spawnSync(sh, ['-c', electronProbeScript], { encoding: 'utf8' });
+            assert(electronProbeRes.status === 0, 'Electron-pinned runtime probe exits 0 with ELECTRON_RUN_AS_NODE=1');
+            assert(electronProbeRes.stdout.includes('SUCCESS:20'), 'Electron-pinned runtime probe outputs SUCCESS:20');
+
+            // Without ELECTRON_RUN_AS_NODE=1, probe fails
+            const failedProbeScript = `
+NODE_CMD='${mockElectron}'
+export ELECTRON_RUN_AS_NODE=""
+if ! NODE_MAJOR=$("$NODE_CMD" -p 'process.versions.node.split(".")[0]' 2>/dev/null); then
+  echo "FAIL_NO_ENV"
+  exit 2
+fi
+echo "SUCCESS:$NODE_MAJOR"
+exit 0
+`;
+            const failedProbeRes = cp.spawnSync(sh, ['-c', failedProbeScript], { encoding: 'utf8' });
+            assert(failedProbeRes.status === 2, 'Electron-pinned runtime without ELECTRON_RUN_AS_NODE=1 fails probe');
+            assert(failedProbeRes.stdout.includes('FAIL_NO_ENV'), 'Probe correctly blocks when ELECTRON_RUN_AS_NODE is absent');
+          } finally {
+            try { fs.rmSync(mockElectronDir, { recursive: true, force: true }); } catch {}
+          }
+        }
+
+        // 4. Windows ACL Hardening in enforceEnvFilePermissions
+        const mockEnvFile = path.join(sec43Repo, '.env');
+        fs.writeFileSync(mockEnvFile, 'SECRET="val"\n', 'utf8');
+
+        let icaclsInvoked = false;
+        let icaclsArgs: string[] = [];
+        const mockCp = {
+          execFileSync: (cmd: string, args: string[]) => {
+            if (cmd === 'icacls') {
+              icaclsInvoked = true;
+              icaclsArgs = args;
+            }
+            return Buffer.from('');
+          }
+        };
+
+        enforceEnvFilePermissions(mockEnvFile, fs, 'win32', mockCp as any);
+        assert(icaclsInvoked === true, 'enforceEnvFilePermissions executes icacls on win32');
+        assert(icaclsArgs.includes('/inheritance:r'), 'icacls invocation removes inherited ACLs');
+        assert(icaclsArgs.some((a: string) => a.startsWith('/grant:r')), 'icacls invocation explicitly grants current user permissions');
+
+        // Graceful fallback when icacls fails (non-NTFS filesystem)
+        const failingCp = {
+          execFileSync: () => {
+            throw new Error('The volume does not support ACLs (FAT32/exFAT)');
+          }
+        };
+        enforceEnvFilePermissions(mockEnvFile, fs, 'win32', failingCp as any);
+        assert(true, 'enforceEnvFilePermissions tolerates non-NTFS volumes gracefully');
+
+        // 5. Async and deferred ensureGlobalAstParser in extension.ts
+        const extSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'extension.ts'), 'utf8');
+        assert(extSrc.includes('async function ensureGlobalAstParser(): Promise<void>'), 'ensureGlobalAstParser is asynchronous');
+        assert(!extSrc.includes('fs.copyFileSync(astParserSrc, stableAstParser);'), 'ast-parser.js is not copied synchronously in extension.ts');
+        const pinStart = extSrc.indexOf('async function pinHooksInAllFolders');
+        const pinEnd = extSrc.indexOf('if (fs.existsSync(activeCliPath))', pinStart);
+        const pinHooksFunc = extSrc.slice(pinStart, pinEnd);
+        const isGitRepoIdx = pinHooksFunc.indexOf('await gs.isGitRepo()');
+        const parserEnsureIdx = pinHooksFunc.indexOf('await ensureGlobalAstParser()');
+        assert(isGitRepoIdx !== -1 && parserEnsureIdx !== -1, 'Both isGitRepo and ensureGlobalAstParser present in pinHooksInAllFolders');
+        assert(parserEnsureIdx > isGitRepoIdx, 'ensureGlobalAstParser is deferred until AFTER isGitRepo() confirms a Git repo exists');
+      } finally {
+        try {
+          fs.rmSync(sec43Repo, { recursive: true, force: true });
+        } catch {}
+      }
     }
 
   console.log('\n============================================================');
