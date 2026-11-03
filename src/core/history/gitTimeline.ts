@@ -44,6 +44,7 @@ export interface GitExposureGraph {
   summary: {
     totalExposedCommits: number;
     introducedCommit: string;
+    lastSeenCommit?: string;
     removedCommit?: string;
     durationDays: number;
     branchesContaminated: string[];
@@ -55,6 +56,7 @@ export interface ExposureTimelineReport {
   secretRedacted: string;
   events: GitTimelineEvent[];
   firstIntroducedDate?: string;
+  lastSeenDate?: string;
   removalDate?: string;
   totalExposureDays: number;
   currentStatus: 'ACTIVE_IN_HEAD' | 'REMOVED_FROM_HEAD_PRESENT_IN_HISTORY' | 'CLEAN_UNCOMMITTED' | 'NOT_FOUND' | 'PARTIAL_HISTORY' | 'SEARCH_INCOMPLETE' | 'ERROR';
@@ -337,14 +339,6 @@ export class GitTimelineEngine {
       let eventType: GitTimelineEvent['eventType'] = 'MODIFIED';
       if (i === 0) {
         eventType = 'INTRODUCED';
-      } else if (i === lines.length - 1) {
-        let inHead: boolean | 'UNKNOWN' = 'UNKNOWN';
-        try {
-          inHead = await this.gitHistory.isSecretInHead(secret);
-        } catch {
-          inHead = 'UNKNOWN';
-        }
-        eventType = inHead === true ? 'MODIFIED' : inHead === false ? 'REMOVED' : 'MODIFIED';
       } else if (isMergeCommit) {
         eventType = 'MERGED_IN';
       }
@@ -391,10 +385,37 @@ export class GitTimelineEngine {
         : 'CLEAN_UNCOMMITTED';
 
     const firstDateMs = firstDate ? firstDate.getTime() : Date.now();
+    const isPositivelyRemoved = isPresentInHead === false && currentStatus === 'REMOVED_FROM_HEAD_PRESENT_IN_HISTORY';
+    let removalCommitSha: string | undefined;
+    let removalCommitDate: string | undefined;
+
+    if (isPositivelyRemoved && lastEvent) {
+      const actualRemoval = await this.gitHistory.findRemovalCommit(secret, lastEvent.commitSha);
+      if (actualRemoval) {
+        removalCommitSha = actualRemoval.sha;
+        removalCommitDate = actualRemoval.date;
+        const removalDateMs = new Date(actualRemoval.date).getTime();
+        const daysToRemoval = Math.max(0, Math.round((removalDateMs - firstDateMs) / (1000 * 60 * 60 * 24)));
+        events.push({
+          eventType: 'REMOVED',
+          commitSha: actualRemoval.sha,
+          authorName: actualRemoval.author,
+          authorEmail: '',
+          date: actualRemoval.date,
+          commitMessage: actualRemoval.message,
+          isMergeCommit: false,
+          parentShas: [lastEvent.commitSha],
+          branches: [],
+          exposureDaysSoFar: daysToRemoval,
+        });
+      }
+    }
+
+    const lastEventOrRemoval = events[events.length - 1];
     const lastDateMs =
       currentStatus === 'ACTIVE_IN_HEAD'
         ? Date.now()
-        : new Date(lastEvent?.date || Date.now()).getTime();
+        : new Date(lastEventOrRemoval?.date || Date.now()).getTime();
 
     const totalExposureDays = Math.max(
       0,
@@ -469,15 +490,14 @@ export class GitTimelineEngine {
       }
     }
 
-    const isPositivelyRemoved = isPresentInHead === false && currentStatus === 'REMOVED_FROM_HEAD_PRESENT_IN_HISTORY';
-
     const graph: GitExposureGraph = {
       nodes,
       edges,
       summary: {
-        totalExposedCommits: events.length,
+        totalExposedCommits: events.filter((e) => e.eventType !== 'REMOVED').length,
         introducedCommit: events[0]?.commitSha || '',
-        removedCommit: isPositivelyRemoved ? lastEvent?.commitSha : undefined,
+        lastSeenCommit: lastEvent?.commitSha,
+        removedCommit: removalCommitSha,
         durationDays: totalExposureDays,
         branchesContaminated: Array.from(allReachableBranches),
         isPushedToRemote,
@@ -488,7 +508,8 @@ export class GitTimelineEngine {
       secretRedacted: redactedSecret,
       events,
       firstIntroducedDate: firstDate?.toISOString(),
-      removalDate: isPositivelyRemoved ? lastEvent?.date : undefined,
+      lastSeenDate: lastEvent?.date,
+      removalDate: removalCommitDate,
       totalExposureDays,
       currentStatus,
       reachableBranches: Array.from(allReachableBranches),

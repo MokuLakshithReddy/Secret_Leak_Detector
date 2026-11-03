@@ -206,6 +206,31 @@ export function ensureGitignoreProtectsEnv(workspaceRoot: string): void {
 /**
  * Applies atomic remediation with automatic rollback if any phase fails.
  */
+export function enforceEnvFilePermissions(
+  envPath: string,
+  fsModule: typeof fs = fs,
+  targetPlatform: string = process.platform
+): void {
+  if (targetPlatform === 'win32') {
+    try {
+      fsModule.accessSync(envPath, fs.constants.R_OK | fs.constants.W_OK);
+    } catch (err: any) {
+      throw new Error(`Failed to verify permissions on Windows .env file: ${err?.message || err}`);
+    }
+  } else {
+    try {
+      fsModule.chmodSync(envPath, 0o600);
+    } catch (err: any) {
+      throw new Error(`Failed to chmod .env to 0600: ${err?.message || err}`);
+    }
+    const stat = fsModule.statSync(envPath);
+    const mode = stat.mode & 0o777;
+    if ((mode & 0o077) !== 0) {
+      throw new Error(`Permission enforcement failed: .env file mode is 0o${mode.toString(8)}, expected 0o600`);
+    }
+  }
+}
+
 export function applyControlledRemediation(
   finding: SecretFinding,
   workspaceRoot: string,
@@ -276,10 +301,8 @@ export function applyControlledRemediation(
     if (!isReused) {
       const prefix = envContent.endsWith('\n') || envContent.length === 0 ? '' : '\n';
       fsModule.appendFileSync(envPath, `${prefix}${envLine}`, 'utf8');
-      try {
-        fsModule.chmodSync(envPath, 0o600);
-      } catch {}
     }
+    enforceEnvFilePermissions(envPath, fsModule);
 
     // 4. Update .env.example
     const envExamplePath = path.join(workspaceRoot, '.env.example');

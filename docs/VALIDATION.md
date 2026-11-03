@@ -362,7 +362,7 @@ Follow these steps on your own machine to produce independent verification:
    ```bash
    npm test
    ```
-   Expected: final line reads `TEST SUMMARY: 226 PASSED, 0 FAILED`.
+   Expected: final line reads `TEST SUMMARY: 526 PASSED, 0 FAILED`.
 
 5. **Run the held-out evaluation**
    ```bash

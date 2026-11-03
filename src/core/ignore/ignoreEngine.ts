@@ -23,13 +23,16 @@ export const BINARY_EXTENSIONS = new Set([
   '.wasm', '.pkl', '.npy', '.parquet', '.onnx', '.safetensors',
 ]);
 
-export const DEFAULT_IGNORE_PATTERNS = [
+export const BUILD_ARTIFACT_PATTERNS = [
+  'dist/**',
+  'build/**',
+];
+
+export const CORE_IGNORE_PATTERNS = [
   '**/node_modules/**',
   'node_modules/**',
   '**/.git/**',
   '.git/**',
-  'dist/**',
-  'build/**',
   '.vscode-test/**',
   '**/.vscode-test/**',
   'package-lock.json',
@@ -41,6 +44,15 @@ export const DEFAULT_IGNORE_PATTERNS = [
   'bun.lockb',
   '**/bun.lockb',
 ];
+
+export const DEFAULT_IGNORE_PATTERNS = [
+  ...CORE_IGNORE_PATTERNS,
+  ...BUILD_ARTIFACT_PATTERNS,
+];
+
+export function getIgnorePatterns(options: { includeBuildArtifacts?: boolean } = {}): string[] {
+  return options.includeBuildArtifacts ? CORE_IGNORE_PATTERNS : DEFAULT_IGNORE_PATTERNS;
+}
 
 const ignorePatternsCache = new Map<string, string[]>();
 

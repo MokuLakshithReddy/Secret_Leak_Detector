@@ -19,6 +19,8 @@ import {
   matchesIgnorePattern,
   loadIgnorePatterns,
   DEFAULT_IGNORE_PATTERNS,
+  CORE_IGNORE_PATTERNS,
+  BUILD_ARTIFACT_PATTERNS,
   BINARY_EXTENSIONS,
   NON_TEXT_EXTENSIONS,
 } from '../core/ignore/ignoreEngine';
@@ -303,11 +305,42 @@ async function runScan(cmdArgs: string[], cwd: string) {
       console.log(`ℹ️  Excluded ${staged.ignoredFiles.length} staged file(s) matching patterns: ${distinctPatterns.join(', ')}`);
     }
   } else {
+    const allowExternalSymlinks = cmdArgs.includes('--allow-external-symlinks');
+    const includeBuildArtifacts = cmdArgs.includes('--scan-build-artifacts') || cmdArgs.includes('--include-build-artifacts');
+
     // Scan directory or single file
     const filesToScan: string[] = [];
     const excludedFiles: { file: string; pattern: string }[] = [];
-    collectFiles(absPath, filesToScan, cwd, userExcludes, new Set(), excludedFiles);
-    filesScanned = filesToScan.length;
+    const traversalErrors: TraversalError[] = [];
+    const fileResult = collectFiles(
+      absPath,
+      filesToScan,
+      cwd,
+      { userExcludes, allowExternalSymlinks, includeBuildArtifacts },
+      new Set(),
+      excludedFiles,
+      traversalErrors
+    );
+    filesScanned = fileResult.files.length;
+
+    if (fileResult.traversalErrors.length > 0) {
+      for (const tErr of fileResult.traversalErrors) {
+        skippedFiles.push({
+          file: path.relative(cwd, tErr.path).replace(/\\/g, '/'),
+          reason: `TRAVERSAL_ERROR (${tErr.operation}): ${tErr.error}`,
+        });
+      }
+      if (!ignoreSkipped) {
+        if (!isJson && !isSarif) {
+          console.error(`\n❌ Error: ${fileResult.traversalErrors.length} file(s) or directory(ies) failed inspection (failing closed for safety):`);
+          for (const tErr of fileResult.traversalErrors) {
+            console.error(`   • [${tErr.operation}] ${tErr.path}: ${tErr.error}`);
+          }
+          console.error('Pass --ignore-skipped or --allow-external-symlinks to bypass unreadable/external files safely.\n');
+        }
+        process.exit(2);
+      }
+    }
 
     if (excludedFiles.length > 0 && !isJson && !isSarif) {
       const distinctPatterns = Array.from(new Set(excludedFiles.map((e) => e.pattern)));
@@ -375,21 +408,7 @@ async function runScan(cmdArgs: string[], cwd: string) {
   }
 
   if (isJson) {
-    // Strip rawSecret, surroundingCode, and redact envFileSnippet to eliminate leaks
-    const safeFindings: any[] = findings.map((f) => {
-      const { rawSecret, ...rest } = f;
-      return {
-        ...rest,
-        evidence: {
-          ...f.evidence,
-          surroundingCode: undefined,
-        },
-        remediation: {
-          ...f.remediation,
-          envFileSnippet: `${f.remediation.envVarName}="[REDACTED]"`,
-        },
-      };
-    });
+    const safeFindings: any[] = findings.map((f) => toSafeJsonFinding(f));
     const scanResult: any = buildScanResult(safeFindings as SecretFinding[], filesScanned, durationMs);
     if (baselineStats) scanResult.baselineStats = baselineStats;
     if (skippedFiles.length > 0) scanResult.skippedFiles = skippedFiles;
@@ -459,13 +478,14 @@ async function runHistory(cmdArgs: string[], cwd: string) {
   if (maxIdx !== -1) {
     const rawVal = cmdArgs[maxIdx + 1];
     const parsed = parseInt(rawVal, 10);
-    if (isNaN(parsed) || parsed <= 0) {
-      fail(`Error: Invalid --max argument '${rawVal}'. Must be a positive integer.`);
+    if (isNaN(parsed) || parsed < 0) {
+      fail(`Error: Invalid --max argument '${rawVal}'. Must be a non-negative integer (0 = unlimited).`);
     }
     maxCommits = parsed;
   }
 
-  console.log(`\n⏳ Scanning Git commit history (last ${maxCommits} commits) for historical leaks...`);
+  const desc = maxCommits === 0 ? 'full commit history' : `last ${maxCommits} commits`;
+  console.log(`\n⏳ Scanning Git commit history (${desc}) for historical leaks...`);
   const historyEngine = new GitHistoryEngine(cwd);
   let findings: SecretFinding[];
   try {
@@ -791,29 +811,32 @@ async function runVerify(cmdArgs: string[], cwd: string) {
   }
 
   const absPath = path.resolve(cwd, targetFile);
-  if (!fs.existsSync(absPath)) {
-    fail(`Error: File does not exist: ${targetFile}`);
-  }
+  const fileExists = fs.existsSync(absPath);
+  let currentFindings: SecretFinding[] = [];
 
-  let skippedReason: string | undefined;
-  const currentFindings = scanFile(absPath, {
-    workspaceRoot: cwd,
-    onSkippedFile: (_p, reason) => {
-      skippedReason = reason;
-    },
-  });
+  if (fileExists) {
+    let skippedReason: string | undefined;
+    currentFindings = scanFile(absPath, {
+      workspaceRoot: cwd,
+      onSkippedFile: (_p, reason) => {
+        skippedReason = reason;
+      },
+    });
 
-  if (skippedReason) {
-    console.error(`\n❌ VERIFICATION INCOMPLETE: Target file '${targetFile}' could not be inspected.`);
-    console.error(`   Reason: ${skippedReason}\n`);
-    process.exit(2);
+    if (skippedReason) {
+      console.error(`\n❌ VERIFICATION INCOMPLETE: Target file '${targetFile}' could not be inspected.`);
+      console.error(`   Reason: ${skippedReason}\n`);
+      process.exit(2);
+    }
+  } else {
+    console.log(`ℹ️  Target file '${targetFile}' is absent from working tree (deleted). Proceeding to Git history verification.`);
   }
 
   console.log('\n============================================================');
   console.log(`🔍 RESCAN VERIFICATION: ${targetFile}`);
   console.log('============================================================');
 
-  if (currentFindings.length > 0) {
+  if (fileExists && currentFindings.length > 0) {
     console.log(`❌ REMAINING EXPOSURES: Found ${currentFindings.length} secret(s) still present:`);
     currentFindings.forEach((f) => {
       console.log(`  • Line ${f.line}: ${f.type} (${f.redactedSecret})`);
@@ -822,7 +845,11 @@ async function runVerify(cmdArgs: string[], cwd: string) {
     process.exit(1);
   }
 
-  console.log('✅ TARGET FILE VERIFIED CLEAN in working tree!');
+  if (fileExists) {
+    console.log('✅ TARGET FILE VERIFIED CLEAN in working tree!');
+  } else {
+    console.log('✅ TARGET FILE CONFIRMED REMOVED from working tree!');
+  }
 
   const verificationEngine = new VerificationEngine(cwd);
   const gitEngine = new GitHistoryEngine(cwd);
@@ -866,7 +893,11 @@ async function runVerify(cmdArgs: string[], cwd: string) {
       console.log(`✅ HEAD AND FULL HISTORY CLEAN: No historical exposures found for '${canonicalTargetRel}' across ${commitCoverageDesc} commit(s).`);
     }
   } else {
-    console.log('Target file contains no active credentials.');
+    if (fileExists) {
+      console.log('Target file contains no active credentials.');
+    } else {
+      console.log('Target file was removed and directory is not a Git repository.');
+    }
   }
 
   console.log('============================================================\n');
@@ -914,31 +945,142 @@ async function runHook(cmdArgs: string[], cwd: string) {
 }
 
 
-function collectFiles(
+export interface TraversalError {
+  path: string;
+  operation: 'realpath' | 'stat' | 'readdir' | 'symlink';
+  error: string;
+}
+
+export interface CollectFilesOptions {
+  userExcludes?: string[];
+  allowExternalSymlinks?: boolean;
+  includeBuildArtifacts?: boolean;
+}
+
+export function toSafeJsonFinding(f: SecretFinding): any {
+  return {
+    id: f.id,
+    fingerprint: f.fingerprint,
+    type: f.type,
+    provider: f.provider,
+    file: f.file,
+    fullPath: f.fullPath,
+    line: f.line,
+    column: f.column,
+    length: f.length,
+    redactedSecret: f.redactedSecret,
+    confidence: f.confidence,
+    entropy: f.entropy,
+    risk: f.risk,
+    status: f.status,
+    detectedAt: f.detectedAt,
+    signals: f.signals || (f.evidence ? f.evidence.items.map((i) => i.description) : []),
+    exampleFix: f.exampleFix || (f.remediation ? f.remediation.replacementCode : ''),
+    riskAssessment: f.riskAssessment
+      ? {
+          score: f.riskAssessment.score,
+          tier: f.riskAssessment.tier,
+          factors: f.riskAssessment.factors,
+          blastRadius: f.riskAssessment.blastRadius,
+          summary: f.riskAssessment.summary,
+        }
+      : undefined,
+    evidence: f.evidence
+      ? {
+          shannonEntropy: f.evidence.shannonEntropy,
+          normalizedEntropy: f.evidence.normalizedEntropy,
+          characterSet: f.evidence.characterSet,
+          items: f.evidence.items,
+          fileContext: f.evidence.fileContext,
+        }
+      : undefined,
+    remediation: f.remediation
+      ? {
+          steps: f.remediation.steps,
+          envVarName: f.remediation.envVarName,
+          envFileSnippet: `${f.remediation.envVarName}="[REDACTED]"`,
+          envExampleSnippet: f.remediation.envExampleSnippet,
+          replacementCode: f.remediation.replacementCode,
+          gitHistoryPurgeCommand: f.remediation.gitHistoryPurgeCommand,
+        }
+      : undefined,
+    gitExposure: f.gitExposure
+      ? {
+          isPresentInHead: f.gitExposure.isPresentInHead,
+          isPresentInHistory: f.gitExposure.isPresentInHistory,
+          isPresentInWorkingTree: f.gitExposure.isPresentInWorkingTree,
+          isSecretInWorkingTree: f.gitExposure.isSecretInWorkingTree,
+          exposureDurationDays: f.gitExposure.exposureDurationDays,
+          branches: f.gitExposure.branches,
+          isRemote: f.gitExposure.isRemote,
+          statusDescription: f.gitExposure.statusDescription,
+          commitCount: f.gitExposure.commitCount,
+          isPartialHistory: f.gitExposure.isPartialHistory,
+          searchStatus: f.gitExposure.searchStatus,
+          introducedCommit: f.gitExposure.introducedCommit,
+          lastModifiedCommit: f.gitExposure.lastModifiedCommit,
+          lastSeenCommit: f.gitExposure.lastSeenCommit,
+          removedCommit: f.gitExposure.removedCommit,
+        }
+      : undefined,
+  };
+}
+
+export function collectFiles(
   currentPath: string,
   fileList: string[],
   rootDir: string,
-  userExcludes: string[] = [],
+  options: CollectFilesOptions = {},
   visitedDirs: Set<string> = new Set<string>(),
-  excludedFiles: { file: string; pattern: string }[] = []
-) {
-  if (!fs.existsSync(currentPath)) return;
+  excludedFiles: { file: string; pattern: string }[] = [],
+  traversalErrors: TraversalError[] = []
+): { files: string[]; excludedFiles: { file: string; pattern: string }[]; traversalErrors: TraversalError[] } {
+  if (!fs.existsSync(currentPath)) {
+    traversalErrors.push({ path: currentPath, operation: 'stat', error: 'File or directory does not exist' });
+    return { files: fileList, excludedFiles, traversalErrors };
+  }
+
+  let rootDirReal = rootDir;
+  try {
+    rootDirReal = fs.realpathSync(rootDir);
+  } catch {}
+
+  let isSymlink = false;
+  try {
+    const lstat = fs.lstatSync(currentPath);
+    isSymlink = lstat.isSymbolicLink();
+  } catch (err: any) {
+    traversalErrors.push({ path: currentPath, operation: 'stat', error: err?.message || String(err) });
+    return { files: fileList, excludedFiles, traversalErrors };
+  }
+
   let realPath: string;
   try {
     realPath = fs.realpathSync(currentPath);
-  } catch {
-    return;
+  } catch (err: any) {
+    traversalErrors.push({ path: currentPath, operation: 'realpath', error: `Broken or inaccessible symlink: ${err?.message || err}` });
+    return { files: fileList, excludedFiles, traversalErrors };
+  }
+
+  if (isSymlink && !options.allowExternalSymlinks) {
+    const relReal = path.relative(rootDirReal, realPath);
+    if (relReal.startsWith('..') || path.isAbsolute(relReal)) {
+      traversalErrors.push({ path: currentPath, operation: 'symlink', error: `Symlink escapes workspace root (${realPath})` });
+      return { files: fileList, excludedFiles, traversalErrors };
+    }
   }
 
   let stat: fs.Stats;
   try {
     stat = fs.statSync(currentPath);
-  } catch {
-    return;
+  } catch (err: any) {
+    traversalErrors.push({ path: currentPath, operation: 'stat', error: err?.message || String(err) });
+    return { files: fileList, excludedFiles, traversalErrors };
   }
 
   const sldIgnores = loadIgnorePatterns(rootDir);
-  const allExcludes = [...DEFAULT_IGNORE_PATTERNS, ...userExcludes, ...sldIgnores];
+  const baseIgnorePatterns = options.includeBuildArtifacts ? CORE_IGNORE_PATTERNS : DEFAULT_IGNORE_PATTERNS;
+  const allExcludes = [...baseIgnorePatterns, ...(options.userExcludes || []), ...sldIgnores];
 
   const ext = path.extname(currentPath).toLowerCase();
   const rel = path.relative(rootDir, currentPath).replace(/\\/g, '/');
@@ -946,26 +1088,27 @@ function collectFiles(
   const matchedPattern = allExcludes.find((pattern) => matchesIgnorePattern(rel, pattern));
   if (matchedPattern) {
     excludedFiles.push({ file: rel, pattern: matchedPattern });
-    return;
+    return { files: fileList, excludedFiles, traversalErrors };
   }
 
   if (stat.isFile()) {
     if (!NON_TEXT_EXTENSIONS.has(ext)) {
       fileList.push(currentPath);
     }
-    return;
+    return { files: fileList, excludedFiles, traversalErrors };
   }
 
   if (visitedDirs.has(realPath)) {
-    return;
+    return { files: fileList, excludedFiles, traversalErrors };
   }
   visitedDirs.add(realPath);
 
   let entries: string[];
   try {
     entries = fs.readdirSync(currentPath);
-  } catch {
-    return;
+  } catch (err: any) {
+    traversalErrors.push({ path: currentPath, operation: 'readdir', error: err?.message || String(err) });
+    return { files: fileList, excludedFiles, traversalErrors };
   }
 
   const DEFAULT_DIR_EXCLUDES = ['node_modules', '.git'];
@@ -973,27 +1116,10 @@ function collectFiles(
   for (const entry of entries) {
     if (DEFAULT_DIR_EXCLUDES.includes(entry)) continue;
     const full = path.join(currentPath, entry);
-    let s: fs.Stats;
-    try {
-      s = fs.statSync(full);
-    } catch {
-      continue;
-    }
-    if (s.isDirectory()) {
-      collectFiles(full, fileList, rootDir, userExcludes, visitedDirs, excludedFiles);
-    } else if (s.isFile()) {
-      const entryExt = path.extname(entry).toLowerCase();
-      const entryRel = path.relative(rootDir, full).replace(/\\/g, '/');
-      const entryMatched = allExcludes.find((p) => matchesIgnorePattern(entryRel, p));
-      if (entryMatched) {
-        excludedFiles.push({ file: entryRel, pattern: entryMatched });
-        continue;
-      }
-      if (!NON_TEXT_EXTENSIONS.has(entryExt)) {
-        fileList.push(full);
-      }
-    }
+    collectFiles(full, fileList, rootDir, options, visitedDirs, excludedFiles, traversalErrors);
   }
+
+  return { files: fileList, excludedFiles, traversalErrors };
 }
 
 main().catch((err) => {

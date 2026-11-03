@@ -33,7 +33,25 @@ export class VerificationEngine {
     let isStillInFile = false;
 
     if (fileExists) {
-      const currentFindings = scanFile(filePath, { workspaceRoot: this.workspaceRoot });
+      let skippedReason: string | undefined;
+      const currentFindings = scanFile(filePath, {
+        workspaceRoot: this.workspaceRoot,
+        onSkippedFile: (_p, reason) => {
+          skippedReason = reason;
+        },
+      });
+
+      if (skippedReason) {
+        return {
+          isResolved: false,
+          targetFileClean: false,
+          workingTreeClean: false,
+          historyStatus: 'UNKNOWN',
+          details: `Target file inspection incomplete: ${skippedReason}`,
+          timestamp: now,
+        };
+      }
+
       isStillInFile = currentFindings.some(
         (f) => f.fingerprint === finding.fingerprint || f.rawSecret === finding.rawSecret
       );

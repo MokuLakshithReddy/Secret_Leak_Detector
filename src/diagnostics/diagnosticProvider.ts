@@ -222,6 +222,22 @@ export class DiagnosticProvider {
     this.onFindingsChangedEmitter.fire(this.getAllFindings());
   }
 
+  public mergeBatchFindings(findingsMap: Map<string, SecretFinding[]>): void {
+    for (const [filePath, fileFindings] of findingsMap.entries()) {
+      const uri = vscode.Uri.file(filePath);
+      const active = fileFindings.filter((f) => !this.ignoredFindings.has(f.id));
+      if (active.length > 0) {
+        this.currentFindings.set(filePath, active);
+        const diags = active.map((f) => this.toDiagnostic(f));
+        this.diagnosticCollection.set(uri, diags);
+      } else {
+        this.currentFindings.delete(filePath);
+        this.diagnosticCollection.delete(uri);
+      }
+    }
+    this.onFindingsChangedEmitter.fire(this.getAllFindings());
+  }
+
   public renameDocument(oldUri: vscode.Uri, newUri: vscode.Uri): void {
     const existing = this.currentFindings.get(oldUri.fsPath);
     this.removeDocument(oldUri);

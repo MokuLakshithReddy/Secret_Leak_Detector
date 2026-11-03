@@ -115,38 +115,40 @@ export function computeBlastRadius(riskScore: number, gitExposure?: GitExposure)
   const factors: string[] = [];
   let score = Math.round(riskScore * 0.5);
 
-  const workingTreeExposed = gitExposure
-    ? (gitExposure.isSecretInWorkingTree === true ||
-       gitExposure.isPresentInWorkingTree === true ||
-       gitExposure.isSecretInWorkingTree === 'UNKNOWN' ||
-       gitExposure.isPresentInWorkingTree === 'UNKNOWN')
+  const workingTreeExposed: boolean | 'UNKNOWN' = gitExposure
+    ? (gitExposure.isSecretInWorkingTree === 'UNKNOWN' || gitExposure.isPresentInWorkingTree === 'UNKNOWN'
+        ? 'UNKNOWN'
+        : (gitExposure.isSecretInWorkingTree === true || gitExposure.isPresentInWorkingTree === true))
     : true;
-  const gitHistoryExposed = gitExposure
-    ? (gitExposure.isPresentInHistory === true || gitExposure.isPresentInHistory === 'UNKNOWN')
+  const gitHistoryExposed: boolean | 'UNKNOWN' = gitExposure
+    ? (gitExposure.isPresentInHistory === 'UNKNOWN' ? 'UNKNOWN' : gitExposure.isPresentInHistory === true)
     : false;
   const commitCount = gitExposure?.commitCount ?? (gitHistoryExposed ? 1 : 0);
   const branches = gitExposure?.branches || ['main'];
   const branchCount = branches.length;
-  const remoteExposed = gitExposure?.isRemote === true;
+  const remoteExposed: boolean | 'UNKNOWN' = gitExposure
+    ? (gitExposure.isRemote === 'UNKNOWN' ? 'UNKNOWN' : gitExposure.isRemote === true)
+    : false;
   const exposureDurationDays = gitExposure?.exposureDurationDays || 0;
 
-  if (workingTreeExposed) {
-    if (gitExposure?.isSecretInWorkingTree === 'UNKNOWN' || gitExposure?.isPresentInWorkingTree === 'UNKNOWN') {
-      factors.push('Working tree status unverified (conservative exposure assumed)');
-    } else {
-      factors.push('Active working tree contains exposed secret');
-    }
+  if (workingTreeExposed === 'UNKNOWN') {
+    factors.push('Working tree status unverified (conservative exposure assumed)');
+    score += 15;
+  } else if (workingTreeExposed) {
+    factors.push('Active working tree contains exposed secret');
     score += 15;
   }
-  if (gitHistoryExposed) {
-    if (gitExposure?.isPresentInHistory === 'UNKNOWN') {
-      factors.push('Git history status unverified (conservative exposure assumed)');
-    } else {
-      factors.push(`Git history contains commit records across ${branchCount} branch(es)`);
-    }
+  if (gitHistoryExposed === 'UNKNOWN') {
+    factors.push('Git history status unverified (conservative exposure assumed)');
+    score += 20;
+  } else if (gitHistoryExposed) {
+    factors.push(`Git history contains commit records across ${branchCount} branch(es)`);
     score += 20;
   }
-  if (remoteExposed) {
+  if (remoteExposed === 'UNKNOWN') {
+    factors.push('Remote tracking branch status unverified (conservative exposure assumed)');
+    score += 20;
+  } else if (remoteExposed) {
     factors.push('Secret has been synchronized to remote tracking branches');
     score += 25;
   }
@@ -164,9 +166,11 @@ export function computeBlastRadius(riskScore: number, gitExposure?: GitExposure)
   else level = 'CONTAINED';
 
   const summary = `Blast Radius: ${level} (${score}/100) — ${
-    remoteExposed
+    remoteExposed === true
       ? 'Remote & history exposure'
-      : gitHistoryExposed
+      : remoteExposed === 'UNKNOWN'
+      ? 'Unverified remote tracking risk'
+      : gitHistoryExposed === true || gitHistoryExposed === 'UNKNOWN'
       ? 'Historical commit exposure'
       : 'Contained to local working tree'
   }`;

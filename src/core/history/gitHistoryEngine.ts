@@ -1,4 +1,5 @@
-import { execFile } from 'child_process';
+import { execFile, spawn } from 'child_process';
+import * as readline from 'readline';
 import { promisify } from 'util';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -551,6 +552,50 @@ export class GitHistoryEngine {
   }
 
   /**
+   * Establishes whether a genuine removal commit exists between lastSeenSha and HEAD.
+   */
+  public async findRemovalCommit(secret: string, lastSeenSha: string): Promise<GitCommitInfo | undefined> {
+    try {
+      const patternLine = this.pickDistinctiveSearchLine(secret);
+      if (!patternLine) return undefined;
+      const pat = createSecurePatternFile(patternLine);
+      try {
+        const { stdout } = await this.execGit([
+          'log',
+          `-S${patternLine}`,
+          '--reverse',
+          '--format=%H|%an|%ad|%s',
+          '--date=iso',
+          `${lastSeenSha}..HEAD`,
+        ]);
+        const lines = stdout.trim().split('\n').filter(Boolean);
+        for (const line of lines) {
+          const parts = line.split('|');
+          if (parts.length >= 4) {
+            const sha = parts[0];
+            const inCommit = await this.execGit(['grep', '-F', '-l', '-f', pat.filePath, sha])
+              .then(() => true)
+              .catch(() => false);
+            if (!inCommit) {
+              return {
+                sha,
+                author: parts[1] || 'Unknown',
+                date: parts[2] || new Date().toISOString(),
+                message: parts.slice(3).join('|') || '',
+              };
+            }
+          }
+        }
+      } finally {
+        pat.cleanup();
+      }
+    } catch {
+      return undefined;
+    }
+    return undefined;
+  }
+
+  /**
    * Traces the provenance and historical exposure lifecycle of a specific secret.
    * Default searches full history without silently capping at 200 commits.
    */
@@ -751,14 +796,19 @@ export class GitHistoryEngine {
         isRemote = 'UNKNOWN';
       }
 
-      // Compute exposure duration
+      // Compute exposure duration and lastSeenCommit without falsely labeling lastSeenCommit as removal commit
       const introDate = new Date(introducedCommit.date).getTime();
+      const lastSeenCommit = parsedCommits[0];
       let removedCommit: GitCommitInfo | undefined;
       let endDate = Date.now();
 
-      if (isPresentInHead !== true && parsedCommits.length > 1) {
-        removedCommit = parsedCommits[0];
-        endDate = new Date(removedCommit.date).getTime();
+      if (isPresentInHead === false) {
+        removedCommit = await this.findRemovalCommit(secret, lastSeenCommit.sha);
+        if (removedCommit) {
+          endDate = new Date(removedCommit.date).getTime();
+        } else {
+          endDate = new Date(lastSeenCommit.date).getTime();
+        }
       }
 
       const exposureDurationDays = Math.max(
@@ -803,6 +853,7 @@ export class GitHistoryEngine {
       return {
         introducedCommit,
         lastModifiedCommit,
+        lastSeenCommit,
         removedCommit,
         isPresentInHead,
         isPresentInHistory: true,
@@ -831,9 +882,150 @@ export class GitHistoryEngine {
     }
   }
 
+  private async processCommitBlock(
+    block: string,
+    findings: SecretFinding[],
+    headCheckCache: Map<string, boolean>
+  ): Promise<void> {
+    if (!block.trim()) return;
+
+    const shaMatch = block.match(/^(?:commit\s+)?([0-9a-f]{40})/m);
+    const sha = shaMatch ? shaMatch[1] : '';
+    if (!sha) return;
+
+    const authorMatch = block.match(/^Author:\s*(.+)$/m);
+    const author = authorMatch ? authorMatch[1] : 'Unknown';
+
+    const dateMatch = block.match(/^Date:\s*(.+)$/m);
+    const date = dateMatch ? dateMatch[1] : '';
+
+    // Extract added lines and files from diff
+    const fileDiffs = block.split(/^diff --git /m);
+    // Index 0 contains commit metadata / log message prior to first diff --git
+    for (let i = 1; i < fileDiffs.length; i++) {
+      const diff = fileDiffs[i];
+      const firstLine = diff.split('\n')[0].trim();
+      const headerPaths = parseDiffHeaderPaths(firstLine);
+      let fileName = headerPaths ? headerPaths.pathB : '';
+      if (!fileName) {
+        const plusMatch = diff.match(/^\+\+\+ b\/(.+)$/m);
+        if (plusMatch) {
+          fileName = unquoteGitPath(plusMatch[1].trim());
+        }
+      }
+      if (!fileName) continue;
+
+      const diffFindings: SecretFinding[] = [];
+      const isBinaryDiff = diff.includes('Binary files') || diff.includes('GIT binary patch');
+      const isDeleted = diff.includes('deleted file mode') || diff.includes('+++ /dev/null');
+      const isSubmodule = diff.includes('Subproject commit');
+
+      if (isBinaryDiff) {
+        if (!isDeleted && !isSubmodule) {
+          // Retrieve binary blob and decode via content decoder
+          try {
+            const { stdout: binBuf } = await this.execGit(
+              ['show', `${sha}:${fileName}`],
+              { maxBuffer: 15 * 1024 * 1024, encoding: 'buffer' }
+            );
+            const decoded = decodeTextBuffer(binBuf);
+            if (decoded) {
+              const binFindings = scanContent(decoded, fileName, { workspaceRoot: this.workspaceRoot });
+              diffFindings.push(...binFindings);
+            }
+          } catch (err: any) {
+            throw new Error(`Failed to inspect binary blob at commit ${sha.substring(0, 8)} for file '${fileName}': ${err?.message || err}`);
+          }
+        }
+      } else {
+        const addedLines = diff
+          .split('\n')
+          .filter((l) => l.startsWith('+') && !l.startsWith('+++'))
+          .map((l) => l.substring(1))
+          .join('\n');
+
+        if (addedLines.trim()) {
+          const addedFindings = scanContent(addedLines, fileName, {
+            workspaceRoot: this.workspaceRoot,
+          });
+          diffFindings.push(...addedFindings);
+        }
+
+        // Unconditionally inspect full snapshot for multiline findings intersecting added lines
+        if (!isDeleted && !isSubmodule) {
+          try {
+            const { stdout: fullSnapshot } = await this.execGit(
+              ['show', `${sha}:${fileName}`],
+              { maxBuffer: 10 * 1024 * 1024, encoding: 'utf8' }
+            );
+            const snapshotFindings = scanContent(fullSnapshot, fileName, { workspaceRoot: this.workspaceRoot });
+            if (snapshotFindings.length > 0) {
+              const addedLineNumbers = parseAddedLineNumbersFromDiff(diff);
+              for (const sf of snapshotFindings) {
+                const secretLines = sf.rawSecret ? (sf.rawSecret.match(/\n/g) || []).length + 1 : 1;
+                let intersects = false;
+                for (let i = 0; i < secretLines; i++) {
+                  if (addedLineNumbers.has(sf.line + i)) {
+                    intersects = true;
+                    break;
+                  }
+                }
+                if (intersects) {
+                  if (!diffFindings.some((df) => df.fingerprint === sf.fingerprint)) {
+                    diffFindings.push(sf);
+                  }
+                }
+              }
+            }
+          } catch (err: any) {
+            throw new Error(`Failed to inspect snapshot at commit ${sha.substring(0, 8)} for file '${fileName}': ${err?.message || err}`);
+          }
+        }
+      }
+
+      for (const f of diffFindings) {
+        let isPresentInHead = false;
+        if (headCheckCache.has(f.rawSecret)) {
+          isPresentInHead = headCheckCache.get(f.rawSecret)!;
+        } else {
+          isPresentInHead = await this.isSecretInHead(f.rawSecret, fileName);
+          headCheckCache.set(f.rawSecret, isPresentInHead);
+        }
+
+        f.gitExposure = {
+          introducedCommit: {
+            sha,
+            author,
+            date,
+            message: 'Committed to repository history',
+          },
+          isPresentInHead,
+          isPresentInHistory: true,
+          exposureDurationDays: 1,
+          branches: ['history'],
+          isRemote: false,
+          statusDescription: `Found in commit ${sha.substring(0, 7)} by ${author}`,
+        };
+
+        // Recalculate risk with git history exposure
+        const matchingRule = CORE_RULES.find((r) => r.name === f.type) || CORE_RULES[0];
+        f.riskAssessment = calculateRiskAssessment(
+          matchingRule,
+          f.confidence,
+          f.evidence.fileContext,
+          f.gitExposure
+        );
+        f.risk = f.riskAssessment.tier;
+
+        findings.push(f);
+      }
+    }
+  }
+
   /**
    * Scans full Git commit log diffs to detect historical secrets that may have been deleted from HEAD.
-   * Transparently inspects binary diffs via decodeTextBuffer and unconditionally verifies snapshots.
+   * Transparently inspects merge commits (-m), binary diffs via decodeTextBuffer, and unconditionally verifies snapshots.
+   * Streams commit blocks incrementally to avoid buffer overflow on large repositories.
    */
   public async scanHistoryCommits(maxCommits = 100): Promise<SecretFinding[]> {
     const isGit = await this.isGitRepo();
@@ -842,154 +1034,47 @@ export class GitHistoryEngine {
     }
 
     try {
-      // Get commit diffs across all branches, including merge commits
-      const gitArgs = ['log', '--all', '-p', '-U1'];
+      // Get commit diffs across all branches, including merge commits (-m)
+      const gitArgs = ['log', '--all', '-p', '-m', '-U1'];
       if (maxCommits > 0) {
         gitArgs.push('-n', String(maxCommits));
       }
-      const { stdout } = await this.execGit(
-        gitArgs,
-        { maxBuffer: 20 * 1024 * 1024 }
-      );
 
       const findings: SecretFinding[] = [];
-      const commitBlocks = String(stdout).split(/^commit /m);
       const headCheckCache = new Map<string, boolean>();
 
-      for (const block of commitBlocks) {
-        if (!block.trim()) continue;
+      const child = spawn('git', gitArgs, { cwd: this.workspaceRoot });
+      const rl = readline.createInterface({ input: child.stdout, crlfDelay: Infinity });
 
-        const shaMatch = block.match(/^([0-9a-f]{40})/);
-        const sha = shaMatch ? shaMatch[1] : '';
-
-        const authorMatch = block.match(/^Author:\s*(.+)$/m);
-        const author = authorMatch ? authorMatch[1] : 'Unknown';
-
-        const dateMatch = block.match(/^Date:\s*(.+)$/m);
-        const date = dateMatch ? dateMatch[1] : '';
-
-        // Extract added lines and files from diff
-        const fileDiffs = block.split(/^diff --git /m);
-        // Index 0 contains commit metadata / log message prior to first diff --git
-        for (let i = 1; i < fileDiffs.length; i++) {
-          const diff = fileDiffs[i];
-          const firstLine = diff.split('\n')[0].trim();
-          const headerPaths = parseDiffHeaderPaths(firstLine);
-          let fileName = headerPaths ? headerPaths.pathB : '';
-          if (!fileName) {
-            const plusMatch = diff.match(/^\+\+\+ b\/(.+)$/m);
-            if (plusMatch) {
-              fileName = unquoteGitPath(plusMatch[1].trim());
-            }
-          }
-          if (!fileName) continue;
-
-          const diffFindings: SecretFinding[] = [];
-          const isBinaryDiff = diff.includes('Binary files') || diff.includes('GIT binary patch');
-          const isDeleted = diff.includes('deleted file mode') || diff.includes('+++ /dev/null');
-          const isSubmodule = diff.includes('Subproject commit');
-
-          if (isBinaryDiff) {
-            if (!isDeleted && !isSubmodule) {
-              // Retrieve binary blob and decode via content decoder
-              try {
-                const { stdout: binBuf } = await this.execGit(
-                  ['show', `${sha}:${fileName}`],
-                  { maxBuffer: 15 * 1024 * 1024, encoding: 'buffer' }
-                );
-                const decoded = decodeTextBuffer(binBuf);
-                if (decoded) {
-                  const binFindings = scanContent(decoded, fileName, { workspaceRoot: this.workspaceRoot });
-                  diffFindings.push(...binFindings);
-                }
-              } catch (err: any) {
-                throw new Error(`Failed to inspect binary blob at commit ${sha.substring(0, 8)} for file '${fileName}': ${err?.message || err}`);
-              }
-            }
+      let currentBlockLines: string[] = [];
+      const closePromise = new Promise<void>((resolve, reject) => {
+        child.on('error', (err) => {
+          reject(err);
+        });
+        child.on('close', (code) => {
+          if (code !== 0 && code !== 1) {
+            reject(new Error(`git log process exited with code ${code}`));
           } else {
-            const addedLines = diff
-              .split('\n')
-              .filter((l) => l.startsWith('+') && !l.startsWith('+++'))
-              .map((l) => l.substring(1))
-              .join('\n');
-
-            if (addedLines.trim()) {
-              const addedFindings = scanContent(addedLines, fileName, {
-                workspaceRoot: this.workspaceRoot,
-              });
-              diffFindings.push(...addedFindings);
-            }
-
-            // Unconditionally inspect full snapshot for multiline findings intersecting added lines
-            if (!isDeleted && !isSubmodule) {
-              try {
-                const { stdout: fullSnapshot } = await this.execGit(
-                  ['show', `${sha}:${fileName}`],
-                  { maxBuffer: 10 * 1024 * 1024, encoding: 'utf8' }
-                );
-                const snapshotFindings = scanContent(fullSnapshot, fileName, { workspaceRoot: this.workspaceRoot });
-                if (snapshotFindings.length > 0) {
-                  const addedLineNumbers = parseAddedLineNumbersFromDiff(diff);
-                  for (const sf of snapshotFindings) {
-                    const secretLines = sf.rawSecret ? (sf.rawSecret.match(/\n/g) || []).length + 1 : 1;
-                    let intersects = false;
-                    for (let i = 0; i < secretLines; i++) {
-                      if (addedLineNumbers.has(sf.line + i)) {
-                        intersects = true;
-                        break;
-                      }
-                    }
-                    if (intersects) {
-                      if (!diffFindings.some((df) => df.fingerprint === sf.fingerprint)) {
-                        diffFindings.push(sf);
-                      }
-                    }
-                  }
-                }
-              } catch (err: any) {
-                throw new Error(`Failed to inspect snapshot at commit ${sha.substring(0, 8)} for file '${fileName}': ${err?.message || err}`);
-              }
-            }
+            resolve();
           }
+        });
+      });
 
-          for (const f of diffFindings) {
-            let isPresentInHead = false;
-            if (headCheckCache.has(f.rawSecret)) {
-              isPresentInHead = headCheckCache.get(f.rawSecret)!;
-            } else {
-              isPresentInHead = await this.isSecretInHead(f.rawSecret, fileName);
-              headCheckCache.set(f.rawSecret, isPresentInHead);
-            }
-
-            f.gitExposure = {
-              introducedCommit: {
-                sha,
-                author,
-                date,
-                message: 'Committed to repository history',
-              },
-              isPresentInHead,
-              isPresentInHistory: true,
-              exposureDurationDays: 1,
-              branches: ['history'],
-              isRemote: false,
-              statusDescription: `Found in commit ${sha.substring(0, 7)} by ${author}`,
-            };
-
-            // Recalculate risk with git history exposure
-            const matchingRule = CORE_RULES.find((r) => r.name === f.type) || CORE_RULES[0];
-            f.riskAssessment = calculateRiskAssessment(
-              matchingRule,
-              f.confidence,
-              f.evidence.fileContext,
-              f.gitExposure
-            );
-            f.risk = f.riskAssessment.tier;
-
-            findings.push(f);
+      for await (const line of rl) {
+        if (/^commit [0-9a-f]{40}/.test(line)) {
+          if (currentBlockLines.length > 0) {
+            await this.processCommitBlock(currentBlockLines.join('\n'), findings, headCheckCache);
+            currentBlockLines = [];
           }
         }
+        currentBlockLines.push(line);
       }
+
+      if (currentBlockLines.length > 0) {
+        await this.processCommitBlock(currentBlockLines.join('\n'), findings, headCheckCache);
+      }
+
+      await closePromise;
 
       return findings;
     } catch (err: any) {
