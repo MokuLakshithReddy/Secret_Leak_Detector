@@ -741,6 +741,17 @@ export class GitHistoryEngine {
   }
 
   /**
+   * Spawns git rev-list for streaming branch revisions.
+   * Can be overridden by test subclasses to simulate partial stream failures with non-zero exits.
+   */
+  protected spawnGitRevList(branch: string, cwd: string): any {
+    return spawn('git', ['rev-list', branch], {
+      cwd,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  }
+
+  /**
    * Discovers branch containment for a set of commit SHAs efficiently in O(branches)
    * instead of launching a separate Git process for every commit.
    *
@@ -755,6 +766,9 @@ export class GitHistoryEngine {
    * 3. Bounded concurrency: Traverses branches across a pool of concurrent workers (default 8)
    *    to minimize execution time across repositories with dozens or hundreds of branches
    *    without unbounded process explosion.
+   * 4. Lifecycle correctness: Resolves normal completion only after the child process's close
+   *    event has emitted, verifying exit code/signal and propagating stdout/stderr stream errors
+   *    rather than allowing premature readline EOF to mask subprocess failures.
    */
   public async getBranchesForCommits(commitShas: string[], targetRoot?: string): Promise<{
     commitBranchesMap: Map<string, string[]>;
@@ -806,27 +820,36 @@ export class GitHistoryEngine {
         let earlyTerminated = false;
         const branchFoundShas = new Set<string>();
 
-        const child = spawn('git', ['rev-list', branch], {
-          cwd,
-          stdio: ['ignore', 'pipe', 'pipe'],
-        });
+        const child = this.spawnGitRevList(branch, cwd);
 
         let stderrBuf = '';
+        let stdoutError: Error | null = null;
+        let stderrError: Error | null = null;
+        let spawnError: Error | null = null;
+
         if (child.stderr) {
-          child.stderr.on('data', (chunk) => {
+          child.stderr.on('data', (chunk: Buffer | string) => {
             if (stderrBuf.length < 1024) {
               stderrBuf += chunk.toString();
             }
           });
-          child.stderr.on('error', () => {});
+          child.stderr.on('error', (err: any) => {
+            stderrError = err;
+          });
         }
         if (child.stdout) {
-          child.stdout.on('error', () => {});
+          child.stdout.on('error', (err: any) => {
+            stdoutError = err;
+          });
         }
 
         const rl = readline.createInterface({
           input: child.stdout,
           crlfDelay: Infinity,
+        });
+
+        rl.on('error', (err: any) => {
+          stdoutError = err;
         });
 
         const finish = (isErr = false, errMsg?: string) => {
@@ -842,7 +865,7 @@ export class GitHistoryEngine {
           }
           if (isErr && !earlyTerminated) {
             failed = true;
-            if (errMsg) {
+            if (errMsg && !error) {
               error = errMsg;
             }
           }
@@ -867,19 +890,40 @@ export class GitHistoryEngine {
           }
         });
 
-        rl.on('close', () => {
-          finish();
-        });
+        // The readline close event merely signifies the stdout stream ended; it does NOT
+        // signify clean subprocess termination. Resolving here prematurely would swallow
+        // non-zero exit codes emitted after stdout ends.
+        rl.on('close', () => {});
 
         child.on('error', (err: any) => {
+          spawnError = err;
           finish(true, err?.message || String(err));
         });
 
-        child.on('close', (code: number | null) => {
-          if (code !== 0 && code !== null && !earlyTerminated) {
-            finish(true, stderrBuf.trim() || `git rev-list exited with code ${code}`);
-          } else {
+        child.on('close', (code: number | null, signal: string | null) => {
+          if (settled) return;
+          if (earlyTerminated) {
             finish();
+            return;
+          }
+
+          const hasError =
+            code !== 0 ||
+            signal !== null ||
+            stdoutError !== null ||
+            stderrError !== null ||
+            spawnError !== null;
+
+          if (hasError) {
+            const errMsg =
+              spawnError?.message ||
+              stdoutError?.message ||
+              stderrError?.message ||
+              stderrBuf.trim() ||
+              `git rev-list exited with code ${code}${signal ? ` (${signal})` : ''}`;
+            finish(true, errMsg);
+          } else {
+            finish(false);
           }
         });
       });

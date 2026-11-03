@@ -4554,6 +4554,73 @@ exit 0
       const failResult = await nonGitEngine.getBranchesForCommits(['abcdef1234567890']);
       assert(failResult.failed === true, 'getBranchesForCommits fails gracefully on invalid git repo');
 
+      // 3b. Regression test: Subprocess failure lifecycle ordering (must not be swallowed by readline close)
+      const subProcRepo = path.join(sec50Dir, 'subproc-repo');
+      fs.mkdirSync(subProcRepo, { recursive: true });
+      execFileSync('git', ['init'], { cwd: subProcRepo, stdio: 'ignore' });
+      execFileSync('git', ['config', 'user.name', 'Tester'], { cwd: subProcRepo, stdio: 'ignore' });
+      execFileSync('git', ['config', 'user.email', 'test@test.com'], { cwd: subProcRepo, stdio: 'ignore' });
+      fs.writeFileSync(path.join(subProcRepo, 'init.txt'), 'hello', 'utf8');
+      execFileSync('git', ['add', 'init.txt'], { cwd: subProcRepo, stdio: 'ignore' });
+      execFileSync('git', ['commit', '-m', 'c1'], { cwd: subProcRepo, stdio: 'ignore' });
+      const dummySha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: subProcRepo, encoding: 'utf8' }).trim();
+
+      class FaultyRevListEngine extends GitHistoryEngine {
+        protected override spawnGitRevList(branch: string, cwd: string): any {
+          // Emits commit output, writes error to stderr, then exits non-zero (code 128)
+          return cp.spawn(process.execPath, [
+            '-e',
+            `console.log("${dummySha}"); process.stderr.write("fatal: object corrupt in pack\\n"); process.exit(128);`
+          ]);
+        }
+      }
+
+      const faultyEngine = new FaultyRevListEngine(subProcRepo);
+      const faultyResult = await faultyEngine.getBranchesForCommits([dummySha, 'missing-sha-0000000000'], subProcRepo);
+
+      assert(faultyResult.failed === true, 'getBranchesForCommits reports failed: true when git rev-list emits output then exits non-zero');
+      assert(
+        faultyResult.error?.includes('fatal: object corrupt') || faultyResult.error?.includes('128'),
+        `Error message preserves stderr failure details (got: "${faultyResult.error}")`
+      );
+
+      // Verify stream error propagation (stdout stream error is captured and reported)
+      class StdoutErrorRevListEngine extends GitHistoryEngine {
+        protected override spawnGitRevList(branch: string, cwd: string): any {
+          const proc = cp.spawn(process.execPath, [
+            '-e',
+            `console.log("${dummySha}"); setTimeout(() => process.exit(0), 100);`
+          ]);
+          setTimeout(() => {
+            if (proc.stdout) {
+              proc.stdout.emit('error', new Error('Simulated stdout read error'));
+            }
+          }, 10);
+          return proc;
+        }
+      }
+
+      const stdoutErrEngine = new StdoutErrorRevListEngine(subProcRepo);
+      const stdoutErrResult = await stdoutErrEngine.getBranchesForCommits([dummySha, 'missing-sha-0000000000'], subProcRepo);
+      assert(stdoutErrResult.failed === true, 'getBranchesForCommits reports failed: true on stdout stream error');
+      assert(stdoutErrResult.error?.includes('Simulated stdout read error'), 'Error message preserves stdout read error');
+
+      // Verify intentional early termination resolves cleanly with failed: false
+      class EarlyTermRevListEngine extends GitHistoryEngine {
+        protected override spawnGitRevList(branch: string, cwd: string): any {
+          return cp.spawn(process.execPath, [
+            '-e',
+            `console.log("${dummySha}"); setTimeout(() => { console.log("unreachable"); process.exit(0); }, 5000);`
+          ]);
+        }
+      }
+      const earlyEngine = new EarlyTermRevListEngine(subProcRepo);
+      const earlyStart = Date.now();
+      const earlyResult = await earlyEngine.getBranchesForCommits([dummySha], subProcRepo);
+      const earlyElapsed = Date.now() - earlyStart;
+      assert(earlyResult.failed === false, 'Early termination resolves cleanly with failed: false');
+      assert(earlyElapsed < 2000, `Early termination kills process immediately without waiting for delay (took ${earlyElapsed}ms)`);
+
       // 4. Exact Mathematical Separation of Risk Assessment vs. Blast Radius
       const testRule = DETECTOR_RULES.find((r) => r.id === 'github-pat')!;
       const testCtx = { isTest: false, isDoc: false, isConfig: false, isSensitiveName: false, extension: '.ts' };
