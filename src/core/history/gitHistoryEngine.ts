@@ -5,7 +5,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
-import { GitExposure, GitCommitInfo, SecretFinding } from '../types';
+import { GitExposure, GitCommitInfo, SecretFinding, BranchRemovalInfo } from '../types';
 import { scanContent } from '../scanner/scanner';
 import { decodeTextBuffer } from '../encoding/textDecoder';
 import { calculateRiskAssessment } from '../risk/riskEngine';
