@@ -610,7 +610,7 @@ export class GitHistoryEngine {
         } catch (err: any) {
           return {
             isPresentInHead: 'UNKNOWN',
-            isPresentInHistory: false,
+            isPresentInHistory: 'UNKNOWN',
             isPresentInWorkingTree: 'UNKNOWN',
             isSecretInWorkingTree: 'UNKNOWN',
             exposureDurationDays: 0,
@@ -636,13 +636,13 @@ export class GitHistoryEngine {
           };
         } else if (searchResult.status === 'PARTIAL_HISTORY') {
           return {
-            isPresentInHead: false,
+            isPresentInHead: 'UNKNOWN',
             isPresentInHistory: 'UNKNOWN',
             isPresentInWorkingTree: false,
             isSecretInWorkingTree: false,
             exposureDurationDays: 0,
             branches: [],
-            isRemote: false,
+            isRemote: 'UNKNOWN',
             statusDescription: `Credential not found in scanned commits, but history search was limited to ${maxCommits} commit(s)`,
             commitCount: 0,
             isPartialHistory: true,
@@ -819,7 +819,7 @@ export class GitHistoryEngine {
     } catch (err: any) {
       return {
         isPresentInHead: 'UNKNOWN',
-        isPresentInHistory: false,
+        isPresentInHistory: 'UNKNOWN',
         isPresentInWorkingTree: 'UNKNOWN',
         isSecretInWorkingTree: 'UNKNOWN',
         exposureDurationDays: 0,

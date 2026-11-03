@@ -149,7 +149,7 @@ export class GitTimelineEngine {
             totalExposureDays: 0,
             currentStatus: 'PARTIAL_HISTORY',
             reachableBranches: [],
-            isPushedToRemote: false,
+            isPushedToRemote: 'UNKNOWN',
             timelineAscii: `Credential was not found in latest ${maxCommits} commit(s), but repository history search was limited.`,
             graph: {
               nodes: [],
@@ -159,9 +159,10 @@ export class GitTimelineEngine {
                 introducedCommit: '',
                 durationDays: 0,
                 branchesContaminated: [],
-                isPushedToRemote: false,
+                isPushedToRemote: 'UNKNOWN',
               },
             },
+            isPartialHistory: true,
           };
         } else {
           return {
@@ -265,10 +266,12 @@ export class GitTimelineEngine {
         secretRedacted: redactedSecret,
         events: [],
         totalExposureDays: 0,
-        currentStatus: 'NOT_FOUND',
+        currentStatus: searchResult.isPartialHistory ? 'PARTIAL_HISTORY' : 'NOT_FOUND',
         reachableBranches: [],
-        isPushedToRemote: false,
-        timelineAscii: 'Credential was not found in Git history or working tree.',
+        isPushedToRemote: searchResult.isPartialHistory ? 'UNKNOWN' : false,
+        timelineAscii: searchResult.isPartialHistory
+          ? `Credential was not found in latest ${maxCommits} commit(s), but repository history search was limited.`
+          : 'Credential was not found in Git history or working tree.',
         graph: {
           nodes: [],
           edges: [],
@@ -277,7 +280,7 @@ export class GitTimelineEngine {
             introducedCommit: '',
             durationDays: 0,
             branchesContaminated: [],
-            isPushedToRemote: false,
+            isPushedToRemote: searchResult.isPartialHistory ? 'UNKNOWN' : false,
           },
         },
         isPartialHistory: searchResult.isPartialHistory,

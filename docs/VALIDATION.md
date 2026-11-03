@@ -292,7 +292,7 @@ git clone https://github.com/MokuLakshithReddy/Secret_Leak_Detector.git
 cd Secret_Leak_Detector
 npm ci
 npm run build
-npm test                     # 466 tests across 40 sections (516 tests total including git-hook and manifest suites)
+npm test                     # 478 tests across 40 sections (528 tests total including git-hook and manifest suites)
 npm run benchmark:heldout    # confusion matrix
 npm run benchmark:gate       # 520-fixture regression gate
 npm run test:git-hook        # 33 git-hook integration tests (commit blocking)

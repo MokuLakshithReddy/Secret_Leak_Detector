@@ -97,9 +97,10 @@ export class VerificationEngine {
       };
     }
 
-    const inHistory = gitExposure.isPresentInHistory === true || finding.gitExposure?.isPresentInHistory === true;
+    const inCurrentHistory = gitExposure.isPresentInHistory === true;
+    const previouslyInHistory = finding.gitExposure?.isPresentInHistory === true;
 
-    if (inHistory) {
+    if (inCurrentHistory) {
       const commitSha =
         gitExposure.introducedCommit?.sha?.substring(0, 7) ||
         finding.gitExposure?.introducedCommit?.sha?.substring(0, 7) ||
@@ -109,9 +110,24 @@ export class VerificationEngine {
         targetFileClean: true,
         workingTreeClean: true,
         historyStatus: 'REMOVED_FROM_HEAD_STILL_IN_HISTORY',
+        previouslyExposedInHistory: true,
         details: fileExists
           ? `Secret removed from active working tree! WARNING: Secret still exists in commit history (${commitSha}). Credential revocation is mandatory.`
           : `Offending file removed from working tree, but secret still exists in commit history (${commitSha}). Credential revocation is mandatory.`,
+        timestamp: now,
+      };
+    }
+
+    if (previouslyInHistory) {
+      return {
+        isResolved: true,
+        targetFileClean: true,
+        workingTreeClean: true,
+        historyStatus: 'HEAD_AND_HISTORY_CLEAN',
+        previouslyExposedInHistory: true,
+        details: fileExists
+          ? 'Secret eliminated from file and no longer found in current Git history (note: previously recorded in historical incident evidence; ensure remote mirrors and clones are purged).'
+          : 'Offending file removed from working tree and no longer found in current Git history (note: previously recorded in historical incident evidence; ensure remote mirrors and clones are purged).',
         timestamp: now,
       };
     }
@@ -121,6 +137,7 @@ export class VerificationEngine {
       targetFileClean: true,
       workingTreeClean: true,
       historyStatus: 'HEAD_AND_HISTORY_CLEAN',
+      previouslyExposedInHistory: false,
       details: fileExists
         ? 'Secret completely eliminated from file and no historical commits detected.'
         : 'Offending file removed from working tree and no historical commits detected in repository.',

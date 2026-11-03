@@ -113,6 +113,7 @@ export interface VerificationResult {
   historyStatus: 'HEAD_AND_HISTORY_CLEAN' | 'REMOVED_FROM_HEAD_STILL_IN_HISTORY' | 'NOT_FIXED' | 'UNKNOWN';
   details: string;
   timestamp: string;
+  previouslyExposedInHistory?: boolean;
 }
 
 export interface SecretFinding {
