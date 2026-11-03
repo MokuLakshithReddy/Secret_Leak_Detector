@@ -1,6 +1,5 @@
 import * as vscode from 'vscode';
 import { scanContent, ScannerOptions } from '../core/scanner/scanner';
-import { createSourceFile } from '../core/context/astAnalyzer';
 import { SecretFinding } from '../core/types';
 
 export class DiagnosticProvider {
@@ -91,26 +90,18 @@ export class DiagnosticProvider {
     const cacheEntry = this.documentAstCache.get(document.uri.toString());
     if (cacheEntry && cacheEntry.version === document.version) {
       cachedSourceFile = cacheEntry.sourceFile;
-    } else {
-      const isJsTs =
-        /\.[jt]sx?$|\.m[jt]s$|\.c[jt]s$/i.test(docPath) ||
-        document.languageId === 'typescript' ||
-        document.languageId === 'javascript' ||
-        document.languageId === 'typescriptreact' ||
-        document.languageId === 'javascriptreact';
-      if (isJsTs) {
-        cachedSourceFile = createSourceFile(text, docPath);
-        this.documentAstCache.set(document.uri.toString(), {
-          version: document.version,
-          sourceFile: cachedSourceFile,
-        });
-      }
     }
 
     const scanOpts: ScannerOptions = {
       workspaceRoot,
       minEntropyThreshold: this.minEntropy,
       cachedSourceFile,
+      onSourceFileParsed: (sourceFile) => {
+        this.documentAstCache.set(document.uri.toString(), {
+          version: document.version,
+          sourceFile,
+        });
+      },
     };
 
     const allDetected = scanContent(text, docPath, scanOpts);

@@ -2957,6 +2957,169 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
       assert(BUILD_ARTIFACT_PATTERNS.includes('dist/**'), 'BUILD_ARTIFACT_PATTERNS contains dist/**');
     }
 
+    // --- 42. Lazy AST Parsing, Fail-Closed Node Version Guards & Engine Shims ---
+    console.log('\n--- 42. Lazy AST Parsing, Fail-Closed Node Version Guards & Engine Shims ---');
+    {
+      const { scanContent } = require('../src/core/scanner/scanner');
+      const { buildPreCommitHook } = require('../src/git/preCommitHook');
+      const entropyEngine = require('../src/engine/entropy');
+      const redactorEngine = require('../src/engine/redactor');
+      const scannerEngine = require('../src/engine/scanner');
+      const patternsEngine = require('../src/engine/patterns');
+      const fromHex = (h: string) => Buffer.from(h, 'hex').toString('utf8');
+
+      // 1. Hook contains fail-closed Node version verification
+      const hookScript = buildPreCommitHook();
+      assert(hookScript.includes('NODE_MAJOR=$("$NODE_CMD" -p \'process.versions.node.split(".")[0]\' 2>/dev/null)'), 'Hook checks Node version using fail-closed process.versions.node');
+      assert(hookScript.includes('Cannot determine Node.js version. Commit blocked.'), 'Hook blocks when Node version query fails');
+      assert(hookScript.includes('Invalid Node.js version. Commit blocked.'), 'Hook blocks on non-numeric or empty Node version');
+      assert(hookScript.includes('Node.js 18+ required'), 'Hook blocks on Node version < 18');
+
+      // 2. Direct POSIX shell evaluation of version check guard logic
+      const sh = findPosixShell();
+      if (sh) {
+        const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-node-ver-test-'));
+        const mockNode = path.join(tmpDir, 'mock_node.sh').replace(/\\/g, '/');
+
+        fs.writeFileSync(mockNode, `#!/bin/sh
+if [ "$MOCK_MODE" = "fail" ]; then
+  exit 1
+elif [ "$MOCK_MODE" = "empty" ]; then
+  exit 0
+elif [ "$MOCK_MODE" = "malformed" ]; then
+  echo "v20-alpha"
+  exit 0
+elif [ "$MOCK_MODE" = "16" ]; then
+  echo "16"
+  exit 0
+elif [ "$MOCK_MODE" = "18" ]; then
+  echo "18"
+  exit 0
+elif [ "$MOCK_MODE" = "20" ]; then
+  echo "20"
+  exit 0
+elif [ "$MOCK_MODE" = "22" ]; then
+  echo "22"
+  exit 0
+fi
+`, { mode: 0o755 });
+
+        const runGuard = (mode: string) => {
+          const script = `
+NODE_CMD='${mockNode}'
+export MOCK_MODE='${mode}'
+if ! NODE_MAJOR=$("$NODE_CMD" -p 'process.versions.node.split(".")[0]' 2>/dev/null); then
+  echo "FAIL_DETERMINE"
+  exit 2
+fi
+case "$NODE_MAJOR" in
+  ''|*[!0-9]*)
+    echo "FAIL_INVALID"
+    exit 2
+    ;;
+esac
+if [ "$NODE_MAJOR" -lt 18 ]; then
+  echo "FAIL_TOO_OLD:$NODE_MAJOR"
+  exit 2
+fi
+echo "SUCCESS:$NODE_MAJOR"
+exit 0
+`;
+          return cp.spawnSync(sh, ['-c', script], { encoding: 'utf8' });
+        };
+
+        try {
+          // A. Failed command (exit non-zero)
+          const resFail = runGuard('fail');
+          assert(resFail.status === 2, 'Version check exits 2 on node command execution failure');
+          assert(resFail.stdout.includes('FAIL_DETERMINE'), 'Version check prints FAIL_DETERMINE on error');
+
+          // B. Empty version output
+          const resEmpty = runGuard('empty');
+          assert(resEmpty.status === 2, 'Version check exits 2 on empty node version');
+          assert(resEmpty.stdout.includes('FAIL_INVALID'), 'Version check prints FAIL_INVALID on empty output');
+
+          // C. Malformed / non-numeric output
+          const resMalformed = runGuard('malformed');
+          assert(resMalformed.status === 2, 'Version check exits 2 on non-numeric node version');
+          assert(resMalformed.stdout.includes('FAIL_INVALID'), 'Version check prints FAIL_INVALID on malformed output');
+
+          // D. Node 16 (too old)
+          const resNode16 = runGuard('16');
+          assert(resNode16.status === 2, 'Version check exits 2 on Node 16');
+          assert(resNode16.stdout.includes('FAIL_TOO_OLD:16'), 'Version check prints FAIL_TOO_OLD:16 on old version');
+
+          // E. Node 18, 20, 22 (supported)
+          for (const v of ['18', '20', '22']) {
+            const resValid = runGuard(v);
+            assert(resValid.status === 0, `Version check exits 0 on Node ${v}`);
+            assert(resValid.stdout.includes(`SUCCESS:${v}`), `Version check outputs SUCCESS:${v}`);
+          }
+        } finally {
+          try {
+            fs.rmSync(tmpDir, { recursive: true, force: true });
+          } catch {}
+        }
+      }
+
+      // 3. Scanner lazy AST parsing verification
+      // A. Clean TS/JS document: onSourceFileParsed is NEVER invoked
+      let cleanParsed = false;
+      const cleanTsCode = `
+export interface UserProfile {
+  id: string;
+  name: string;
+  email: string;
+}
+export function getFullName(user: UserProfile): string {
+  return user.name;
+}
+`;
+      const cleanFindings = scanContent(cleanTsCode, 'user.ts', {
+        onSourceFileParsed: () => {
+          cleanParsed = true;
+        },
+      });
+      assert(cleanFindings.length === 0, 'Clean file yields 0 findings');
+      assert(cleanParsed === false, 'Clean file never triggers AST parsing (lazy compilation)');
+
+      // B. TS/JS document with secret candidate: onSourceFileParsed IS invoked
+      let secretParsed = false;
+      let receivedSourceFile: any = null;
+      // 40 characters: "ghp_" + 36 alphanumeric characters
+      const fakeToken = fromHex('6768705f313233343536373839303132333435363738393031323334353637383930313233343536');
+      const secretTsCode = `export const githubToken = "${fakeToken}";\n`;
+      const secretFindings = scanContent(secretTsCode, 'config.ts', {
+        onSourceFileParsed: (sf) => {
+          secretParsed = true;
+          receivedSourceFile = sf;
+        },
+      });
+      assert(secretFindings.length > 0, 'Secret candidate detected');
+      assert(secretParsed === true, 'AST parsing was lazily triggered on rule candidate match');
+      assert(receivedSourceFile !== null && typeof receivedSourceFile === 'object', 'onSourceFileParsed passed a valid AST SourceFile');
+
+      // 4. Legacy compatibility shims
+      assert(typeof entropyEngine.calculateShannonEntropy === 'function', 'entropy shim exports calculateShannonEntropy');
+      assert(typeof redactorEngine.redactSecret === 'function', 'redactor shim exports redactSecret');
+      assert(typeof scannerEngine.scanContent === 'function', 'scanner shim exports scanContent');
+      assert(Array.isArray(patternsEngine.SECRET_RULES), 'patterns shim exports SECRET_RULES array');
+      assert(patternsEngine.SECRET_RULES.length > 0, 'SECRET_RULES is non-empty');
+      const sampleRule = patternsEngine.SECRET_RULES[0];
+      assert(typeof sampleRule.exampleFix === 'function', 'SECRET_RULES adapter includes exampleFix function');
+      assert(typeof sampleRule.remediation === 'string', 'SECRET_RULES adapter includes remediation string');
+
+      // 5. Extension activation does not eagerly copy ast-parser.js
+      const extensionSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'extension.ts'), 'utf8');
+      const activateBody = extensionSrc.slice(
+        extensionSrc.indexOf('export async function activate'),
+        extensionSrc.indexOf('// Re-pin pre-commit hooks')
+      );
+      assert(!activateBody.includes('ensureGlobalAstParser()'), 'activate() does not eagerly invoke ensureGlobalAstParser()');
+      assert(!activateBody.includes('ast-parser.js'), 'activate() does not copy ast-parser.js during activation');
+      assert(extensionSrc.includes('function ensureGlobalAstParser'), 'extension.ts defines ensureGlobalAstParser for on-demand copying');
+    }
+
   console.log('\n============================================================');
   console.log(`🎉 TEST SUMMARY: ${passed} PASSED, ${failed} FAILED`);
   console.log('============================================================\n');

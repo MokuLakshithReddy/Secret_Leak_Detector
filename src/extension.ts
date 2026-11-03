@@ -74,7 +74,7 @@ export function activate(context: vscode.ExtensionContext) {
   }
   applyConfiguration();
 
-  // Stable CLI and AST parser management under globalStorageUri (survives extension version upgrades)
+  // Stable CLI management under globalStorageUri (survives extension version upgrades)
   let activeCliPath = path.join(context.extensionPath, 'dist', 'cli.js');
   try {
     const globalStorage = context.globalStorageUri.fsPath;
@@ -83,18 +83,42 @@ export function activate(context: vscode.ExtensionContext) {
     }
     const stableCli = path.join(globalStorage, 'cli.js');
     if (fs.existsSync(activeCliPath)) {
-      fs.copyFileSync(activeCliPath, stableCli);
+      if (!fs.existsSync(stableCli) || fs.statSync(activeCliPath).size !== fs.statSync(stableCli).size) {
+        fs.copyFileSync(activeCliPath, stableCli);
+      }
       activeCliPath = stableCli;
-    }
-    const astParserSrc = path.join(context.extensionPath, 'dist', 'ast-parser.js');
-    const stableAstParser = path.join(globalStorage, 'ast-parser.js');
-    if (fs.existsSync(astParserSrc)) {
-      fs.copyFileSync(astParserSrc, stableAstParser);
     }
   } catch {}
 
+  // Helper to ensure ast-parser.js exists in global storage only when needed (e.g. hook pinning/install),
+  // avoiding eager synchronous 3.4MB file copy overhead on extension activation.
+  function ensureGlobalAstParser(): void {
+    try {
+      const globalStorage = context.globalStorageUri.fsPath;
+      const astParserSrc = path.join(context.extensionPath, 'dist', 'ast-parser.js');
+      const stableAstParser = path.join(globalStorage, 'ast-parser.js');
+      if (fs.existsSync(astParserSrc)) {
+        let needsCopy = true;
+        if (fs.existsSync(stableAstParser)) {
+          const srcStat = fs.statSync(astParserSrc);
+          const destStat = fs.statSync(stableAstParser);
+          if (srcStat.size === destStat.size && srcStat.mtimeMs <= destStat.mtimeMs) {
+            needsCopy = false;
+          }
+        }
+        if (needsCopy) {
+          if (!fs.existsSync(globalStorage)) {
+            fs.mkdirSync(globalStorage, { recursive: true });
+          }
+          fs.copyFileSync(astParserSrc, stableAstParser);
+        }
+      }
+    } catch {}
+  }
+
   // Re-pin pre-commit hooks in all workspace folders that are Git repositories
   async function pinHooksInAllFolders(cli: string) {
+    ensureGlobalAstParser();
     const folders = vscode.workspace.workspaceFolders || [];
     const blockCommits = getConfig().get<boolean>('blockGitCommits', true);
     const configuredFailOn = resolveFailOn(getConfig().get<string>('failOn', DEFAULT_FAIL_ON));
@@ -452,6 +476,7 @@ export function activate(context: vscode.ExtensionContext) {
       const configuredFailOn = resolveFailOn(getConfig().get<string>('failOn', DEFAULT_FAIL_ON));
       const disallowInline = getConfig().get<boolean>('disallowInlineIgnore', true);
       const failOnSkipped = getConfig().get<boolean>('failOnSkipped', false);
+      ensureGlobalAstParser();
       const result = await gitService.installPreCommitHook(
         activeCliPath,
         process.execPath,
@@ -494,6 +519,7 @@ export function activate(context: vscode.ExtensionContext) {
       }
       const blockCommits = getConfig().get<boolean>('blockGitCommits', true);
       const configuredFailOn = resolveFailOn(getConfig().get<string>('failOn', DEFAULT_FAIL_ON));
+      ensureGlobalAstParser();
       const result = await gitService.installPreCommitHook(
         activeCliPath,
         process.execPath,
