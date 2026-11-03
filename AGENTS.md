@@ -39,7 +39,7 @@ tsconfig.json           TypeScript compiler settings (strict, node target)
 ```bash
 npm run build       # production build of cli + extension
 npm run watch       # watch mode for extension development
-npm test            # build + run all 686 core unit/AST/evidence tests across 47 sections (743 tests total including git-hook and manifest suites)
+npm test            # build + run all 712 core unit/AST/evidence tests across 48 sections (769 tests total including git-hook and manifest suites)
 npm run package     # produce secret-leak-detector-x.y.z.vsix
 ```
 

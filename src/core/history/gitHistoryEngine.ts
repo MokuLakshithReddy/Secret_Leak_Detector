@@ -43,12 +43,12 @@ function createSecurePatternFile(pattern: string): SecurePatternFile {
       if (fs.existsSync(filePath)) {
         fs.unlinkSync(filePath);
       }
-    } catch {}
+    } catch { }
     try {
       if (fs.existsSync(secureDir)) {
         fs.rmSync(secureDir, { recursive: true, force: true });
       }
-    } catch {}
+    } catch { }
   };
 
   return { filePath, cleanup };
@@ -634,13 +634,17 @@ export class GitHistoryEngine {
     }
     if (!isAnc) return undefined;
 
-    // List commits chronologically forward on targetRef's actual ancestry path starting from lastSeenSha.
-    // Using --ancestry-path ensures that unrelated commits merged from side branches (which are not
-    // descendants of lastSeenSha) are excluded from the candidate search range.
+    // List commits chronologically forward on targetRef's first-parent ancestry path starting from lastSeenSha.
+    // Using --ancestry-path and --first-parent ensures that:
+    // 1. Commits that diverged before introduction are excluded.
+    // 2. Commits on side branches that removed the secret before merging into targetRef are excluded,
+    //    ensuring that removal from targetRef is attributed to the merge commit (or subsequent commit)
+    //    where the secret actually disappeared from targetRef's effective history.
     const { stdout: revsOut } = await this.execGit([
       'log',
       '--reverse',
       '--ancestry-path',
+      '--first-parent',
       '--format=%H|%an|%ad|%cn|%cd|%s',
       '--date=iso',
       `${lastSeenSha}..${targetRef}`,
@@ -780,9 +784,8 @@ export class GitHistoryEngine {
           exposureDurationDays: 0,
           branches: [],
           isRemote: 'UNKNOWN',
-          statusDescription: `Git history search was incomplete: ${searchResult.error || 'operational error'}${
-            hasMatches ? ` (${searchResult.commitShas.length} matching commit(s) discovered before failure)` : ''
-          }`,
+          statusDescription: `Git history search was incomplete: ${searchResult.error || 'operational error'}${hasMatches ? ` (${searchResult.commitShas.length} matching commit(s) discovered before failure)` : ''
+            }`,
           commitCount: searchResult.commitShas.length,
           searchStatus: searchResult.status,
           isPartialHistory: searchResult.isPartialHistory,
@@ -821,8 +824,8 @@ export class GitHistoryEngine {
             isRemote: searchResult.isPartialHistory ? 'UNKNOWN' : false,
             statusDescription: searchResult.isPartialHistory
               ? (isShallow
-                  ? 'Present in working tree (uncommitted); shallow Git clone detected with truncated history'
-                  : `Present in working tree (uncommitted); search limited to ${maxCommits} commit(s)`)
+                ? 'Present in working tree (uncommitted); shallow Git clone detected with truncated history'
+                : `Present in working tree (uncommitted); search limited to ${maxCommits} commit(s)`)
               : 'Present in working tree only (uncommitted)',
             commitCount: 0,
             searchStatus: searchResult.isPartialHistory ? 'PARTIAL_HISTORY' : 'FOUND',
@@ -1039,11 +1042,17 @@ export class GitHistoryEngine {
           const isAnc = await checkAncestry(branchLastSeenCommit.sha, branch);
           if (isAnc === true) {
             const bRemoval = await this.findRemovalCommit(secret, branchLastSeenCommit.sha, branch);
+            const branchIntroTime = new Date(branchIntroCommit.committerDate || branchIntroCommit.date).getTime();
+            const branchEndTime = bRemoval
+              ? new Date(bRemoval.committerDate || bRemoval.date).getTime()
+              : new Date(branchLastSeenCommit.committerDate || branchLastSeenCommit.date).getTime();
+            const branchDuration = Math.max(0, Math.round((branchEndTime - branchIntroTime) / (1000 * 60 * 60 * 24)));
             branchRemovals[branch] = {
               isAncestor: true,
               isRemoved: !!bRemoval,
               removalCommit: bRemoval,
               introducedCommit: branchIntroCommit,
+              exposureDurationDays: branchDuration,
             };
           } else if (isAnc === false) {
             branchRemovals[branch] = {
@@ -1195,7 +1204,7 @@ export class GitHistoryEngine {
       }
 
       const finalSearchStatus: GitExposure['searchStatus'] =
-        (failedMetadataCount > 0 || headCheckFailed || wtCheckFailed || removalCheckFailed || isAncestorOfHead === 'UNKNOWN' || searchResult.isShallow || branchQueryFailed)
+        (failedMetadataCount > 0 || headCheckFailed || wtCheckFailed || removalCheckFailed || isAncestorOfHead === 'UNKNOWN' || searchResult.isShallow || branchQueryFailed || searchResult.isPartialHistory)
           ? 'SEARCH_INCOMPLETE'
           : 'FOUND';
 

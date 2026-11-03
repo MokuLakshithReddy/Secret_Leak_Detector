@@ -4062,6 +4062,236 @@ exit 0
       }
     }
 
+    // --- 48. First-Parent Merge Removal, Display Date Distinction, Sibling Branch Aggregation & Depth-Limited Semantics ---
+    console.log('\n--- 48. First-Parent Merge Removal, Display Date Distinction, Sibling Branch Aggregation & Depth-Limited Semantics ---');
+    {
+      const { execFileSync } = cp;
+      const fromHex = (h: string) => Buffer.from(h, 'hex').toString('utf8');
+      const sec48Dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-sec48-'));
+      try {
+        // 1. First-parent merge removal: Secret removed on side branch, then merged into main
+        const fpRepo = path.join(sec48Dir, 'fp-repo');
+        fs.mkdirSync(fpRepo, { recursive: true });
+        execFileSync('git', ['init'], { cwd: fpRepo });
+        execFileSync('git', ['checkout', '-B', 'main'], { cwd: fpRepo });
+        execFileSync('git', ['config', 'user.name', 'FP Tester'], { cwd: fpRepo });
+        execFileSync('git', ['config', 'user.email', 'fp@example.com'], { cwd: fpRepo });
+
+        fs.writeFileSync(path.join(fpRepo, 'base.txt'), 'base\n', 'utf8');
+        execFileSync('git', ['add', 'base.txt'], { cwd: fpRepo });
+        execFileSync('git', ['commit', '-m', 'base commit'], { cwd: fpRepo });
+
+        const fpSecret = fromHex('6768705f') + fromHex('4669727374506172656e74546573745365637265743132333435');
+        fs.writeFileSync(path.join(fpRepo, 'token.txt'), `TOKEN=${fpSecret}\n`, 'utf8');
+        execFileSync('git', ['add', 'token.txt'], { cwd: fpRepo });
+        execFileSync('git', ['commit', '-m', 'intro secret on main'], { cwd: fpRepo });
+        const mainIntroSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fpRepo, encoding: 'utf8' }).trim();
+
+        // Create feature branch and remove secret on that feature branch
+        execFileSync('git', ['checkout', '-b', 'feature-removal'], { cwd: fpRepo });
+        fs.writeFileSync(path.join(fpRepo, 'token.txt'), 'TOKEN=clean_on_feature\n', 'utf8');
+        execFileSync('git', ['add', 'token.txt'], { cwd: fpRepo });
+        execFileSync('git', ['commit', '-m', 'remove secret on feature branch'], { cwd: fpRepo });
+        const featureRemovalSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fpRepo, encoding: 'utf8' }).trim();
+
+        // Work on main while secret is still active on main
+        execFileSync('git', ['checkout', 'main'], { cwd: fpRepo });
+        fs.writeFileSync(path.join(fpRepo, 'main_work.txt'), 'working on main\n', 'utf8');
+        execFileSync('git', ['add', 'main_work.txt'], { cwd: fpRepo });
+        execFileSync('git', ['commit', '-m', 'unrelated main work with secret active'], { cwd: fpRepo });
+        const intermediateMainSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fpRepo, encoding: 'utf8' }).trim();
+
+        // Merge feature branch into main (this merge commit removes the secret from main's effective history)
+        execFileSync('git', ['merge', 'feature-removal', '-m', 'merge feature-removal into main'], { cwd: fpRepo });
+        const mergeRemovalSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fpRepo, encoding: 'utf8' }).trim();
+
+        const fpEngine = new GitHistoryEngine(fpRepo);
+        const mainRemoval = await fpEngine.findRemovalCommit(fpSecret, mainIntroSha, 'main');
+        assert(mainRemoval !== undefined, 'findRemovalCommit finds removal commit on main after merge');
+        assert(mainRemoval?.sha === mergeRemovalSha, 'findRemovalCommit attributes removal to the merge commit on main, NOT the feature branch commit');
+        assert(mainRemoval?.sha !== featureRemovalSha, 'findRemovalCommit does not falsely report featureRemovalSha as the removal commit for main');
+
+        // On the feature branch itself, removal is accurately attributed to featureRemovalSha
+        const featRemoval = await fpEngine.findRemovalCommit(fpSecret, mainIntroSha, 'feature-removal');
+        assert(featRemoval?.sha === featureRemovalSha, 'findRemovalCommit attributes removal on feature-removal branch to featureRemovalSha');
+
+        // 2. Display date distinction and consistent committer chronology in timeline
+        const displayRepo = path.join(sec48Dir, 'display-repo');
+        fs.mkdirSync(displayRepo, { recursive: true });
+        execFileSync('git', ['init'], { cwd: displayRepo });
+        execFileSync('git', ['checkout', '-B', 'main'], { cwd: displayRepo });
+        execFileSync('git', ['config', 'user.name', 'Display Tester'], { cwd: displayRepo });
+        execFileSync('git', ['config', 'user.email', 'display@example.com'], { cwd: displayRepo });
+
+        const displaySecret = fromHex('6768705f') + fromHex('446973706c617944617465546573745365637265743132333435');
+        fs.writeFileSync(path.join(displayRepo, 'key.txt'), `KEY=${displaySecret}\n`, 'utf8');
+        execFileSync('git', ['add', 'key.txt'], { cwd: displayRepo });
+        execFileSync('git', ['commit', '-m', 'c1: true introduction'], {
+          cwd: displayRepo,
+          env: {
+            ...process.env,
+            GIT_AUTHOR_DATE: '2025-01-01T12:00:00Z',
+            GIT_COMMITTER_DATE: '2025-01-01T12:00:00Z',
+          },
+        });
+        const c1Sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: displayRepo, encoding: 'utf8' }).trim();
+
+        // c2: child commit with backdated author date (1990) but committer date (2025-01-05)
+        fs.writeFileSync(path.join(displayRepo, 'key.txt'), `KEY=${displaySecret} updated\n`, 'utf8');
+        execFileSync('git', ['add', 'key.txt'], { cwd: displayRepo });
+        execFileSync('git', ['commit', '-m', 'c2: child with backdated author date'], {
+          cwd: displayRepo,
+          env: {
+            ...process.env,
+            GIT_AUTHOR_DATE: '1990-01-01T12:00:00Z',
+            GIT_COMMITTER_DATE: '2025-01-05T12:00:00Z',
+          },
+        });
+        const c2Sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: displayRepo, encoding: 'utf8' }).trim();
+
+        const tlEngine = new GitTimelineEngine(displayRepo);
+        const tlReport = await tlEngine.buildTimeline(displaySecret, 'ghp_••••');
+        assert(tlReport.events.length === 2, 'buildTimeline produces 2 events');
+        assert(tlReport.events[0].commitSha === c1Sha, 'c1 is first event');
+        assert(tlReport.events[1].commitSha === c2Sha, 'c2 is second event');
+        // Visual timeline display date must use committer date (2025-01-05) or note authored date
+        assert(tlReport.timelineAscii.includes('[2025-01-01]'), 'timeline ASCII includes c1 committer date');
+        assert(tlReport.timelineAscii.includes('[2025-01-05]'), 'timeline ASCII includes c2 committer date for displayed chronology');
+        assert(tlReport.timelineAscii.includes('(authored 1990-01-01)'), 'timeline ASCII explicitly notes backdated author date');
+        assert(tlReport.graph.nodes[1].date.startsWith('2025-01-05'), 'graph node date reflects committer date');
+
+        // 3. Sibling branch independent introductions with aggregate duration
+        const siblingRepo = path.join(sec48Dir, 'sibling-repo');
+        fs.mkdirSync(siblingRepo, { recursive: true });
+        execFileSync('git', ['init'], { cwd: siblingRepo });
+        execFileSync('git', ['checkout', '-B', 'main'], { cwd: siblingRepo });
+        execFileSync('git', ['config', 'user.name', 'Sibling Tester'], { cwd: siblingRepo });
+        execFileSync('git', ['config', 'user.email', 'sibling@example.com'], { cwd: siblingRepo });
+
+        fs.writeFileSync(path.join(siblingRepo, 'root.txt'), 'root\n', 'utf8');
+        execFileSync('git', ['add', 'root.txt'], { cwd: siblingRepo });
+        execFileSync('git', ['commit', '-m', 'root commit'], { cwd: siblingRepo });
+
+        const sharedSecret = fromHex('6768705f') + fromHex('5369626c696e675370726561645365637265743132333435');
+
+        // Sibling branch 1: introduced on 2025-01-01, removed on 2025-01-05 (4 days duration)
+        execFileSync('git', ['checkout', '-b', 'branch-alpha'], { cwd: siblingRepo });
+        fs.writeFileSync(path.join(siblingRepo, 'token.txt'), `KEY=${sharedSecret}\n`, 'utf8');
+        execFileSync('git', ['add', 'token.txt'], { cwd: siblingRepo });
+        execFileSync('git', ['commit', '-m', 'alpha intro'], {
+          cwd: siblingRepo,
+          env: {
+            ...process.env,
+            GIT_AUTHOR_DATE: '2025-01-01T12:00:00Z',
+            GIT_COMMITTER_DATE: '2025-01-01T12:00:00Z',
+          },
+        });
+        const alphaIntroSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: siblingRepo, encoding: 'utf8' }).trim();
+
+        fs.writeFileSync(path.join(siblingRepo, 'token.txt'), 'KEY=clean_alpha\n', 'utf8');
+        execFileSync('git', ['add', 'token.txt'], { cwd: siblingRepo });
+        execFileSync('git', ['commit', '-m', 'alpha removal'], {
+          cwd: siblingRepo,
+          env: {
+            ...process.env,
+            GIT_AUTHOR_DATE: '2025-01-05T12:00:00Z',
+            GIT_COMMITTER_DATE: '2025-01-05T12:00:00Z',
+          },
+        });
+        const alphaRemovalSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: siblingRepo, encoding: 'utf8' }).trim();
+
+        // Sibling branch 2 (divergent from root): introduced on 2025-01-02, active to 2025-01-12 (10 days duration)
+        execFileSync('git', ['checkout', 'main'], { cwd: siblingRepo });
+        execFileSync('git', ['checkout', '-b', 'branch-beta'], { cwd: siblingRepo });
+        fs.writeFileSync(path.join(siblingRepo, 'token.txt'), `KEY=${sharedSecret}\n`, 'utf8');
+        execFileSync('git', ['add', 'token.txt'], { cwd: siblingRepo });
+        execFileSync('git', ['commit', '-m', 'beta intro'], {
+          cwd: siblingRepo,
+          env: {
+            ...process.env,
+            GIT_AUTHOR_DATE: '2025-01-02T12:00:00Z',
+            GIT_COMMITTER_DATE: '2025-01-02T12:00:00Z',
+          },
+        });
+        const betaIntroSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: siblingRepo, encoding: 'utf8' }).trim();
+
+        fs.writeFileSync(path.join(siblingRepo, 'token.txt'), 'KEY=clean_beta\n', 'utf8');
+        execFileSync('git', ['add', 'token.txt'], { cwd: siblingRepo });
+        execFileSync('git', ['commit', '-m', 'beta removal'], {
+          cwd: siblingRepo,
+          env: {
+            ...process.env,
+            GIT_AUTHOR_DATE: '2025-01-12T12:00:00Z',
+            GIT_COMMITTER_DATE: '2025-01-12T12:00:00Z',
+          },
+        });
+        const betaRemovalSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: siblingRepo, encoding: 'utf8' }).trim();
+
+        execFileSync('git', ['checkout', 'main'], { cwd: siblingRepo });
+
+        const siblingEngine = new GitHistoryEngine(siblingRepo);
+        const sibTrace = await siblingEngine.traceSecret(sharedSecret);
+        assert(sibTrace.branchRemovals !== undefined, 'branchRemovals is defined');
+        assert(sibTrace.branchRemovals['branch-alpha']?.introducedCommit?.sha === alphaIntroSha, 'branch-alpha intro commit tracked');
+        assert(sibTrace.branchRemovals['branch-alpha']?.removalCommit?.sha === alphaRemovalSha, 'branch-alpha removal commit tracked');
+        assert(sibTrace.branchRemovals['branch-alpha']?.exposureDurationDays === 4, 'branch-alpha duration is 4 days');
+
+        assert(sibTrace.branchRemovals['branch-beta']?.introducedCommit?.sha === betaIntroSha, 'branch-beta intro commit tracked');
+        assert(sibTrace.branchRemovals['branch-beta']?.removalCommit?.sha === betaRemovalSha, 'branch-beta removal commit tracked');
+        assert(sibTrace.branchRemovals['branch-beta']?.exposureDurationDays === 10, 'branch-beta duration is 10 days');
+
+        // 4. Positive matches in depth-limited searches report SEARCH_INCOMPLETE
+        const limRepo = path.join(sec48Dir, 'lim-repo');
+        fs.mkdirSync(limRepo, { recursive: true });
+        execFileSync('git', ['init'], { cwd: limRepo });
+        execFileSync('git', ['checkout', '-B', 'main'], { cwd: limRepo });
+        execFileSync('git', ['config', 'user.name', 'Lim Tester'], { cwd: limRepo });
+        execFileSync('git', ['config', 'user.email', 'lim@example.com'], { cwd: limRepo });
+
+        const limSecret = fromHex('6768705f') + fromHex('4c696d697465645365617263685365637265743132333435');
+        fs.writeFileSync(path.join(limRepo, 'code.txt'), `SECRET=${limSecret}\n`, 'utf8');
+        execFileSync('git', ['add', 'code.txt'], { cwd: limRepo });
+        execFileSync('git', ['commit', '-m', 'intro secret'], { cwd: limRepo });
+
+        // Add 10 additional clean commits on top
+        for (let i = 1; i <= 10; i++) {
+          fs.writeFileSync(path.join(limRepo, 'clean.txt'), `${i}\n`, 'utf8');
+          execFileSync('git', ['add', 'clean.txt'], { cwd: limRepo });
+          execFileSync('git', ['commit', '-m', `clean commit ${i}`], { cwd: limRepo });
+        }
+
+        const limEngine = new GitHistoryEngine(limRepo);
+        // Search with maxCommits = 11 (covers both the clean commits and the secret commit, but totalRevCount > 11? total is 11)
+        // Add 5 more commits so total is 16
+        for (let i = 11; i <= 15; i++) {
+          fs.writeFileSync(path.join(limRepo, 'clean.txt'), `${i}\n`, 'utf8');
+          execFileSync('git', ['add', 'clean.txt'], { cwd: limRepo });
+          execFileSync('git', ['commit', '-m', `clean commit ${i}`], { cwd: limRepo });
+        }
+
+        // Now total commits = 16. Limit search to 15 commits (which includes the secret at commit 1, because HEAD is commit 16)
+        // With maxCommits = 15, isPartialHistory is true, and secret is found!
+        const limSearchResult = await limEngine.findCommitsContainingSecretResult(limSecret, 15);
+        assert(limSearchResult.status === 'FOUND', 'findCommitsContainingSecretResult returns FOUND');
+        assert(limSearchResult.isPartialHistory === true, 'findCommitsContainingSecretResult marks isPartialHistory: true');
+
+        const limTrace = await limEngine.traceSecret(limSecret, 15);
+        assert(limTrace.isPresentInHistory === true, 'traceSecret marks isPresentInHistory: true');
+        assert(limTrace.isPartialHistory === true, 'traceSecret marks isPartialHistory: true');
+        assert(limTrace.searchStatus === 'SEARCH_INCOMPLETE', 'traceSecret sets searchStatus: SEARCH_INCOMPLETE when secret found in partial history');
+        assert(limTrace.statusDescription.includes('PARTIAL HISTORY: search depth limited to 15 commit(s)'), 'statusDescription mentions partial history limit');
+
+        // Timeline check for limited search
+        const limTlEngine = new GitTimelineEngine(limRepo, limEngine);
+        const limTlReport = await limTlEngine.buildTimeline(limSecret, 'ghp_••••', 15);
+        assert(limTlReport.currentStatus === 'SEARCH_INCOMPLETE', 'buildTimeline reports currentStatus: SEARCH_INCOMPLETE when partial history');
+        assert(limTlReport.timelineAscii.includes('History Coverage:   PARTIAL (limited to 15 commits; earlier history uninspected)'), 'buildTimeline ASCII notes partial history coverage');
+
+      } finally {
+        try { fs.rmSync(sec48Dir, { recursive: true, force: true }); } catch {}
+      }
+    }
+
   console.log('\n============================================================');
   console.log(`🎉 TEST SUMMARY: ${passed} PASSED, ${failed} FAILED`);
   console.log('============================================================\n');

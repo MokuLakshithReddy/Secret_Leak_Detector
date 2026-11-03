@@ -86,6 +86,7 @@ export interface BranchRemovalInfo {
   isRemoved: boolean | 'UNKNOWN';
   removalCommit?: GitCommitInfo;
   introducedCommit?: GitCommitInfo;
+  exposureDurationDays?: number;
 }
 
 export interface GitExposure {
