@@ -21,6 +21,7 @@ export interface ScannerOptions {
   failOnSkipped?: boolean;
   maxFileSize?: number;
   cachedSourceFile?: any;
+  onSourceFileParsed?: (sourceFile: any) => void;
 }
 
 function getFileIdPart(relativePath: string): string {
@@ -123,9 +124,20 @@ export function scanContent(
   const rawLines = rawContent.split(/\r?\n/);
   const findings: SecretFinding[] = [];
 
-  // Parse SourceFile once per document to avoid repeated AST creation in rule loop
+  // Lazy AST creation: only instantiate TypeScript SourceFile if a candidate rule actually matches
   const isJsTs = !filePath || /\.[jt]sx?$|\.m[jt]s$|\.c[jt]s$/i.test(filePath);
-  const parsedSourceFile = opts.cachedSourceFile || (isJsTs ? createSourceFile(rawContent, filePath) : null);
+  let parsedSourceFile: any | null = opts.cachedSourceFile || null;
+  let sourceFileParsed = Boolean(opts.cachedSourceFile);
+  function getParsedSourceFile(): any | null {
+    if (!sourceFileParsed) {
+      parsedSourceFile = isJsTs ? createSourceFile(rawContent, filePath) : null;
+      sourceFileParsed = true;
+      if (parsedSourceFile && opts.onSourceFileParsed) {
+        opts.onSourceFileParsed(parsedSourceFile);
+      }
+    }
+    return parsedSourceFile;
+  }
 
   // Zero-allocation line & column offset index (instantiated lazily on first match)
   let lineOffsets: number[] | null = null;
@@ -203,7 +215,7 @@ export function scanContent(
       // Extract lexical context and AST assignment semantics with windowed lines
       const ctxWindow = getContextWindow(lineNumber);
       const lexicalContext = analyzeLexicalContext(ctxWindow.lines, ctxWindow.relativeTargetIdx);
-      const astContext = analyzeAstContext(ctxWindow.lines, ctxWindow.relativeTargetIdx, filePath, parsedSourceFile, lineNumber - 1);
+      const astContext = analyzeAstContext(ctxWindow.lines, ctxWindow.relativeTargetIdx, filePath, getParsedSourceFile(), lineNumber - 1);
 
       // Build Evidence Model & calculate confidence
       const evidenceResult = buildEvidenceModel(
@@ -389,7 +401,7 @@ export function scanContent(
 
         const ctxWindow = getContextWindow(lineNumber);
         const lexicalContext = analyzeLexicalContext(ctxWindow.lines, ctxWindow.relativeTargetIdx);
-        const astContext = analyzeAstContext(ctxWindow.lines, ctxWindow.relativeTargetIdx, filePath, parsedSourceFile, lineNumber - 1);
+        const astContext = analyzeAstContext(ctxWindow.lines, ctxWindow.relativeTargetIdx, filePath, getParsedSourceFile(), lineNumber - 1);
 
         const evidenceResult = buildEvidenceModel(
           rule,

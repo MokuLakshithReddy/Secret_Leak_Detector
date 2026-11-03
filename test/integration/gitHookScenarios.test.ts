@@ -335,6 +335,53 @@ export async function runGitHookIntegrationTests(): Promise<void> {
     console.log('');
   }
 
+  // ── Test group 12: Node version verification fail-closed guards ─────────────
+  if (bash) {
+    console.log('── Test group 12: Node version verification fail-closed guards ─');
+    const group12Repo = createTempRepo();
+    installHook(group12Repo, cliPath);
+
+    // Verify generated hook file contains fail-closed Node version verification
+    const hookContent = fs.readFileSync(path.join(group12Repo, '.git', 'hooks', 'pre-commit'), 'utf8');
+    assert(hookContent.includes('Cannot determine Node.js version. Commit blocked.'), 'Installed hook blocks when Node version query fails');
+    assert(hookContent.includes('Invalid Node.js version. Commit blocked.'), 'Installed hook blocks on invalid Node version');
+    assert(hookContent.includes('Node.js 18+ required'), 'Installed hook requires Node.js >=18');
+
+    // Test with mock failing Node runtime
+    const fakeBinDir = path.join(group12Repo, 'mock-bin');
+    fs.mkdirSync(fakeBinDir, { recursive: true });
+    fs.writeFileSync(path.join(fakeBinDir, 'node'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+    if (process.platform === 'win32') {
+      fs.writeFileSync(path.join(fakeBinDir, 'node.cmd'), '@echo off\r\nexit /b 1\r\n');
+    }
+
+    fs.writeFileSync(path.join(group12Repo, 'clean.txt'), 'clean text\n', 'utf8');
+    execFileSync('git', ['add', 'clean.txt'], { cwd: group12Repo, stdio: 'pipe' });
+
+    // With mock failing node prepended to PATH, commit must be BLOCKED (fail-closed)
+    const envWithFailingNode = {
+      ...process.env,
+      PATH: `${fakeBinDir}${path.delimiter}${process.env.PATH || ''}`,
+    };
+    const failNodeCommit = spawnSync('git', ['commit', '-m', 'clean with failing node'], {
+      cwd: group12Repo,
+      env: envWithFailingNode,
+      stdio: 'pipe',
+      encoding: 'utf8',
+    });
+    assert(failNodeCommit.status !== 0, 'Commit blocked when Node runtime query fails (fail-closed contract)');
+    assert(
+      failNodeCommit.stdout.includes('Cannot determine Node.js version') ||
+      failNodeCommit.stderr.includes('Cannot determine Node.js version') ||
+      failNodeCommit.stdout.includes('COMMIT BLOCKED') ||
+      failNodeCommit.stderr.includes('COMMIT BLOCKED'),
+      'Commit output informs user commit is blocked due to Node version query error'
+    );
+
+    try { fs.rmSync(group12Repo, { recursive: true, force: true }); } catch {}
+    console.log('');
+  }
+
   // ── Cleanup ───────────────────────────────────────────────────────────────
   try { fs.rmSync(repoDir, { recursive: true, force: true }); } catch { /* ignore */ }
 

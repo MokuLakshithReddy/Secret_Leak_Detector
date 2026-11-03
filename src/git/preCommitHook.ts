@@ -67,10 +67,21 @@ if [ -n "$PINNED_CLI" ] && [ -f "$PINNED_CLI" ]; then
     echo "   Ensure 'node' is in your PATH or configure your Git client environment."
     exit 127
   fi
-  NODE_MAJOR=$("$NODE_CMD" -e 'process.stdout.write(process.versions.node.split(".")[0])' 2>/dev/null || echo "0")
-  if [ "$NODE_MAJOR" -gt 0 ] && [ "$NODE_MAJOR" -lt 18 ]; then
+  if ! NODE_MAJOR=$("$NODE_CMD" -p 'process.versions.node.split(".")[0]' 2>/dev/null); then
     echo ""
-    echo "❌ COMMIT BLOCKED: Node.js runtime is too old (v$NODE_MAJOR detected, >=18 required)."
+    echo "❌ COMMIT BLOCKED: Cannot determine Node.js version. Commit blocked."
+    exit 2
+  fi
+  case "$NODE_MAJOR" in
+    ''|*[!0-9]*)
+      echo ""
+      echo "❌ COMMIT BLOCKED: Invalid Node.js version. Commit blocked."
+      exit 2
+      ;;
+  esac
+  if [ "$NODE_MAJOR" -lt 18 ]; then
+    echo ""
+    echo "❌ COMMIT BLOCKED: Node.js 18+ required (v$NODE_MAJOR detected). Commit blocked."
     exit 2
   fi
   ELECTRON_RUN_AS_NODE=1 "$NODE_CMD" "$PINNED_CLI" scan --staged --fail-on "$SLD_FAIL_ON" $DISALLOW_INLINE $IGNORE_SKIPPED $FAIL_ON_SKIPPED
@@ -132,10 +143,21 @@ if [ -n "$SLD_CLI_PATH" ] && [ -f "$SLD_CLI_PATH" ]; then
     echo "   The pre-commit hook requires Node.js (>=18) to execute the scanner."
     exit 127
   fi
-  NODE_MAJOR=$("$NODE_CMD" -e 'process.stdout.write(process.versions.node.split(".")[0])' 2>/dev/null || echo "0")
-  if [ "$NODE_MAJOR" -gt 0 ] && [ "$NODE_MAJOR" -lt 18 ]; then
+  if ! NODE_MAJOR=$("$NODE_CMD" -p 'process.versions.node.split(".")[0]' 2>/dev/null); then
     echo ""
-    echo "❌ COMMIT BLOCKED: Node.js runtime is too old (v$NODE_MAJOR detected, >=18 required)."
+    echo "❌ COMMIT BLOCKED: Cannot determine Node.js version. Commit blocked."
+    exit 2
+  fi
+  case "$NODE_MAJOR" in
+    ''|*[!0-9]*)
+      echo ""
+      echo "❌ COMMIT BLOCKED: Invalid Node.js version. Commit blocked."
+      exit 2
+      ;;
+  esac
+  if [ "$NODE_MAJOR" -lt 18 ]; then
+    echo ""
+    echo "❌ COMMIT BLOCKED: Node.js 18+ required (v$NODE_MAJOR detected). Commit blocked."
     exit 2
   fi
   ELECTRON_RUN_AS_NODE=1 "$NODE_CMD" "$SLD_CLI_PATH" scan --staged --fail-on "$SLD_FAIL_ON" $DISALLOW_INLINE $IGNORE_SKIPPED $FAIL_ON_SKIPPED
