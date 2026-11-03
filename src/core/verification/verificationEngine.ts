@@ -77,7 +77,14 @@ export class VerificationEngine {
       historyCheckFailed = true;
     }
 
-    if (historyCheckFailed || !gitExposure || gitExposure.statusDescription.includes('Failed to query git log')) {
+    if (
+      historyCheckFailed ||
+      !gitExposure ||
+      gitExposure.isPresentInHistory === 'UNKNOWN' ||
+      gitExposure.searchStatus === 'SEARCH_INCOMPLETE' ||
+      gitExposure.searchStatus === 'ERROR' ||
+      gitExposure.statusDescription.includes('Failed to query git log')
+    ) {
       return {
         isResolved: false,
         targetFileClean: true,
@@ -90,7 +97,7 @@ export class VerificationEngine {
       };
     }
 
-    const inHistory = !!(gitExposure.isPresentInHistory === true || finding.gitExposure?.isPresentInHistory === true);
+    const inHistory = gitExposure.isPresentInHistory === true || finding.gitExposure?.isPresentInHistory === true;
 
     if (inHistory) {
       const commitSha =
