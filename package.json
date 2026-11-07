@@ -243,7 +243,7 @@
     "esbuild": "^0.20.1",
     "mocha": "^12.0.3",
     "ts-node": "^10.9.2",
-    "typescript": "^5.3.3"
+    "typescript": "^7.0.2"
   },
   "bugs": {
     "url": "https://github.com/MokuLakshithReddy/Secret_Leak_Detector/issues"
