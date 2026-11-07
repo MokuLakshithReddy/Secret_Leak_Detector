@@ -1,6 +1,6 @@
 # Validation Methodology — Secret Leak Detector
 
-> **Version:** 1.0.3 | **Document date:** 2026-11
+> **Version:** 1.0.4 | **Document date:** 2026-11
 
 ---
 
@@ -396,7 +396,7 @@ Follow these steps on your own machine to produce independent verification:
    ```bash
    npm run package
    ```
-   Expected: produces `secret-leak-detector-1.0.3.vsix` without errors.
+   Expected: produces `secret-leak-detector-1.0.4.vsix` without errors.
 
 9. **Scan the repository itself for accidental secrets**
    ```bash
