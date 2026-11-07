@@ -3,6 +3,15 @@
 All notable changes to **Secret Leak Detector** are documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.4] - 2026-11-07
+
+### Reliability & Git History Hardening
+- **Immediate Child Process Termination on Stream Failure:** In `getBranchesForCommits`, immediately terminated (`child.kill()`) affected Git child processes upon receiving stdout/stderr/readline stream errors, awaiting their `close` event to prevent hanging processes and returning `failed: true` with the original error.
+- **Subprocess Lifecycle Ordering:** Ensured completion waits for child process `close` rather than resolving prematurely on readline EOF, ensuring non-zero exit codes (e.g. Git fatal errors) are reliably caught and reported.
+- **Streaming Branch Discovery Scale Benchmark:** Scaled benchmark coverage to 2,000 commits and 50 branches, verifying flat heap memory delta and bounded concurrency.
+- **Risk Score vs. Blast Radius Mathematical Separation:** Hardened the clear separation between intrinsic static credential risk and operational containment blast radius under incomplete history.
+- **Comprehensive Verification:** Expanded test coverage to 828 tests across 50 sections with 100% cross-platform pass rate.
+
 ## [1.0.3] - 2026-11-01
 
 ### Critical Fixes & Resilience

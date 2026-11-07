@@ -1213,7 +1213,7 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
     // Test 4: CLI --version
     const cliPath = path.join(process.cwd(), 'dist', 'cli.js');
     const verRes = cp.spawnSync(process.execPath, [cliPath, '--version'], { encoding: 'utf8' });
-    assert(verRes.stdout.trim() === '1.0.3', 'CLI --version prints valid semantic version (got: ' + verRes.stdout.trim() + ')');
+    assert(verRes.stdout.trim() === '1.0.4', 'CLI --version prints valid semantic version (got: ' + verRes.stdout.trim() + ')');
   }
 
   // --- 28. Robust Git Diff Parsing, Glob Matching, UTF-16, & Hook Lifecycle ---
@@ -1438,9 +1438,9 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
     assert(histVerifyResult.isResolved === false, 'Secret remaining in git history is NOT marked resolved');
     assert(histVerifyResult.historyStatus === 'REMOVED_FROM_HEAD_STILL_IN_HISTORY', 'History status correctly set to REMOVED_FROM_HEAD_STILL_IN_HISTORY');
 
-    // Test 4: Version utility returns matching 1.0.3 version
+    // Test 4: Version utility returns matching 1.0.4 version
     const { getPackageVersion } = require('../src/core/version');
-    assert(getPackageVersion() === '1.0.3', `getPackageVersion returns 1.0.3 (got ${getPackageVersion()})`);
+    assert(getPackageVersion() === '1.0.4', `getPackageVersion returns 1.0.4 (got ${getPackageVersion()})`);
 
     // --- 31. Binary and Oversize Tolerant Staged Scans, Scoped Excludes & Hook Registry ---
     console.log('\n--- 31. Binary and Oversize Tolerant Staged Scans, Scoped Excludes & Hook Registry ---');
