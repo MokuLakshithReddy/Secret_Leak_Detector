@@ -11,7 +11,7 @@ import { DETECTOR_RULES } from '../src/core/detectors/rules';
 import { calculateRiskAssessment } from '../src/core/risk/riskEngine';
 import { GitTimelineEngine } from '../src/core/history/gitTimeline';
 import { GitService } from '../src/git/gitService';
-import { applyControlledRemediation, resolveUniqueEnvVarName, escapeEnvValue, enforceEnvFilePermissions, getCurrentSecurityPrincipal, isPrincipalAuthorized } from '../src/core/remediation/remediationEngine';
+import { applyControlledRemediation, resolveUniqueEnvVarName, escapeEnvValue, enforceEnvFilePermissions, getCurrentSecurityPrincipal, isPrincipalAuthorized, supportsDotEnvMigration } from '../src/core/remediation/remediationEngine';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as cp from 'child_process';
@@ -52,6 +52,28 @@ function assert(condition: boolean, msg: string) {
     passed++;
   }
 }
+
+console.log('\\n--- Safe .env Remediation Eligibility ---');
+assert(
+  supportsDotEnvMigration("import 'dotenv/config';\\nconst token = 'placeholder';", 'app.ts'),
+  'Node quick fix requires an explicit dotenv/config loader'
+);
+assert(
+  supportsDotEnvMigration("from dotenv import load_dotenv\\nload_dotenv()", 'app.py'),
+  'Python quick fix recognizes load_dotenv'
+);
+assert(
+  supportsDotEnvMigration("godotenv.Load()", 'main.go'),
+  'Go quick fix recognizes godotenv.Load'
+);
+assert(
+  !supportsDotEnvMigration("const token = 'placeholder';", 'app.ts'),
+  'Node quick fix is withheld when no .env loader is detected'
+);
+assert(
+  !supportsDotEnvMigration("const token = 'placeholder';", 'config.yaml'),
+  'Unknown configuration runtimes do not receive automatic .env migration'
+);
 
 console.log('============================================================');
 console.log('🧪 RUNNING COMPREHENSIVE SECURITY ENGINEERING TEST SUITE');
