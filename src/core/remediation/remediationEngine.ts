@@ -176,13 +176,13 @@ function assertSafeWorkspaceFile(
 ): void {
   const stat = fsModule.lstatSync(filePath);
   if (stat.isSymbolicLink() || !stat.isFile() || stat.nlink > 1) {
-    throw new Error(\`Refusing to modify \${purpose}: expected a regular, non-symlink file with a single hard link.\`);
+    throw new Error('Refusing to modify ' + purpose + ': expected a regular, non-symlink file with a single hard link.');
   }
   const rootReal = fsModule.realpathSync(workspaceRoot);
   const fileReal = fsModule.realpathSync(filePath);
   const relative = path.relative(rootReal, fileReal);
   if (relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) {
-    throw new Error(\`Refusing to modify \${purpose}: resolved path is outside the workspace.\`);
+    throw new Error('Refusing to modify ' + purpose + ': resolved path is outside the workspace.');
   }
 }
 
