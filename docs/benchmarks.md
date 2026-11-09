@@ -49,9 +49,9 @@ Each tool was executed locally on Node.js v24 / Windows x64 against the same dir
 
 ---
 
-## 3. Independently Labelled Real-World Benchmark Study (100 Curated Fixtures)
+## 3. Curated Real-World Benchmark Study (100 Author-Labelled Fixtures)
 
-To validate performance beyond controlled synthetic tests, we constructed a **100-file independently labelled real-world dataset** (`evaluation/datasets/realWorldCorpus.ts`) sourced from public CVE post-mortems, production incident leaks, real DevOps deployment configurations (GitHub Actions, Dockerfiles, Terraform tfvars, Django settings, Kubernetes manifests, Go APIs, and C# configuration files), and common high-entropy non-secret generators (Subresource Integrity SHA digests, 40-character Git commit SHAs, UUID v4s, base64 tracking pixels, RFC 7519 JWT examples):
+To examine performance beyond controlled synthetic tests, the project authors curated a **100-file real-world-inspired dataset** (`evaluation/datasets/realWorldCorpus.ts`) from public CVE post-mortems, production incident write-ups, representative DevOps deployment configurations (GitHub Actions, Dockerfiles, Terraform tfvars, Django settings, Kubernetes manifests, Go APIs, and C# configuration files), and common high-entropy non-secret generators (Subresource Integrity SHA digests, 40-character Git commit SHAs, UUID v4s, base64 tracking pixels, RFC 7519 JWT examples):
 - **50 Real-World True Positives:** Real incident leaky patterns across 10 cloud providers and 7 languages.
 - **50 Real-World False Positives:** High-entropy benign strings commonly misclassified by raw entropy scanners.
 
@@ -89,15 +89,17 @@ Rather than tuning regexes to force the real-world score back to 100%, we conduc
 ### ⚠️ Methodological Caution & Scope Limitations
 
 > **Crucial Methodological Caveat:**
-> While a 100-file curated real-world corpus provides valuable initial empirical evidence and exposes real syntactic boundary conditions, **it is not sufficient to establish broad real-world superiority**.
-> 
+> These benchmark corpora and their ground-truth labels were assembled and labelled by the project authors. “Real-world” describes the formats and incident-inspired patterns represented; it does **not** mean the samples or labels were independently supplied or reviewed by an external evaluator. The results below are author-reported internal measurements, not an independent third-party evaluation.
+>
+> A 100-file curated corpus provides useful initial evidence and exposes real syntactic boundary conditions, but **it is not sufficient to establish broad real-world superiority**.
+>
 > Real-world repositories span millions of heterogeneous projects across hundreds of package managers, internal proprietary DSLs, minified outputs, legacy shell scripts, and novel cloud provider token formats.
-> 
+>
 > Therefore, we maintain **strict separation between our benchmark suites**:
 > - **Suite A (Controlled 1,000 Fixtures):** Demonstrates **100% precision and recall** under controlled synthetic conditions with verified ground truth and deterministic PRNG.
 > - **Suite B (Curated Real-World 100 Fixtures):** Demonstrates **97.5% precision, 78.0% recall, and 86.7% F1**, highlighting the real-world trade-offs between zero false-positive tolerance, multi-language compound syntax, and specialized vendor patterns.
 > 
-> All benchmark scripts (`evaluation/benchmarks/realWorldBenchmarkRunner.ts`) and corpus definitions (`evaluation/datasets/realWorldCorpus.ts`) are open-source and independently reproducible. We encourage independent evaluation across external industry datasets.
+> All benchmark scripts (`evaluation/benchmarks/realWorldBenchmarkRunner.ts`) and corpus definitions (`evaluation/datasets/realWorldCorpus.ts`) are reproducible. Reproduction by another person verifies that the same code and labels produce the same counts; it does not independently validate the correctness of the labels. External review of the corpus and labels remains outstanding.
 
 ## 4. Large-Scale Payload Benchmark (1MB → 10MB → 100MB → 1GB)
 

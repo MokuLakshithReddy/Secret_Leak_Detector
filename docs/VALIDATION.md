@@ -6,11 +6,13 @@
 
 ## 1. Purpose
 
-This document provides a rigorous, independently reproducible validation
-methodology for Secret Leak Detector (SLD). It is addressed to:
+This document provides a reproducible validation methodology for Secret Leak
+Detector (SLD). Reproduction can be performed independently; the current
+corpus labels themselves have not been independently reviewed by a third party.
+It is addressed to:
 
 - **Security reviewers** assessing whether the tool actually blocks credentials.
-- **Independent evaluators** who want to reproduce benchmark results without trusting author-reported numbers.
+- **External evaluators** who want to reproduce the benchmark and assess the limits of the author-reported results.
 - **Project maintainers** who need a definitive test inventory.
 
 The document makes four concrete, independently verifiable claims:
@@ -104,6 +106,13 @@ cases:
 rules were finalized. No case from this file influenced threshold tuning or
 pattern selection. It is structurally analogous to a held-out test set in ML
 evaluation.
+
+**Label provenance:** The project author created the cases and assigned their
+TP/TN labels. “Held out” means the cases were separated from detector tuning;
+it does **not** mean that the cases or labels were independently authored,
+adjudicated, or reviewed. The results are independently reproducible, but they
+are not an independent third-party measurement of precision or recall. External
+label review remains outstanding.
 
 **Synthesized credentials:** All credentials are built with the `synth()`
 helper (`parts.join('')`) so the repository's own scanner does not flag this
@@ -308,9 +317,10 @@ npm run package              # .vsix packaging
 ### Held-out corpus actual results
 
 See `evaluation/reports/held_out_results.json`. The `expectedResults` object
-contains the confusion matrix recorded on the reference machine. An independent
-evaluator should expect to match these counts exactly (the corpus is
-deterministic).
+contains the confusion matrix recorded on the reference machine. A reproduction
+should match these counts exactly because the corpus is deterministic. Matching
+the counts confirms reproducibility only; it does not independently establish
+that the author-assigned labels are correct.
 
 ---
 
