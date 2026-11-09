@@ -81,6 +81,33 @@ export function initializePrivateSalt(workspaceRoot: string): PrivateSaltInitial
     throw new Error('Private fingerprint directory resolves outside the workspace root.');
   }
 
+  // Harden the containing directory before creating any key material. On
+  // Windows a new directory otherwise inherits the parent ACL until changed.
+  try {
+    if (process.platform === 'win32') {
+      const identity = cp.execFileSync('whoami', [], { encoding: 'utf8', windowsHide: true }).trim();
+      if (!identity) throw new Error('Could not identify the current Windows account.');
+      cp.execFileSync('icacls', [saltDir, '/reset'], {
+        encoding: 'utf8',
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      cp.execFileSync('icacls', [saltDir, '/inheritance:r', '/grant:r', identity + ':(OI)(CI)F'], {
+        encoding: 'utf8',
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } else {
+      fs.chmodSync(saltDir, 0o700);
+      const dirMode = fs.statSync(saltDir).mode & 0o777;
+      if ((dirMode & 0o077) !== 0) {
+        throw new Error('Unsafe permissions remain on salt directory (mode ' + dirMode.toString(8) + ').');
+      }
+    }
+  } catch (error: any) {
+    throw new Error('Cannot enforce private fingerprint directory permissions: ' + (error.message || error));
+  }
+
   let saltStat: fs.Stats | null = null;
   try {
     saltStat = fs.lstatSync(saltPath);
@@ -118,16 +145,6 @@ export function initializePrivateSalt(workspaceRoot: string): PrivateSaltInitial
     if (process.platform === 'win32') {
       const identity = cp.execFileSync('whoami', [], { encoding: 'utf8', windowsHide: true }).trim();
       if (!identity) throw new Error('Could not identify the current Windows account.');
-      cp.execFileSync('icacls', [saltDir, '/reset'], {
-        encoding: 'utf8',
-        windowsHide: true,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-      cp.execFileSync('icacls', [saltDir, '/inheritance:r', '/grant:r', identity + ':(OI)(CI)F'], {
-        encoding: 'utf8',
-        windowsHide: true,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
       cp.execFileSync('icacls', [saltPath, '/reset'], {
         encoding: 'utf8',
         windowsHide: true,
@@ -139,13 +156,8 @@ export function initializePrivateSalt(workspaceRoot: string): PrivateSaltInitial
         stdio: ['ignore', 'pipe', 'pipe'],
       });
     } else {
-      fs.chmodSync(saltDir, 0o700);
       fs.chmodSync(saltPath, 0o600);
-      const dirMode = fs.statSync(saltDir).mode & 0o777;
       const fileMode = fs.statSync(saltPath).mode & 0o777;
-      if ((dirMode & 0o077) !== 0) {
-        throw new Error('Unsafe permissions remain on salt directory (mode ' + dirMode.toString(8) + ').');
-      }
       if ((fileMode & 0o077) !== 0) {
         throw new Error('Unsafe permissions remain on salt file (mode ' + fileMode.toString(8) + ').');
       }
