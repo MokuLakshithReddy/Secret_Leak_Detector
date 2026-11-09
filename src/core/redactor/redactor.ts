@@ -97,7 +97,7 @@ export function initializePrivateSalt(workspaceRoot: string): PrivateSaltInitial
   if (!saltStat) {
     const generated = crypto.randomBytes(PRIVATE_SALT_BYTES).toString('hex');
     try {
-      fs.writeFileSync(saltPath, generated + '\\n', {
+      fs.writeFileSync(saltPath, generated + '\n', {
         encoding: 'utf8',
         flag: 'wx',
         mode: 0o600,
@@ -109,6 +109,49 @@ export function initializePrivateSalt(workspaceRoot: string): PrivateSaltInitial
         throw new Error('Cannot write private fingerprint salt ' + saltPath + ': ' + (error.message || error));
       }
     }
+  }
+
+  // Restrict both the directory and key before reading key material. On Windows,
+  // reset existing explicit/inherited entries first, then grant access only to the
+  // current account; the key file receives its own non-inheriting ACL.
+  try {
+    if (process.platform === 'win32') {
+      const identity = cp.execFileSync('whoami', [], { encoding: 'utf8', windowsHide: true }).trim();
+      if (!identity) throw new Error('Could not identify the current Windows account.');
+      cp.execFileSync('icacls', [saltDir, '/reset'], {
+        encoding: 'utf8',
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      cp.execFileSync('icacls', [saltDir, '/inheritance:r', '/grant:r', identity + ':(OI)(CI)F'], {
+        encoding: 'utf8',
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      cp.execFileSync('icacls', [saltPath, '/reset'], {
+        encoding: 'utf8',
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      cp.execFileSync('icacls', [saltPath, '/inheritance:r', '/grant:r', identity + ':F'], {
+        encoding: 'utf8',
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } else {
+      fs.chmodSync(saltDir, 0o700);
+      fs.chmodSync(saltPath, 0o600);
+      const dirMode = fs.statSync(saltDir).mode & 0o777;
+      const fileMode = fs.statSync(saltPath).mode & 0o777;
+      if ((dirMode & 0o077) !== 0) {
+        throw new Error('Unsafe permissions remain on salt directory (mode ' + dirMode.toString(8) + ').');
+      }
+      if ((fileMode & 0o077) !== 0) {
+        throw new Error('Unsafe permissions remain on salt file (mode ' + fileMode.toString(8) + ').');
+      }
+    }
+  } catch (error: any) {
+    throw new Error('Cannot enforce private fingerprint salt permissions: ' + (error.message || error));
   }
 
   let value = '';
@@ -141,26 +184,6 @@ export function initializePrivateSalt(workspaceRoot: string): PrivateSaltInitial
     throw new Error('Cannot safely read private fingerprint salt ' + saltPath + ': ' + (error.message || error));
   }
   validatePrivateSalt(value, 'Private fingerprint salt ' + saltPath);
-  try {
-    if (process.platform === 'win32') {
-      const identity = cp.execFileSync('whoami', [], { encoding: 'utf8', windowsHide: true }).trim();
-      if (!identity) throw new Error('Could not identify the current Windows account.');
-      cp.execFileSync('icacls', [saltPath, '/inheritance:r', '/grant:r', identity + ':(F)'], {
-        encoding: 'utf8',
-        windowsHide: true,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-    } else {
-      fs.chmodSync(saltDir, 0o700);
-      fs.chmodSync(saltPath, 0o600);
-      const mode = fs.statSync(saltPath).mode & 0o777;
-      if ((mode & 0o077) !== 0) {
-        throw new Error('Unsafe permissions remain on salt file (mode ' + mode.toString(8) + ').');
-      }
-    }
-  } catch (error: any) {
-    throw new Error('Cannot enforce private fingerprint salt permissions: ' + (error.message || error));
-  }
 
   return { path: saltPath, created };
 }
