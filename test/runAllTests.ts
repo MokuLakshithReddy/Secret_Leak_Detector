@@ -3645,7 +3645,7 @@ exit 0
         type: 'Test Token',
         remediation: { envVarName: 'TEST_TOKEN' },
       };
-      fs.writeFileSync(path.join(shallowRepoDir, 'source.ts'), \`import 'dotenv/config';\nconst t = "token_degraded_val_123";\n\`, 'utf8');
+      fs.writeFileSync(path.join(shallowRepoDir, 'source.ts'), "import 'dotenv/config';\nconst t = \"token_degraded_val_123\";\n", 'utf8');
 
       const unsupportedAclCp = {
         execFileSync: () => {
