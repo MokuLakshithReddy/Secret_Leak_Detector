@@ -283,6 +283,23 @@ try {
   if (process.platform !== 'win32') {
     assert((fs.statSync(saltInit.path).mode & 0o077) === 0, 'Private salt file has no group/other POSIX permissions');
   }
+  if (process.platform !== 'win32') {
+    const symlinkRoot = path.join(__dirname, '..', 'scratch', 'test_private_salt_symlink');
+    fs.rmSync(symlinkRoot, { recursive: true, force: true });
+    fs.mkdirSync(path.join(symlinkRoot, '.sld'), { recursive: true });
+    const outsideSalt = path.join(symlinkRoot, 'outside-salt');
+    fs.writeFileSync(outsideSalt, 'do-not-touch-this-file');
+    fs.symlinkSync(outsideSalt, path.join(symlinkRoot, '.sld', 'salt'));
+    let symlinkRejected = false;
+    try {
+      initializePrivateSalt(symlinkRoot);
+    } catch {
+      symlinkRejected = true;
+    }
+    assert(symlinkRejected, 'Private salt initialization rejects a symlinked salt path');
+    assert(fs.readFileSync(outsideSalt, 'utf8') === 'do-not-touch-this-file', 'Rejected salt symlink target is left unchanged');
+    fs.rmSync(symlinkRoot, { recursive: true, force: true });
+  }
 } finally {
   if (originalSldSaltForInit === undefined) delete process.env.SLD_SALT;
   else process.env.SLD_SALT = originalSldSaltForInit;
