@@ -67,21 +67,21 @@ export function supportsDotEnvMigration(source: string, filePath: string): boole
     case '.tsx':
     case '.mjs':
     case '.cjs':
-      return /(?:import\\s*['"]dotenv\\/config['"]|require\\s*\\(\\s*['"]dotenv\\/config['"]\\s*\\)|dotenv\\s*\\.\\s*config\\s*\\(|require\\s*\\(\\s*['"]dotenv['"]\\s*\\)\\s*\\.\\s*config\\s*\\()/m.test(source);
+      return /(?:import\s*['"]dotenv\/config['"]|require\s*\(\s*['"]dotenv\/config['"]\s*\)|dotenv\s*\.\s*config\s*\(|require\s*\(\s*['"]dotenv['"]\s*\)\s*\.\s*config\s*\()/m.test(source);
     case '.py':
-      return /(?:from\\s+dotenv\\s+import\\s+load_dotenv|load_dotenv\\s*\\()/m.test(source);
+      return /(?:from\s+dotenv\s+import\s+load_dotenv|load_dotenv\s*\()/m.test(source);
     case '.go':
-      return /godotenv\\s*\\.\\s*Load\\s*\\(/m.test(source);
+      return /godotenv\s*\.\s*Load\s*\(/m.test(source);
     case '.rb':
-      return /(?:require\\s*['"]dotenv\\/(?:load|rails)['"]|Dotenv\\s*\\.\\s*load\\s*\\()/m.test(source);
+      return /(?:require\s*['"]dotenv\/(?:load|rails)['"]|Dotenv\s*\.\s*load\s*\()/m.test(source);
     case '.php':
-      return /Dotenv::create(?:Immutable|Mutable)\\s*\\([^;]*\\)\\s*->\\s*(?:load|safeLoad)\\s*\\(/m.test(source);
+      return /Dotenv::create(?:Immutable|Mutable)\s*\([^;]*\)\s*->\s*(?:load|safeLoad)\s*\(/m.test(source);
     case '.rs':
-      return /(?:dotenv|dotenvy)::dotenv\\s*\\(/m.test(source);
+      return /(?:dotenv|dotenvy)::dotenv\s*\(/m.test(source);
     case '.sh':
     case '.bash':
     case '.zsh':
-      return /(?:^|\\n)\\s*(?:source|\\.)\\s+['"]?\\.env(?:['"])?(?:\\s|$)/m.test(source);
+      return /(?:^|\n)\s*(?:source|\.)\s+['"]?\.env(?:['"])?(?:\s|$)/m.test(source);
     default:
       return false;
   }
