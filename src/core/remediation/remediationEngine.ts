@@ -53,6 +53,40 @@ export function getLanguageReplacement(filePath: string, varName: string): strin
   }
 }
 
+/**
+ * Returns true only when the source explicitly loads .env at runtime.
+ * Moving a literal into .env without a loader silently breaks applications,
+ * so unknown runtimes intentionally do not receive the automatic quick fix.
+ */
+export function supportsDotEnvMigration(source: string, filePath: string): boolean {
+  const ext = path.extname(filePath).toLowerCase();
+  switch (ext) {
+    case '.js':
+    case '.jsx':
+    case '.ts':
+    case '.tsx':
+    case '.mjs':
+    case '.cjs':
+      return /(?:import\\s*['"]dotenv\\/config['"]|require\\s*\\(\\s*['"]dotenv\\/config['"]\\s*\\)|dotenv\\s*\\.\\s*config\\s*\\(|require\\s*\\(\\s*['"]dotenv['"]\\s*\\)\\s*\\.\\s*config\\s*\\()/m.test(source);
+    case '.py':
+      return /(?:from\\s+dotenv\\s+import\\s+load_dotenv|load_dotenv\\s*\\()/m.test(source);
+    case '.go':
+      return /godotenv\\s*\\.\\s*Load\\s*\\(/m.test(source);
+    case '.rb':
+      return /(?:require\\s*['"]dotenv\\/(?:load|rails)['"]|Dotenv\\s*\\.\\s*load\\s*\\()/m.test(source);
+    case '.php':
+      return /Dotenv::create(?:Immutable|Mutable)\\s*\\([^;]*\\)\\s*->\\s*(?:load|safeLoad)\\s*\\(/m.test(source);
+    case '.rs':
+      return /(?:dotenv|dotenvy)::dotenv\\s*\\(/m.test(source);
+    case '.sh':
+    case '.bash':
+    case '.zsh':
+      return /(?:^|\\n)\\s*(?:source|\\.)\\s+['"]?\\.env(?:['"])?(?:\\s|$)/m.test(source);
+    default:
+      return false;
+  }
+}
+
 export function buildRemediationPlan(
   rule: RuleDefinition,
   rawSecret: string,
@@ -477,6 +511,14 @@ export function applyControlledRemediation(
     }
 
     originalFileContent = fsModule.readFileSync(targetFile, 'utf8');
+    if (!supportsDotEnvMigration(originalFileContent, targetFile)) {
+      return {
+        success: false,
+        message: 'Automatic .env migration is unavailable: no supported .env runtime loader was detected in this file. Configure the environment loader first, then retry.',
+        envPath: '',
+        modifiedFile: targetFile,
+      };
+    }
     const secretToSearch = finding.sourceExpression || finding.rawSecret;
     if (!originalFileContent.includes(secretToSearch) && !originalFileContent.includes(finding.rawSecret)) {
       return {
@@ -515,21 +557,18 @@ export function applyControlledRemediation(
     // 2. Ensure .gitignore protects .env BEFORE writing credentials to disk
     ensureGitignoreProtectsEnv(workspaceRoot);
 
-    // 3. Write to .env and enforce 0600 mode
+    // 3. Enforce owner-only protection BEFORE writing credential material.
+    const envProtection = enforceEnvFilePermissions(envPath, fsModule, targetPlatform, cpModule);
+    if (!envProtection.enforced) {
+      throw new Error(`Could not enforce private .env permissions (${envProtection.details || 'unsupported filesystem'}). No credential was written.`);
+    }
     if (!isReused) {
       const prefix = envContent.endsWith('\n') || envContent.length === 0 ? '' : '\n';
       fsModule.appendFileSync(envPath, `${prefix}${envLine}`, 'utf8');
     }
-    const envProtection = enforceEnvFilePermissions(envPath, fsModule, targetPlatform, cpModule);
-    let degradedSecurity = false;
-    let warning: string | undefined;
-    let message = `Successfully migrated ${finding.type} to .env (${varName}) and replaced in ${finding.file}.`;
-
-    if (!envProtection.enforced) {
-      degradedSecurity = true;
-      warning = `DEGRADED FILE SECURITY: Environment file permissions could not be enforced on '${envPath}' (${envProtection.details || 'unsupported filesystem'}). The environment file may be readable by other local users.`;
-      message = `[DEGRADED SECURITY] Migrated ${finding.type} to .env (${varName}) and replaced in ${finding.file}, but file permissions could not be enforced (${envProtection.details || 'unsupported filesystem'}).`;
-    }
+    const degradedSecurity = false;
+    const warning: string | undefined = undefined;
+    const message = `Successfully migrated ${finding.type} to .env (${varName}) and replaced in ${finding.file}.`;
 
     // 4. Update .env.example
     const envExamplePath = path.join(workspaceRoot, '.env.example');
