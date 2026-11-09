@@ -3645,7 +3645,7 @@ exit 0
         type: 'Test Token',
         remediation: { envVarName: 'TEST_TOKEN' },
       };
-            fs.writeFileSync(path.join(shallowRepoDir, 'source.ts'), 	\`import 'dotenv/config';\nconst t = "token_degraded_val_123";\n\`, 'utf8');
+      fs.writeFileSync(path.join(shallowRepoDir, 'source.ts'), \`import 'dotenv/config';\nconst t = "token_degraded_val_123";\n\`, 'utf8');
 
       const unsupportedAclCp = {
         execFileSync: () => {
@@ -3668,17 +3668,30 @@ exit 0
       assert(fs.readFileSync(path.join(shallowRepoDir, 'source.ts'), 'utf8').includes('token_degraded_val_123'), 'Source file remains unchanged when .env permissions cannot be enforced');
       assert(!fs.readFileSync(remEnv, 'utf8').includes('token_degraded_val_123'), 'Credential is never written to an unprotected .env file');
       // A pre-existing .env symlink must not redirect credential writes outside the workspace.
-      const symlinkWorkspace = makeWs();
-      const outsideEnv = path.join(remScratchRoot, 'outside-env');
-      fs.writeFileSync(outsideEnv, 'OUTSIDE="untouched"\n', 'utf8');
-      fs.unlinkSync(path.join(symlinkWorkspace, '.env'));
-      fs.symlinkSync(outsideEnv, path.join(symlinkWorkspace, '.env'));
-      const symlinkResult = applyControlledRemediation(finding(symlinkWorkspace), symlinkWorkspace);
-      assert(symlinkResult.success === false, 'Remediation rejects a symlinked .env file');
-      assert(fs.readFileSync(outsideEnv, 'utf8') === 'OUTSIDE="untouched"\n', 'A symlink target outside the workspace is never modified');
-      assertOriginalPreserved(symlinkWorkspace, 'Source file remains unchanged when .env is a symlink');
-      fs.rmSync(symlinkWorkspace, { recursive: true, force: true });
-      fs.rmSync(outsideEnv, { force: true });
+      if (process.platform !== 'win32') {
+        const symlinkWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-rem-symlink-'));
+        const symlinkSource = path.join(symlinkWorkspace, 'source.ts');
+        const symlinkEnv = path.join(symlinkWorkspace, '.env');
+        const outsideEnv = path.join(os.tmpdir(), 'sld-outside-env-' + process.pid + '-' + Date.now());
+        const symlinkSecret = 'symlink_secret_value_123456';
+        fs.writeFileSync(symlinkSource, "import 'dotenv/config';\nconst token = \"" + symlinkSecret + "\";\n", 'utf8');
+        fs.writeFileSync(path.join(symlinkWorkspace, '.gitignore'), '.env\n', 'utf8');
+        fs.writeFileSync(outsideEnv, 'OUTSIDE="untouched"\n', 'utf8');
+        fs.symlinkSync(outsideEnv, symlinkEnv);
+        const symlinkFinding: any = {
+          fullPath: symlinkSource,
+          file: 'source.ts',
+          rawSecret: symlinkSecret,
+          type: 'Test Token',
+          remediation: { envVarName: 'TEST_TOKEN' },
+        };
+        const symlinkResult = applyControlledRemediation(symlinkFinding, symlinkWorkspace);
+        assert(symlinkResult.success === false, 'Remediation rejects a symlinked .env file');
+        assert(fs.readFileSync(outsideEnv, 'utf8') === 'OUTSIDE="untouched"\n', 'A symlink target outside the workspace is never modified');
+        assert(fs.readFileSync(symlinkSource, 'utf8').includes(symlinkSecret), 'Source file remains unchanged when .env is a symlink');
+        fs.rmSync(symlinkWorkspace, { recursive: true, force: true });
+        fs.rmSync(outsideEnv, { force: true });
+      }
 
 
       // 4. Windows ACL Identity Check: Strict Principal & SID Matching
