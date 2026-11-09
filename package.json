@@ -232,7 +232,8 @@
     "test:git-hook": "npx ts-node --project tsconfig.json test/integration/gitHookScenarios.test.ts",
     "vscode:uninstall": "node ./dist/uninstall.js",
     "test:vscode": "node esbuild.js --vscode-test && npx ts-node --project tsconfig.json test/vscode-integration/runTest.ts",
-    "test:manifest": "npx ts-node --project tsconfig.json test/integration/vscodeExtensionHost.test.ts"
+    "test:manifest": "npx ts-node --project tsconfig.json test/integration/vscodeExtensionHost.test.ts",
+    "verify:package": "node scripts/verify-npm-package.js"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",
@@ -252,5 +253,14 @@
   "galleryBanner": {
     "color": "#1e1e1e",
     "theme": "dark"
-  }
+  },
+  "files": [
+    "dist/cli.js",
+    "dist/ast-parser.js",
+    "dist/uninstall.js",
+    "README.md",
+    "LICENSE",
+    "SECURITY.md",
+    "CHANGELOG.md"
+  ]
 }
