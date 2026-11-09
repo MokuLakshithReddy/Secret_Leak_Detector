@@ -105,21 +105,30 @@ jobs:
           VSCE_OUTCOME: ${{ steps.publish_vsce.outcome }}
           NPM_OUTCOME: ${{ steps.publish_npm.outcome }}
         run: |
+          published_count=0
           {
             echo "## Registry publication"
             for registry in OVSX VSCE NPM; do
-              configured_var="${registry}_CONFIGURED"
-              outcome_var="${registry}_OUTCOME"
-              configured="${!configured_var}"
-              outcome="${!outcome_var}"
+              configured_var="\${registry}_CONFIGURED"
+              outcome_var="\${registry}_OUTCOME"
+              configured="\${!configured_var}"
+              outcome="\${!outcome_var}"
               if [ "$configured" != "true" ]; then
                 echo "- **$registry:** skipped — publishing token is not configured."
               elif [ "$outcome" = "success" ]; then
                 echo "- **$registry:** published successfully."
+                published_count=$((published_count + 1))
               else
-                echo "- **$registry:** failed (step outcome: ${outcome:-unknown})."
+                echo "- **$registry:** failed (step outcome: \${outcome:-unknown})."
               fi
             done
             echo
             echo "A successful build does not mean a registry was updated. Only entries marked published successfully confirm publication."
+            if [ "$published_count" -eq 0 ]; then
+              echo
+              echo "::error::No configured registry was successfully published. Configure at least one publishing token or inspect the failed registry step."
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$published_count" -eq 0 ]; then
+            exit 1
+          fi
