@@ -206,5 +206,9 @@ export interface BaselineFile {
   version: number;
   generatedAt: string;
   generator: string;
+  /** Missing scheme denotes a pre-v2 baseline generated with the legacy public domain salt. */
+  fingerprintScheme?: 'hmac-sha256-private-v2' | 'hmac-sha256-public-v1';
+  /** Non-secret identifier used to detect a mismatched private key across developer/CI environments. */
+  fingerprintKeyId?: string;
   findings: BaselineFinding[];
 }
