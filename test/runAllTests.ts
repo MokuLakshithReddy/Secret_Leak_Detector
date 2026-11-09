@@ -1788,10 +1788,10 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
       const saltScratch = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-salt-test-'));
       const sldDir = path.join(saltScratch, '.sld');
       fs.mkdirSync(sldDir, { recursive: true });
-      fs.writeFileSync(path.join(sldDir, 'salt'), 'custom_repo_secret_salt_123', 'utf8');
+      fs.writeFileSync(path.join(sldDir, 'salt'), '0123456789abcdef'.repeat(4), 'utf8');
 
       const resolved = resolveSalt(undefined, saltScratch);
-      assert(resolved === 'custom_repo_secret_salt_123', 'resolveSalt correctly reads .sld/salt');
+      assert(resolved === '0123456789abcdef'.repeat(4), 'resolveSalt correctly reads .sld/salt');
 
       const fpCustom = generateFingerprint('secret123', undefined, saltScratch);
       const fpDefault = generateFingerprint('secret123');
