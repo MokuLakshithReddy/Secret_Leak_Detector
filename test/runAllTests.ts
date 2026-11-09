@@ -2157,10 +2157,18 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
       const origSldFps = process.env.SLD_FINGERPRINT_SALT;
       try {
         delete process.env.SLD_SALT;
-        process.env.SLD_FINGERPRINT_SALT = 'custom_fps_123';
-        assert(resolveSalt() === 'custom_fps_123', 'resolveSalt honors SLD_FINGERPRINT_SALT');
-        process.env.SLD_SALT = 'custom_salt_456';
-        assert(resolveSalt() === 'custom_salt_456', 'resolveSalt prioritizes SLD_SALT');
+        process.env.SLD_FINGERPRINT_SALT = 'C'.repeat(64);
+        assert(resolveSalt() === 'C'.repeat(64), 'resolveSalt honors a sufficiently strong SLD_FINGERPRINT_SALT');
+        process.env.SLD_SALT = 'D'.repeat(64);
+        assert(resolveSalt() === 'D'.repeat(64), 'resolveSalt prioritizes a sufficiently strong SLD_SALT');
+        process.env.SLD_SALT = 'weak-key';
+        let weakSaltRejected = false;
+        try {
+          resolveSalt();
+        } catch {
+          weakSaltRejected = true;
+        }
+        assert(weakSaltRejected, 'resolveSalt rejects weak environment-provided fingerprint keys');
       } finally {
         if (origSldSalt !== undefined) process.env.SLD_SALT = origSldSalt;
         else delete process.env.SLD_SALT;
