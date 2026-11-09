@@ -33,14 +33,14 @@ export function initializePrivateSalt(workspaceRoot: string): PrivateSaltInitial
   try {
     fs.mkdirSync(saltDir, { recursive: true, mode: 0o700 });
   } catch (error: any) {
-    throw new Error(\`Cannot create private fingerprint directory '\${saltDir}': \${error.message || error}\`);
+    throw new Error('Cannot create private fingerprint directory ' + saltDir + ': ' + (error.message || error));
   }
 
   let created = false;
   if (!fs.existsSync(saltPath)) {
     const generated = crypto.randomBytes(PRIVATE_SALT_BYTES).toString('hex');
     try {
-      fs.writeFileSync(saltPath, \`\${generated}\\n\`, {
+      fs.writeFileSync(saltPath, generated + '\n', {
         encoding: 'utf8',
         flag: 'wx',
         mode: 0o600,
@@ -49,7 +49,7 @@ export function initializePrivateSalt(workspaceRoot: string): PrivateSaltInitial
     } catch (error: any) {
       // Another process may have initialized the repository salt concurrently.
       if (error?.code !== 'EEXIST') {
-        throw new Error(\`Cannot write private fingerprint salt '\${saltPath}': \${error.message || error}\`);
+        throw new Error('Cannot write private fingerprint salt ' + saltPath + ': ' + (error.message || error));
       }
     }
   }
@@ -58,17 +58,20 @@ export function initializePrivateSalt(workspaceRoot: string): PrivateSaltInitial
   try {
     value = fs.readFileSync(saltPath, 'utf8').trim();
   } catch (error: any) {
-    throw new Error(\`Cannot read private fingerprint salt '\${saltPath}': \${error.message || error}\`);
+    throw new Error('Cannot read private fingerprint salt ' + saltPath + ': ' + (error.message || error));
   }
   if (value.length < PRIVATE_SALT_BYTES * 2) {
-    throw new Error(\`Private fingerprint salt '\${saltPath}' must contain at least 32 random bytes (64 hex characters). Run 'secret-leak-detector salt init' after backing up the existing value.\`);
+    throw new Error(
+      'Private fingerprint salt ' + saltPath +
+      ' must contain at least 32 random bytes (64 hex characters). Back up and replace the existing value.'
+    );
   }
 
   try {
     if (process.platform === 'win32') {
       const identity = cp.execFileSync('whoami', [], { encoding: 'utf8', windowsHide: true }).trim();
       if (!identity) throw new Error('Could not identify the current Windows account.');
-      cp.execFileSync('icacls', [saltPath, '/inheritance:r', '/grant:r', \`\${identity}:(F)\`], {
+      cp.execFileSync('icacls', [saltPath, '/inheritance:r', '/grant:r', identity + ':(F)'], {
         encoding: 'utf8',
         windowsHide: true,
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -78,11 +81,11 @@ export function initializePrivateSalt(workspaceRoot: string): PrivateSaltInitial
       fs.chmodSync(saltPath, 0o600);
       const mode = fs.statSync(saltPath).mode & 0o777;
       if ((mode & 0o077) !== 0) {
-        throw new Error(\`Unsafe permissions remain on salt file (mode \${mode.toString(8)}).\`);
+        throw new Error('Unsafe permissions remain on salt file (mode ' + mode.toString(8) + ').');
       }
     }
   } catch (error: any) {
-    throw new Error(\`Cannot enforce private fingerprint salt permissions: \${error.message || error}\`);
+    throw new Error('Cannot enforce private fingerprint salt permissions: ' + (error.message || error));
   }
 
   return { path: saltPath, created };
@@ -113,7 +116,7 @@ export function getFingerprintKeyId(workspaceRoot?: string): string {
  * fingerprintScheme metadata. Never use this function to create new findings.
  */
 export function generateLegacyFingerprint(secret: string, canonicalizeLineEndings = true): string {
-  const candidate = canonicalizeLineEndings ? secret.replace(/\\r\\n/g, '\\n') : secret;
+  const candidate = canonicalizeLineEndings ? secret.replace(/\r\n/g, '\n') : secret;
   return crypto
     .createHmac('sha256', LEGACY_PUBLIC_FINGERPRINT_SALT)
     .update(candidate)
@@ -144,12 +147,12 @@ export function redactSecret(secret: string): string {
   const suffix = secret.substring(len - suffixLen);
   const mask = '•'.repeat(maskLen);
 
-  return \`\${prefix}\${mask}\${suffix}\`;
+  return prefix + mask + suffix;
 }
 
 /** Computes a deterministic fingerprint using the private repository key. */
 export function generateFingerprint(secret: string, customSalt?: string, workspaceRoot?: string): string {
   const salt = resolveSalt(customSalt, workspaceRoot);
-  const canonicalSecret = secret.replace(/\\r\\n/g, '\\n');
+  const canonicalSecret = secret.replace(/\r\n/g, '\n');
   return crypto.createHmac('sha256', salt).update(canonicalSecret).digest('hex').substring(0, 16);
 }
