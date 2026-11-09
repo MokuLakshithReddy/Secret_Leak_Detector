@@ -30,17 +30,64 @@ export function initializePrivateSalt(workspaceRoot: string): PrivateSaltInitial
   const saltDir = path.join(root, '.sld');
   const saltPath = path.join(saltDir, 'salt');
 
+  let rootReal: string;
   try {
-    fs.mkdirSync(saltDir, { recursive: true, mode: 0o700 });
+    rootReal = fs.realpathSync(root);
   } catch (error: any) {
-    throw new Error('Cannot create private fingerprint directory ' + saltDir + ': ' + (error.message || error));
+    throw new Error('Cannot resolve workspace root for private fingerprint salt: ' + (error.message || error));
+  }
+
+  // Never follow repository-controlled symlinks for key storage: a malicious
+  // checkout must not redirect key creation, reading, or chmod outside the repo.
+  try {
+    const dirStat = fs.lstatSync(saltDir);
+    if (dirStat.isSymbolicLink() || !dirStat.isDirectory()) {
+      throw new Error("The '.sld' fingerprint directory must be a real directory, not a symlink.");
+    }
+  } catch (error: any) {
+    if (error?.code !== 'ENOENT') {
+      throw new Error('Unsafe private fingerprint directory: ' + (error.message || error));
+    }
+    try {
+      fs.mkdirSync(saltDir, { recursive: false, mode: 0o700 });
+    } catch (mkdirError: any) {
+      throw new Error('Cannot create private fingerprint directory ' + saltDir + ': ' + (mkdirError.message || mkdirError));
+    }
+  }
+
+  let saltDirStat: fs.Stats;
+  let saltDirReal: string;
+  try {
+    saltDirStat = fs.lstatSync(saltDir);
+    saltDirReal = fs.realpathSync(saltDir);
+  } catch (error: any) {
+    throw new Error('Cannot validate private fingerprint directory: ' + (error.message || error));
+  }
+  if (saltDirStat.isSymbolicLink() || !saltDirStat.isDirectory()) {
+    throw new Error("The '.sld' fingerprint directory must not be a symlink.");
+  }
+  const dirRelative = path.relative(rootReal, saltDirReal);
+  if (dirRelative === '..' || dirRelative.startsWith('..' + path.sep) || path.isAbsolute(dirRelative)) {
+    throw new Error('Private fingerprint directory resolves outside the workspace root.');
+  }
+
+  let saltStat: fs.Stats | null = null;
+  try {
+    saltStat = fs.lstatSync(saltPath);
+    if (saltStat.isSymbolicLink() || !saltStat.isFile() || saltStat.nlink > 1) {
+      throw new Error('The private fingerprint salt must be a regular, non-symlink file with a single hard link.');
+    }
+  } catch (error: any) {
+    if (error?.code !== 'ENOENT') {
+      throw new Error('Unsafe private fingerprint salt path: ' + (error.message || error));
+    }
   }
 
   let created = false;
-  if (!fs.existsSync(saltPath)) {
+  if (!saltStat) {
     const generated = crypto.randomBytes(PRIVATE_SALT_BYTES).toString('hex');
     try {
-      fs.writeFileSync(saltPath, generated + '\n', {
+      fs.writeFileSync(saltPath, generated + '\\n', {
         encoding: 'utf8',
         flag: 'wx',
         mode: 0o600,
@@ -55,10 +102,33 @@ export function initializePrivateSalt(workspaceRoot: string): PrivateSaltInitial
   }
 
   let value = '';
+  let saltFileStat: fs.Stats;
   try {
-    value = fs.readFileSync(saltPath, 'utf8').trim();
+    saltFileStat = fs.lstatSync(saltPath);
+    if (saltFileStat.isSymbolicLink() || !saltFileStat.isFile() || saltFileStat.nlink > 1) {
+      throw new Error('The private fingerprint salt must be a regular, non-symlink file with a single hard link.');
+    }
+    const saltReal = fs.realpathSync(saltPath);
+    const saltRelative = path.relative(saltDirReal, saltReal);
+    if (saltRelative !== 'salt') {
+      throw new Error('Private fingerprint salt resolves outside its expected workspace path.');
+    }
+
+    // O_NOFOLLOW prevents a final-component symlink swap on POSIX platforms.
+    const noFollow = process.platform === 'win32' ? 0 : (fs.constants.O_NOFOLLOW || 0);
+    const fd = fs.openSync(saltPath, fs.constants.O_RDONLY | noFollow);
+    try {
+      const openedStat = fs.fstatSync(fd);
+      if (!openedStat.isFile() || openedStat.nlink > 1) {
+        throw new Error('Opened fingerprint salt is not a private regular file.');
+      }
+      value = fs.readFileSync(fd, 'utf8').trim();
+      saltFileStat = openedStat;
+    } finally {
+      fs.closeSync(fd);
+    }
   } catch (error: any) {
-    throw new Error('Cannot read private fingerprint salt ' + saltPath + ': ' + (error.message || error));
+    throw new Error('Cannot safely read private fingerprint salt ' + saltPath + ': ' + (error.message || error));
   }
   if (value.length < PRIVATE_SALT_BYTES * 2) {
     throw new Error(
@@ -66,7 +136,6 @@ export function initializePrivateSalt(workspaceRoot: string): PrivateSaltInitial
       ' must contain at least 32 random bytes (64 hex characters). Back up and replace the existing value.'
     );
   }
-
   try {
     if (process.platform === 'win32') {
       const identity = cp.execFileSync('whoami', [], { encoding: 'utf8', windowsHide: true }).trim();
