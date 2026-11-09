@@ -109,17 +109,17 @@ jobs:
           {
             echo "## Registry publication"
             for registry in OVSX VSCE NPM; do
-              configured_var="\${registry}_CONFIGURED"
-              outcome_var="\${registry}_OUTCOME"
-              configured="\${!configured_var}"
-              outcome="\${!outcome_var}"
+              configured_var="${registry}_CONFIGURED"
+              outcome_var="${registry}_OUTCOME"
+              configured="${!configured_var}"
+              outcome="${!outcome_var}"
               if [ "$configured" != "true" ]; then
                 echo "- **$registry:** skipped — publishing token is not configured."
               elif [ "$outcome" = "success" ]; then
                 echo "- **$registry:** published successfully."
                 published_count=$((published_count + 1))
               else
-                echo "- **$registry:** failed (step outcome: \${outcome:-unknown})."
+                echo "- **$registry:** failed (step outcome: ${outcome:-unknown})."
               fi
             done
             echo
