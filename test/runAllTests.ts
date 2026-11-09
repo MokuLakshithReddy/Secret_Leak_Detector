@@ -53,18 +53,30 @@ function assert(condition: boolean, msg: string) {
   }
 }
 
-console.log('\\n--- Safe .env Remediation Eligibility ---');
+console.log('\n--- Safe .env Remediation Eligibility ---');
 assert(
-  supportsDotEnvMigration("import 'dotenv/config';\\nconst token = 'placeholder';", 'app.ts'),
+  supportsDotEnvMigration("import 'dotenv/config';\nconst token = 'placeholder';", 'app.ts'),
   'Node quick fix requires an explicit dotenv/config loader'
 );
 assert(
-  supportsDotEnvMigration("from dotenv import load_dotenv\\nload_dotenv()", 'app.py'),
-  'Python quick fix recognizes load_dotenv'
+  supportsDotEnvMigration("import os\nfrom dotenv import load_dotenv\nload_dotenv()", 'app.py'),
+  'Python quick fix requires both os and dotenv imports'
 );
 assert(
-  supportsDotEnvMigration("godotenv.Load()", 'main.go'),
-  'Go quick fix recognizes godotenv.Load'
+  !supportsDotEnvMigration("from dotenv import load_dotenv\nload_dotenv()", 'app.py'),
+  'Python quick fix is withheld when os is not imported'
+);
+assert(
+  supportsDotEnvMigration('import ("os"\n"github.com/joho/godotenv")\ngodotenv.Load()', 'main.go'),
+  'Go quick fix requires both os and godotenv imports'
+);
+assert(
+  !supportsDotEnvMigration('godotenv.Load()', 'main.go'),
+  'Go quick fix is withheld when required imports are absent'
+);
+assert(
+  !supportsDotEnvMigration("dotenv.config();\nconst token = 'placeholder';", 'app.ts'),
+  'Node quick fix is withheld for an unbound dotenv.config call'
 );
 assert(
   !supportsDotEnvMigration("const token = 'placeholder';", 'app.ts'),
@@ -545,7 +557,7 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
     const w = path.join(remScratchRoot, 'ws-' + Date.now() + '-' + Math.random().toString(36).slice(2));
     fs.rmSync(w, { recursive: true, force: true });
     fs.mkdirSync(w, { recursive: true });
-    fs.writeFileSync(path.join(w, 'config.ts'), `const key = "${remSecret}";\n`);
+    fs.writeFileSync(path.join(w, 'config.ts'), `import 'dotenv/config';\nconst key = "${remSecret}";\n`);
     fs.writeFileSync(path.join(w, '.env'), 'OTHER="x"\n');
     fs.writeFileSync(path.join(w, '.gitignore'), 'node_modules\n');
     fs.writeFileSync(path.join(w, '.env.example'), 'OTHER=example\n');
@@ -2038,7 +2050,7 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
       // 3. applyControlledRemediation handles findings with sourceExpression
       const remDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-rem-src-expr-'));
       const remFile = path.join(remDir, 'test.js');
-      fs.writeFileSync(remFile, 'const token = "part1_" + "part2_abcdef1234567890";\n', 'utf8');
+            fs.writeFileSync(remFile, \`import 'dotenv/config';\nconst token = "part1_" + "part2_abcdef1234567890";\n\`, 'utf8');
       const fakeFinding: any = {
         id: 'finding_expr_1',
         type: 'Generic API Key',
@@ -3633,7 +3645,7 @@ exit 0
         type: 'Test Token',
         remediation: { envVarName: 'TEST_TOKEN' },
       };
-      fs.writeFileSync(path.join(shallowRepoDir, 'source.ts'), 'const t = "token_degraded_val_123";\n', 'utf8');
+            fs.writeFileSync(path.join(shallowRepoDir, 'source.ts'), \`import 'dotenv/config';\nconst t = "token_degraded_val_123";\n\`, 'utf8');
 
       const unsupportedAclCp = {
         execFileSync: () => {
@@ -3651,11 +3663,23 @@ exit 0
         'win32',
         unsupportedAclCp as any
       );
-      assert(remResDegraded.success === true, 'applyControlledRemediation proceeds with file modification');
-      assert(remResDegraded.degradedSecurity === true, 'applyControlledRemediation marks degradedSecurity: true');
-      assert(remResDegraded.envProtection?.enforced === false, 'applyControlledRemediation records envProtection.enforced: false');
-      assert(remResDegraded.warning !== undefined && remResDegraded.warning.includes('DEGRADED FILE SECURITY'), 'applyControlledRemediation issues prominent security warning');
-      assert(remResDegraded.message.includes('[DEGRADED SECURITY]'), 'applyControlledRemediation message communicates degraded state');
+      assert(remResDegraded.success === false, 'applyControlledRemediation refuses to write when private .env permissions cannot be enforced');
+      assert(/Could not enforce private \.env permissions/.test(remResDegraded.message), 'Permission failure explains why remediation was aborted');
+      assert(fs.readFileSync(path.join(shallowRepoDir, 'source.ts'), 'utf8').includes('token_degraded_val_123'), 'Source file remains unchanged when .env permissions cannot be enforced');
+      assert(!fs.readFileSync(remEnv, 'utf8').includes('token_degraded_val_123'), 'Credential is never written to an unprotected .env file');
+      // A pre-existing .env symlink must not redirect credential writes outside the workspace.
+      const symlinkWorkspace = makeWs();
+      const outsideEnv = path.join(remScratchRoot, 'outside-env');
+      fs.writeFileSync(outsideEnv, 'OUTSIDE="untouched"\n', 'utf8');
+      fs.unlinkSync(path.join(symlinkWorkspace, '.env'));
+      fs.symlinkSync(outsideEnv, path.join(symlinkWorkspace, '.env'));
+      const symlinkResult = applyControlledRemediation(finding(symlinkWorkspace), symlinkWorkspace);
+      assert(symlinkResult.success === false, 'Remediation rejects a symlinked .env file');
+      assert(fs.readFileSync(outsideEnv, 'utf8') === 'OUTSIDE="untouched"\n', 'A symlink target outside the workspace is never modified');
+      assertOriginalPreserved(symlinkWorkspace, 'Source file remains unchanged when .env is a symlink');
+      fs.rmSync(symlinkWorkspace, { recursive: true, force: true });
+      fs.rmSync(outsideEnv, { force: true });
+
 
       // 4. Windows ACL Identity Check: Strict Principal & SID Matching
       const mypcPrincipal = {
