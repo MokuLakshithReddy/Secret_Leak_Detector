@@ -229,6 +229,7 @@ const legacyCurrentFinding: any = {
 };
 const legacyFiltered = legacyEngine.filterAgainstBaseline([legacyCurrentFinding], { forceFile: true });
 assert(legacyFiltered.existingFindings.length === 1, 'Legacy public-salt baseline remains recognized during migration');
+fs.rmSync(legacyRoot, { recursive: true, force: true });
 
 // New private baselines must fail clearly when the local/CI key differs.
 const keyMismatchRoot = path.join(__dirname, '..', 'scratch', 'test_private_key_mismatch');
@@ -263,6 +264,7 @@ try {
   else process.env.SLD_FINGERPRINT_SALT = originalLegacySaltForMismatch;
 }
 assert(privateKeyMismatchRejected, 'Private baseline rejects scans using a different fingerprint key');
+fs.rmSync(keyMismatchRoot, { recursive: true, force: true });
 
 // Explicit initialization creates a high-entropy, access-restricted local key.
 const saltTestRoot = path.join(__dirname, '..', 'scratch', 'test_private_salt_init');
