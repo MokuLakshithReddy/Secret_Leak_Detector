@@ -11,6 +11,14 @@ import * as cp from 'child_process';
 const LEGACY_PUBLIC_FINGERPRINT_SALT = 'sld_fingerprint_salt_v1_d8e9f2a1b4c3e7f0';
 const PRIVATE_SALT_BYTES = 32;
 
+function validatePrivateSalt(value: string, source: string): string {
+  const normalized = value.trim();
+  if (normalized.length < PRIVATE_SALT_BYTES * 2) {
+    throw new Error(source + ' must contain at least 64 characters (32 bytes of key material). Generate a new 256-bit salt with "secret-leak-detector salt init".');
+  }
+  return normalized;
+}
+
 export interface PrivateSaltInitialization {
   path: string;
   created: boolean;
@@ -22,7 +30,9 @@ export interface PrivateSaltInitialization {
  * removed and full control is granted only to the current account.
  */
 export function initializePrivateSalt(workspaceRoot: string): PrivateSaltInitialization {
-  if (process.env.SLD_SALT || process.env.SLD_FINGERPRINT_SALT) {
+  const envSalt = process.env.SLD_SALT || process.env.SLD_FINGERPRINT_SALT;
+  if (envSalt) {
+    validatePrivateSalt(envSalt, 'SLD_SALT');
     return { path: 'SLD_SALT environment variable', created: false };
   }
 
@@ -130,12 +140,7 @@ export function initializePrivateSalt(workspaceRoot: string): PrivateSaltInitial
   } catch (error: any) {
     throw new Error('Cannot safely read private fingerprint salt ' + saltPath + ': ' + (error.message || error));
   }
-  if (value.length < PRIVATE_SALT_BYTES * 2) {
-    throw new Error(
-      'Private fingerprint salt ' + saltPath +
-      ' must contain at least 32 random bytes (64 hex characters). Back up and replace the existing value.'
-    );
-  }
+  validatePrivateSalt(value, 'Private fingerprint salt ' + saltPath);
   try {
     if (process.platform === 'win32') {
       const identity = cp.execFileSync('whoami', [], { encoding: 'utf8', windowsHide: true }).trim();
@@ -166,9 +171,9 @@ export function initializePrivateSalt(workspaceRoot: string): PrivateSaltInitial
  * no key is configured; the legacy public salt is never used for new hashes.
  */
 export function resolveSalt(customSalt?: string, workspaceRoot?: string): string {
-  if (customSalt) return customSalt;
+  if (customSalt) return validatePrivateSalt(customSalt, 'Custom fingerprint salt');
   const envSalt = process.env.SLD_SALT || process.env.SLD_FINGERPRINT_SALT;
-  if (envSalt) return envSalt;
+  if (envSalt) return validatePrivateSalt(envSalt, 'SLD_SALT');
 
   const root = workspaceRoot || process.cwd();
   const initialized = initializePrivateSalt(root);
