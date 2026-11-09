@@ -573,11 +573,13 @@ export function applyControlledRemediation(
       originalEnvContent = fsModule.readFileSync(envPath, 'utf8');
       envContent = originalEnvContent;
     } else {
+      // wx is exclusive: if another process creates a file or symlink after the
+      // existence check, this write fails instead of following or truncating it.
+      fsModule.writeFileSync(envPath, '', { flag: 'wx', mode: 0o600, encoding: 'utf8' });
       envWasNewlyCreated = true;
-      try {
-        fsModule.writeFileSync(envPath, '', { mode: 0o600, encoding: 'utf8' });
-      } catch {}
     }
+    // Revalidate after creation as well, before chmod/ACL operations or secret writes.
+    assertSafeWorkspaceFile(envPath, workspaceRoot, '.env file', fsModule);
 
     // Snapshot .gitignore state before mutation
     if (fsModule.existsSync(gitignorePath)) {
