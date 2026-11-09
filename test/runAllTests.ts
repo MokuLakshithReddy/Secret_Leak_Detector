@@ -281,6 +281,7 @@ try {
   assert(resolveSalt(undefined, saltTestRoot) === storedSalt, 'Repository resolves the same persisted private salt');
   assert(getFingerprintKeyId(saltTestRoot).length === 16, 'Private key identifier is fixed-length and non-secret');
   if (process.platform !== 'win32') {
+    assert((fs.statSync(path.join(saltTestRoot, '.sld')).mode & 0o077) === 0, 'Private salt directory has no group/other POSIX permissions');
     assert((fs.statSync(saltInit.path).mode & 0o077) === 0, 'Private salt file has no group/other POSIX permissions');
   }
   if (process.platform !== 'win32') {
