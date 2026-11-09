@@ -1,6 +1,6 @@
 import { scanContent, scanFile, buildScanResult } from '../src/core/scanner/scanner';
 import { calculateShannonEntropy, calculateNormalizedEntropy } from '../src/core/entropy/entropy';
-import { redactSecret, generateFingerprint, resolveSalt } from '../src/core/redactor/redactor';
+import { redactSecret, generateFingerprint, resolveSalt, initializePrivateSalt, getFingerprintKeyId, generateLegacyFingerprint } from '../src/core/redactor/redactor';
 import * as crypto from 'crypto';
 import { BaselineEngine, BaselineValidationError, validateBaselineSchema } from '../src/core/baseline/baselineEngine';
 import { toRedactedFindingView } from '../src/webview/dashboardModel';
@@ -187,13 +187,128 @@ const tmpDir = path.join(__dirname, '..', 'scratch', 'test_baseline');
 if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
 const baselineEngine = new BaselineEngine(tmpDir, 'test-baseline.json');
 
-const testFinding = scanContent(`const k = "${synth(['AK', 'IA', '1234567890ABCDEF'])}";`, 'aws.ts')[0];
+const testFinding = scanContent(`const k = "${synth(['AK', 'IA', '1234567890ABCDEF'])}";`, 'aws.ts', { workspaceRoot: tmpDir })[0];
 baselineEngine.saveBaseline([testFinding]);
 assert(baselineEngine.exists(), 'Baseline file created successfully');
 
 const checkFiltered = baselineEngine.filterAgainstBaseline([testFinding], { forceFile: true });
 assert(checkFiltered.existingFindings.length === 1, 'Known finding filtered into existing findings');
 assert(checkFiltered.newFindings.length === 0, 'Known finding does not trigger new findings in CI');
+const privateBaseline = baselineEngine.loadBaseline();
+assert(privateBaseline?.fingerprintScheme === 'hmac-sha256-private-v2', 'New baselines declare the private fingerprint scheme');
+assert(typeof privateBaseline?.fingerprintKeyId === 'string', 'New baselines store a non-secret fingerprint key identifier');
+
+// Legacy baseline compatibility: recognize an old public-salt fingerprint, then
+// let baseline update write the active finding back in the new private scheme.
+const legacyRoot = path.join(__dirname, '..', 'scratch', 'test_legacy_baseline');
+fs.rmSync(legacyRoot, { recursive: true, force: true });
+fs.mkdirSync(legacyRoot, { recursive: true });
+const legacySecret = 'legacy-baseline-example-secret';
+const legacyFingerprint = generateLegacyFingerprint(legacySecret);
+fs.writeFileSync(path.join(legacyRoot, 'legacy.json'), JSON.stringify({
+  version: 1,
+  generatedAt: new Date().toISOString(),
+  generator: 'legacy-test',
+  findings: [{
+    id: 'legacy-finding',
+    fingerprint: legacyFingerprint,
+    ruleId: 'Legacy',
+    file: 'legacy.ts',
+    line: 1,
+    firstSeen: new Date().toISOString()
+  }]
+}), 'utf8');
+const legacyEngine = new BaselineEngine(legacyRoot, 'legacy.json');
+const legacyCurrentFinding: any = {
+  id: 'legacy-current',
+  fingerprint: generateFingerprint(legacySecret, undefined, legacyRoot),
+  rawSecret: legacySecret,
+  file: 'legacy.ts',
+  line: 1,
+  risk: 'HIGH',
+};
+const legacyFiltered = legacyEngine.filterAgainstBaseline([legacyCurrentFinding], { forceFile: true });
+assert(legacyFiltered.existingFindings.length === 1, 'Legacy public-salt baseline remains recognized during migration');
+fs.rmSync(legacyRoot, { recursive: true, force: true });
+
+// New private baselines must fail clearly when the local/CI key differs.
+const keyMismatchRoot = path.join(__dirname, '..', 'scratch', 'test_private_key_mismatch');
+fs.rmSync(keyMismatchRoot, { recursive: true, force: true });
+fs.mkdirSync(keyMismatchRoot, { recursive: true });
+const originalSldSaltForMismatch = process.env.SLD_SALT;
+const originalLegacySaltForMismatch = process.env.SLD_FINGERPRINT_SALT;
+let privateKeyMismatchRejected = false;
+try {
+  process.env.SLD_SALT = 'A'.repeat(64);
+  delete process.env.SLD_FINGERPRINT_SALT;
+  const mismatchEngine = new BaselineEngine(keyMismatchRoot, 'private.json');
+  const mismatchFinding: any = {
+    id: 'private-finding',
+    fingerprint: generateFingerprint('private-key-example', undefined, keyMismatchRoot),
+    rawSecret: 'private-key-example',
+    file: 'private.ts',
+    line: 1,
+    risk: 'HIGH',
+  };
+  mismatchEngine.saveBaseline([mismatchFinding]);
+  process.env.SLD_SALT = 'B'.repeat(64);
+  try {
+    mismatchEngine.filterAgainstBaseline([mismatchFinding], { forceFile: true });
+  } catch (error: any) {
+    privateKeyMismatchRejected = error instanceof BaselineValidationError && /key mismatch/i.test(error.message);
+  }
+} finally {
+  if (originalSldSaltForMismatch === undefined) delete process.env.SLD_SALT;
+  else process.env.SLD_SALT = originalSldSaltForMismatch;
+  if (originalLegacySaltForMismatch === undefined) delete process.env.SLD_FINGERPRINT_SALT;
+  else process.env.SLD_FINGERPRINT_SALT = originalLegacySaltForMismatch;
+}
+assert(privateKeyMismatchRejected, 'Private baseline rejects scans using a different fingerprint key');
+fs.rmSync(keyMismatchRoot, { recursive: true, force: true });
+
+// Explicit initialization creates a high-entropy, access-restricted local key.
+const saltTestRoot = path.join(__dirname, '..', 'scratch', 'test_private_salt_init');
+fs.rmSync(saltTestRoot, { recursive: true, force: true });
+const originalSldSaltForInit = process.env.SLD_SALT;
+const originalLegacySaltForInit = process.env.SLD_FINGERPRINT_SALT;
+try {
+  delete process.env.SLD_SALT;
+  delete process.env.SLD_FINGERPRINT_SALT;
+  const saltInit = initializePrivateSalt(saltTestRoot);
+  const storedSalt = fs.readFileSync(saltInit.path, 'utf8').trim();
+  assert(saltInit.created, 'Private salt initialization creates a new key');
+  assert(/^[a-f0-9]{64}$/.test(storedSalt), 'Generated repository salt contains 256 bits of entropy');
+  assert(resolveSalt(undefined, saltTestRoot) === storedSalt, 'Repository resolves the same persisted private salt');
+  assert(getFingerprintKeyId(saltTestRoot).length === 16, 'Private key identifier is fixed-length and non-secret');
+  if (process.platform !== 'win32') {
+    assert((fs.statSync(path.join(saltTestRoot, '.sld')).mode & 0o077) === 0, 'Private salt directory has no group/other POSIX permissions');
+    assert((fs.statSync(saltInit.path).mode & 0o077) === 0, 'Private salt file has no group/other POSIX permissions');
+  }
+  if (process.platform !== 'win32') {
+    const symlinkRoot = path.join(__dirname, '..', 'scratch', 'test_private_salt_symlink');
+    fs.rmSync(symlinkRoot, { recursive: true, force: true });
+    fs.mkdirSync(path.join(symlinkRoot, '.sld'), { recursive: true });
+    const outsideSalt = path.join(symlinkRoot, 'outside-salt');
+    fs.writeFileSync(outsideSalt, 'do-not-touch-this-file');
+    fs.symlinkSync(outsideSalt, path.join(symlinkRoot, '.sld', 'salt'));
+    let symlinkRejected = false;
+    try {
+      initializePrivateSalt(symlinkRoot);
+    } catch {
+      symlinkRejected = true;
+    }
+    assert(symlinkRejected, 'Private salt initialization rejects a symlinked salt path');
+    assert(fs.readFileSync(outsideSalt, 'utf8') === 'do-not-touch-this-file', 'Rejected salt symlink target is left unchanged');
+    fs.rmSync(symlinkRoot, { recursive: true, force: true });
+  }
+} finally {
+  if (originalSldSaltForInit === undefined) delete process.env.SLD_SALT;
+  else process.env.SLD_SALT = originalSldSaltForInit;
+  if (originalLegacySaltForInit === undefined) delete process.env.SLD_FINGERPRINT_SALT;
+  else process.env.SLD_FINGERPRINT_SALT = originalLegacySaltForInit;
+  fs.rmSync(saltTestRoot, { recursive: true, force: true });
+}
+
 
 const newFinding = scanContent(`const g = "${synth(['gh', 'p_', '1234567890abcdefghijklmnopqrstuvwxyz'])}";`, 'gh.ts')[0];
 const checkWithNew = baselineEngine.filterAgainstBaseline([testFinding, newFinding], { forceFile: true });
@@ -1673,10 +1788,10 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
       const saltScratch = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-salt-test-'));
       const sldDir = path.join(saltScratch, '.sld');
       fs.mkdirSync(sldDir, { recursive: true });
-      fs.writeFileSync(path.join(sldDir, 'salt'), 'custom_repo_secret_salt_123', 'utf8');
+      fs.writeFileSync(path.join(sldDir, 'salt'), '0123456789abcdef'.repeat(4), 'utf8');
 
       const resolved = resolveSalt(undefined, saltScratch);
-      assert(resolved === 'custom_repo_secret_salt_123', 'resolveSalt correctly reads .sld/salt');
+      assert(resolved === '0123456789abcdef'.repeat(4), 'resolveSalt correctly reads .sld/salt');
 
       const fpCustom = generateFingerprint('secret123', undefined, saltScratch);
       const fpDefault = generateFingerprint('secret123');
@@ -2043,10 +2158,18 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
       const origSldFps = process.env.SLD_FINGERPRINT_SALT;
       try {
         delete process.env.SLD_SALT;
-        process.env.SLD_FINGERPRINT_SALT = 'custom_fps_123';
-        assert(resolveSalt() === 'custom_fps_123', 'resolveSalt honors SLD_FINGERPRINT_SALT');
-        process.env.SLD_SALT = 'custom_salt_456';
-        assert(resolveSalt() === 'custom_salt_456', 'resolveSalt prioritizes SLD_SALT');
+        process.env.SLD_FINGERPRINT_SALT = 'C'.repeat(64);
+        assert(resolveSalt() === 'C'.repeat(64), 'resolveSalt honors a sufficiently strong SLD_FINGERPRINT_SALT');
+        process.env.SLD_SALT = 'D'.repeat(64);
+        assert(resolveSalt() === 'D'.repeat(64), 'resolveSalt prioritizes a sufficiently strong SLD_SALT');
+        process.env.SLD_SALT = 'weak-key';
+        let weakSaltRejected = false;
+        try {
+          resolveSalt();
+        } catch {
+          weakSaltRejected = true;
+        }
+        assert(weakSaltRejected, 'resolveSalt rejects weak environment-provided fingerprint keys');
       } finally {
         if (origSldSalt !== undefined) process.env.SLD_SALT = origSldSalt;
         else delete process.env.SLD_SALT;
