@@ -62,6 +62,12 @@ jobs:
     runs-on: ubuntu-latest
     environment: release
     if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')))
+    # Define tokens at job scope so step-level if expressions can evaluate their presence.
+    # These values are never echoed; publishing commands consume them through the environment.
+    env:
+      OVSX_TOKEN: ${{ secrets.OVSX_TOKEN }}
+      VSCE_TOKEN: ${{ secrets.VSCE_TOKEN }}
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
     steps:
       - name: Setup Node.js
         uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
@@ -75,19 +81,45 @@ jobs:
           name: release-artifacts
 
       - name: Publish to Open VSX Registry
+        id: publish_ovsx
         if: ${{ env.OVSX_TOKEN != '' }}
-        env:
-          OVSX_TOKEN: ${{ secrets.OVSX_TOKEN }}
         run: npx ovsx publish *.vsix -p "$OVSX_TOKEN"
 
       - name: Publish to Visual Studio Marketplace
+        id: publish_vsce
         if: ${{ env.VSCE_TOKEN != '' }}
-        env:
-          VSCE_TOKEN: ${{ secrets.VSCE_TOKEN }}
         run: npx vsce publish --packagePath *.vsix -p "$VSCE_TOKEN"
 
       - name: Publish to NPM Registry
+        id: publish_npm
         if: ${{ env.NODE_AUTH_TOKEN != '' }}
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish $(ls *.tgz) --access public
+
+      - name: Summarize registry publication
+        if: always()
+        env:
+          OVSX_CONFIGURED: ${{ env.OVSX_TOKEN != '' }}
+          VSCE_CONFIGURED: ${{ env.VSCE_TOKEN != '' }}
+          NPM_CONFIGURED: ${{ env.NODE_AUTH_TOKEN != '' }}
+          OVSX_OUTCOME: ${{ steps.publish_ovsx.outcome }}
+          VSCE_OUTCOME: ${{ steps.publish_vsce.outcome }}
+          NPM_OUTCOME: ${{ steps.publish_npm.outcome }}
+        run: |
+          {
+            echo "## Registry publication"
+            for registry in OVSX VSCE NPM; do
+              configured_var="${registry}_CONFIGURED"
+              outcome_var="${registry}_OUTCOME"
+              configured="${!configured_var}"
+              outcome="${!outcome_var}"
+              if [ "$configured" != "true" ]; then
+                echo "- **$registry:** skipped — publishing token is not configured."
+              elif [ "$outcome" = "success" ]; then
+                echo "- **$registry:** published successfully."
+              else
+                echo "- **$registry:** failed (step outcome: ${outcome:-unknown})."
+              fi
+            done
+            echo
+            echo "A successful build does not mean a registry was updated. Only entries marked published successfully confirm publication."
+          } >> "$GITHUB_STEP_SUMMARY"
