@@ -53,6 +53,26 @@ function assert(condition: boolean, msg: string) {
   }
 }
 
+console.log('\\n--- Scan Result Blocking Policy Contract ---');
+const scanResultThresholdCases: Array<{ risk: Risk; threshold: Risk; expected: boolean }> = [
+  { risk: 'LOW', threshold: 'LOW', expected: true },
+  { risk: 'MEDIUM', threshold: 'LOW', expected: true },
+  { risk: 'LOW', threshold: 'MEDIUM', expected: false },
+  { risk: 'MEDIUM', threshold: 'MEDIUM', expected: true },
+  { risk: 'HIGH', threshold: 'HIGH', expected: true },
+  { risk: 'MEDIUM', threshold: 'HIGH', expected: false },
+  { risk: 'CRITICAL', threshold: 'CRITICAL', expected: true },
+  { risk: 'HIGH', threshold: 'CRITICAL', expected: false },
+];
+for (const testCase of scanResultThresholdCases) {
+  const result = buildScanResult([{ risk: testCase.risk } as any], 1, 0, testCase.threshold);
+  assert(
+    result.blocked === testCase.expected,
+    `ScanResult blocked follows ${testCase.threshold} threshold for ${testCase.risk}`
+  );
+}
+assert(buildScanResult([], 0, 0, 'LOW').blocked === false, 'An empty scan never blocks at any threshold');
+
 console.log('============================================================');
 console.log('🧪 RUNNING COMPREHENSIVE SECURITY ENGINEERING TEST SUITE');
 console.log('============================================================\n');
