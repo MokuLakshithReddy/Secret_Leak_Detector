@@ -1,9 +1,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import * as crypto from 'crypto';
 import { SecretFinding, BaselineFile, BaselineFinding } from '../types';
 import { getPackageVersion } from '../version';
-import { resolveSalt } from '../redactor/redactor';
+import { generateLegacyFingerprint, getFingerprintKeyId } from '../redactor/redactor';
 
 export const DEFAULT_BASELINE_FILENAME = '.secretleak-baseline.json';
 
@@ -40,6 +39,19 @@ export function validateBaselineSchema(parsed: unknown): BaselineFile {
 
   if (typeof obj.generatedAt !== 'string' || obj.generatedAt.trim().length === 0) {
     throw new BaselineValidationError(`'generatedAt' must be a non-empty string.`);
+  }
+
+  if (
+    obj.fingerprintScheme !== undefined &&
+    obj.fingerprintScheme !== 'hmac-sha256-private-v2' &&
+    obj.fingerprintScheme !== 'hmac-sha256-public-v1'
+  ) {
+    throw new BaselineValidationError(`'fingerprintScheme' is not supported.`);
+  }
+  if (obj.fingerprintScheme === 'hmac-sha256-private-v2') {
+    if (typeof obj.fingerprintKeyId !== 'string' || !/^[a-f0-9]{16}$/.test(obj.fingerprintKeyId)) {
+      throw new BaselineValidationError(`Private fingerprint baselines require a valid 'fingerprintKeyId'.`);
+    }
   }
 
   if (!Array.isArray(obj.findings)) {
@@ -253,6 +265,8 @@ export class BaselineEngine {
       version: 1,
       generatedAt: new Date().toISOString(),
       generator: `Secret Leak Detector v${pkgVersion}`,
+      fingerprintScheme: 'hmac-sha256-private-v2',
+      fingerprintKeyId: getFingerprintKeyId(this.workspaceRoot),
       findings: baselineFindings,
     };
 
@@ -273,7 +287,6 @@ export class BaselineEngine {
     let baseline: BaselineFile | null = null;
 
     if (isCI && !options?.forceFile && !process.env.SLD_ISOLATE_BASELINE_TESTS) {
-      // In CI, load baseline from trusted Git ref (PR base or event's before sha); NEVER fall back to working tree
       baseline = this.loadBaselineFromGit();
     } else {
       baseline = this.loadBaseline();
@@ -287,12 +300,23 @@ export class BaselineEngine {
       };
     }
 
-    const baselineByFileAndFp = new Map<string, BaselineFinding>();
+    const isLegacyBaseline =
+      baseline.fingerprintScheme === undefined ||
+      baseline.fingerprintScheme === 'hmac-sha256-public-v1';
 
-    for (const b of baseline.findings) {
-      const normFile = normalizeBaselinePath(b.file);
-      // Key strictly by file + fingerprint so a different real secret at that line is NOT hidden
-      baselineByFileAndFp.set(`${normFile}:${b.fingerprint}`, b);
+    if (baseline.fingerprintScheme === 'hmac-sha256-private-v2') {
+      const currentKeyId = getFingerprintKeyId(this.workspaceRoot);
+      if (currentKeyId !== baseline.fingerprintKeyId) {
+        throw new BaselineValidationError(
+          'Fingerprint key mismatch: this baseline was created with a different private salt. Configure the same SLD_SALT value in this environment, or initialize a new baseline after coordinating the key with your team.'
+        );
+      }
+    }
+
+    const baselineByFileAndFp = new Map<string, BaselineFinding>();
+    for (const entry of baseline.findings) {
+      const normFile = normalizeBaselinePath(entry.file);
+      baselineByFileAndFp.set(`${normFile}:${entry.fingerprint}`, entry);
     }
 
     const newFindings: SecretFinding[] = [];
@@ -304,24 +328,21 @@ export class BaselineEngine {
       let key = `${normFile}:${finding.fingerprint}`;
       let match = baselineByFileAndFp.get(key);
 
-      // Backwards compatibility for multiline secrets:
-      // If no match with canonical fingerprint, try alternative line endings (CRLF/LF)
-      // in case the trusted baseline was generated prior to CRLF/LF canonicalization.
-      if (!match && finding.rawSecret && (finding.rawSecret.includes('\n') || finding.rawSecret.includes('\r'))) {
-        const salt = resolveSalt(undefined, this.workspaceRoot);
-        const crlfSecret = finding.rawSecret.replace(/\r?\n/g, '\r\n');
-        const crlfFp = crypto.createHmac('sha256', salt).update(crlfSecret).digest('hex').substring(0, 16);
-        const crlfKey = `${normFile}:${crlfFp}`;
-        if (baselineByFileAndFp.has(crlfKey)) {
-          match = baselineByFileAndFp.get(crlfKey);
-          key = crlfKey;
-        } else {
-          const lfSecret = finding.rawSecret.replace(/\r?\n/g, '\n');
-          const lfFp = crypto.createHmac('sha256', salt).update(lfSecret).digest('hex').substring(0, 16);
-          const lfKey = `${normFile}:${lfFp}`;
-          if (baselineByFileAndFp.has(lfKey)) {
-            match = baselineByFileAndFp.get(lfKey);
-            key = lfKey;
+      // Legacy public-salt fingerprints are consulted only for pre-metadata
+      // baselines. New baselines never use or emit these fingerprints.
+      if (!match && isLegacyBaseline && finding.rawSecret) {
+        const legacyCandidates = new Set([
+          generateLegacyFingerprint(finding.rawSecret),
+          generateLegacyFingerprint(finding.rawSecret.replace(/\r?\n/g, '\r\n'), false),
+          generateLegacyFingerprint(finding.rawSecret.replace(/\r?\n/g, '\n'), false),
+        ]);
+        for (const legacyFingerprint of legacyCandidates) {
+          const legacyKey = `${normFile}:${legacyFingerprint}`;
+          const legacyMatch = baselineByFileAndFp.get(legacyKey);
+          if (legacyMatch) {
+            match = legacyMatch;
+            key = legacyKey;
+            break;
           }
         }
       }
@@ -336,7 +357,6 @@ export class BaselineEngine {
     }
 
     const resolvedCount = Math.max(0, baseline.findings.length - matchedKeys.size);
-
     return {
       newFindings,
       existingFindings,
