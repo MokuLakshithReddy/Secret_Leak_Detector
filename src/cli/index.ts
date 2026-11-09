@@ -409,7 +409,7 @@ async function runScan(cmdArgs: string[], cwd: string) {
 
   if (isJson) {
     const safeFindings: any[] = findings.map((f) => toSafeJsonFinding(f));
-    const scanResult: any = buildScanResult(safeFindings as SecretFinding[], filesScanned, durationMs);
+    const scanResult: any = buildScanResult(safeFindings as SecretFinding[], filesScanned, durationMs, failOn);
     if (baselineStats) scanResult.baselineStats = baselineStats;
     if (skippedFiles.length > 0) scanResult.skippedFiles = skippedFiles;
     console.log(JSON.stringify(scanResult, null, 2));
