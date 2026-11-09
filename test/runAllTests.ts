@@ -2050,7 +2050,7 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
       // 3. applyControlledRemediation handles findings with sourceExpression
       const remDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-rem-src-expr-'));
       const remFile = path.join(remDir, 'test.js');
-            fs.writeFileSync(remFile, \`import 'dotenv/config';\nconst token = "part1_" + "part2_abcdef1234567890";\n\`, 'utf8');
+            fs.writeFileSync(remFile, 	\`import 'dotenv/config';\nconst token = "part1_" + "part2_abcdef1234567890";\n\`, 'utf8');
       const fakeFinding: any = {
         id: 'finding_expr_1',
         type: 'Generic API Key',
@@ -3645,7 +3645,7 @@ exit 0
         type: 'Test Token',
         remediation: { envVarName: 'TEST_TOKEN' },
       };
-            fs.writeFileSync(path.join(shallowRepoDir, 'source.ts'), \`import 'dotenv/config';\nconst t = "token_degraded_val_123";\n\`, 'utf8');
+            fs.writeFileSync(path.join(shallowRepoDir, 'source.ts'), 	\`import 'dotenv/config';\nconst t = "token_degraded_val_123";\n\`, 'utf8');
 
       const unsupportedAclCp = {
         execFileSync: () => {
