@@ -66,12 +66,24 @@ export function supportsDotEnvMigration(source: string, filePath: string): boole
     case '.ts':
     case '.tsx':
     case '.mjs':
-    case '.cjs':
-      return /(?:import\s*['"]dotenv\/config['"]|require\s*\(\s*['"]dotenv\/config['"]\s*\)|dotenv\s*\.\s*config\s*\(|require\s*\(\s*['"]dotenv['"]\s*\)\s*\.\s*config\s*\()/m.test(source);
-    case '.py':
-      return /(?:from\s+dotenv\s+import\s+load_dotenv|load_dotenv\s*\()/m.test(source);
-    case '.go':
-      return /godotenv\s*\.\s*Load\s*\(/m.test(source);
+    case '.cjs': {
+      const directLoader = /(?:import\s*['"]dotenv\/config['"]|require\s*\(\s*['"]dotenv\/config['"]\s*\)|require\s*\(\s*['"]dotenv['"]\s*\)\s*\.\s*config\s*\()/m.test(source);
+      const dotenvBinding = /(?:import\s+[^;\n]+\s+from\s+['"]dotenv['"]|(?:const|let|var)\s+dotenv\s*=\s*require\s*\(\s*['"]dotenv['"]\s*\))/m.test(source);
+      return directLoader || (dotenvBinding && /\bdotenv\s*\.\s*config\s*\(/m.test(source));
+    }
+    case '.py': {
+      const importsOs = /^\s*import\s+os(?:\s|$)/m.test(source);
+      const importsLoader = /(?:^\s*from\s+dotenv\s+import\s+[^\n]*\bload_dotenv\b|^\s*import\s+dotenv\s*$)/m.test(source);
+      const callsLoader = /(?:\bload_dotenv|\bdotenv\s*\.\s*load_dotenv)\s*\(/m.test(source);
+      return importsOs && importsLoader && callsLoader;
+    }
+    case '.go': {
+      const importBlock = source.match(/import\s*\(([\s\S]*?)\)/m)?.[1] || '';
+      const importsOs = /(?:^|\s)"os"/m.test(importBlock) || /^\s*import\s+"os"\s*$/m.test(source);
+      const importsGodotenv = /(?:^|\s)(?:[A-Za-z_][A-Za-z0-9_]*\s+)?"github\.com\/joho\/godotenv"/m.test(importBlock) ||
+        /^\s*import\s+(?:[A-Za-z_][A-Za-z0-9_]*\s+)?"github\.com\/joho\/godotenv"\s*$/m.test(source);
+      return importsOs && importsGodotenv && /godotenv\s*\.\s*Load\s*\(/m.test(source);
+    }
     case '.rb':
       return /(?:require\s*['"]dotenv\/(?:load|rails)['"]|Dotenv\s*\.\s*load\s*\()/m.test(source);
     case '.php':
@@ -150,6 +162,30 @@ export interface ApplyRemediationResult {
   degradedSecurity?: boolean;
   warning?: string;
 }
+
+/**
+ * Reject workspace files that redirect writes through symlinks, hard links, or
+ * paths outside the selected workspace. Remediation must never write secrets
+ * to an arbitrary filesystem target.
+ */
+function assertSafeWorkspaceFile(
+  filePath: string,
+  workspaceRoot: string,
+  purpose: string,
+  fsModule: typeof fs
+): void {
+  const stat = fsModule.lstatSync(filePath);
+  if (stat.isSymbolicLink() || !stat.isFile() || stat.nlink > 1) {
+    throw new Error(\`Refusing to modify \${purpose}: expected a regular, non-symlink file with a single hard link.\`);
+  }
+  const rootReal = fsModule.realpathSync(workspaceRoot);
+  const fileReal = fsModule.realpathSync(filePath);
+  const relative = path.relative(rootReal, fileReal);
+  if (relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) {
+    throw new Error(\`Refusing to modify \${purpose}: resolved path is outside the workspace.\`);
+  }
+}
+
 
 /**
  * Resolves a unique environment variable name, avoiding collisions
@@ -510,6 +546,7 @@ export function applyControlledRemediation(
       };
     }
 
+    assertSafeWorkspaceFile(targetFile, workspaceRoot, 'source file', fsModule);
     originalFileContent = fsModule.readFileSync(targetFile, 'utf8');
     if (!supportsDotEnvMigration(originalFileContent, targetFile)) {
       return {
@@ -532,6 +569,7 @@ export function applyControlledRemediation(
     // 1. Read existing .env if present and determine unique variable name
     let envContent = '';
     if (fsModule.existsSync(envPath)) {
+      assertSafeWorkspaceFile(envPath, workspaceRoot, '.env file', fsModule);
       originalEnvContent = fsModule.readFileSync(envPath, 'utf8');
       envContent = originalEnvContent;
     } else {
@@ -543,6 +581,7 @@ export function applyControlledRemediation(
 
     // Snapshot .gitignore state before mutation
     if (fsModule.existsSync(gitignorePath)) {
+      assertSafeWorkspaceFile(gitignorePath, workspaceRoot, '.gitignore file', fsModule);
       originalGitignoreContent = fsModule.readFileSync(gitignorePath, 'utf8');
     } else {
       gitignoreWasNewlyCreated = true;
@@ -577,6 +616,7 @@ export function applyControlledRemediation(
     if (!envExampleExists) {
       envExampleWasNewlyCreated = true;
     } else {
+      assertSafeWorkspaceFile(envExamplePath, workspaceRoot, '.env.example file', fsModule);
       originalEnvExampleContent = fsModule.readFileSync(envExamplePath, 'utf8');
     }
     if (!envExampleExists || !fsModule.readFileSync(envExamplePath, 'utf8').includes(varName)) {
