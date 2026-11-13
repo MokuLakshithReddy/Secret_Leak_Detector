@@ -1,5 +1,8 @@
 # 🛡️ Secret Leak Detector
 
+[![Stars](https://img.shields.io/github/stars/MokuLakshithReddy/Secret_Leak_Detector?style=flat-square)](https://github.com/MokuLakshithReddy/Secret_Leak_Detector/stargazers) [![Forks](https://img.shields.io/github/forks/MokuLakshithReddy/Secret_Leak_Detector?style=flat-square)](https://github.com/MokuLakshithReddy/Secret_Leak_Detector/forks) [![Open Issues](https://img.shields.io/github/issues/MokuLakshithReddy/Secret_Leak_Detector?style=flat-square)](https://github.com/MokuLakshithReddy/Secret_Leak_Detector/issues) [![Last Commit](https://img.shields.io/github/last-commit/MokuLakshithReddy/Secret_Leak_Detector?style=flat-square)](https://github.com/MokuLakshithReddy/Secret_Leak_Detector/commits/main)
+
+
 [![Visual Studio Code](https://img.shields.io/badge/VS%20Code-v1.85+-blue.svg?logo=visualstudiocode)](https://code.visualstudio.com/)
 [![CI Status](https://github.com/MokuLakshithReddy/Secret_Leak_Detector/actions/workflows/secret-leak-detector.yml/badge.svg)](https://github.com/MokuLakshithReddy/Secret_Leak_Detector/actions)
 [![Tests](https://img.shields.io/badge/tests-828%20passed%20%28771%20core%20%2B%2040%20git--hook%20%2B%2017%20manifest%29-brightgreen.svg)](https://github.com/MokuLakshithReddy/Secret_Leak_Detector/actions)
@@ -9,6 +12,26 @@
 [![License: Proprietary](https://img.shields.io/badge/License-Proprietary-red.svg)](LICENSE)
 
 > **Secret Leak Detector** is a dependable, context-aware credential exposure detection and remediation system for Git repositories and VS Code. It combines multi-signal pattern detection, Shannon entropy analysis, lexical & AST parsing, fail-closed Git commit protection, exposure graph analysis, and transactional remediation to prevent credentials from ever leaking to version control.
+
+---
+
+## Visual proof: from detection to a safe commit
+
+```mermaid
+flowchart TD
+    A["Workspace, staged diff, CLI or VS Code"] --> B["Collect signals: patterns, entropy, syntax and context"]
+    B --> C["Correlate findings and attach evidence"]
+    C --> D{"Confirmed secret?"}
+    D -->|No| E["Continue with a clean scan"]
+    D -->|Yes| F["Fail-closed commit protection"]
+    F --> G["Trace exposure and affected files"]
+    G --> H["Apply guided remediation"]
+    H --> I["Rescan and verify"]
+```
+
+**Why it matters:** catches exposed credentials before they become Git history, then connects each finding to traceable remediation and a verification scan.
+
+**Evidence to inspect:** [validation methodology](docs/VALIDATION.md) · [benchmark design](docs/benchmarks.md) · [reproducible benchmark reports](evaluation/reports/). The benchmark section below reports author-run controlled and curated corpora; it is not an independent third-party certification.
 
 ---
 
