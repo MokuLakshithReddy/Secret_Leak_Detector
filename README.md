@@ -1,5 +1,8 @@
 # 🛡️ Secret Leak Detector
 
+[![Stars](https://img.shields.io/github/stars/MokuLakshithReddy/Secret_Leak_Detector?style=flat-square)](https://github.com/MokuLakshithReddy/Secret_Leak_Detector/stargazers) [![Forks](https://img.shields.io/github/forks/MokuLakshithReddy/Secret_Leak_Detector?style=flat-square)](https://github.com/MokuLakshithReddy/Secret_Leak_Detector/forks) [![Open Issues](https://img.shields.io/github/issues/MokuLakshithReddy/Secret_Leak_Detector?style=flat-square)](https://github.com/MokuLakshithReddy/Secret_Leak_Detector/issues) [![Last Commit](https://img.shields.io/github/last-commit/MokuLakshithReddy/Secret_Leak_Detector?style=flat-square)](https://github.com/MokuLakshithReddy/Secret_Leak_Detector/commits/main)
+
+
 [![Visual Studio Code](https://img.shields.io/badge/VS%20Code-v1.85+-blue.svg?logo=visualstudiocode)](https://code.visualstudio.com/)
 [![CI Status](https://github.com/MokuLakshithReddy/Secret_Leak_Detector/actions/workflows/secret-leak-detector.yml/badge.svg)](https://github.com/MokuLakshithReddy/Secret_Leak_Detector/actions)
 [![Tests](https://img.shields.io/badge/tests-828%20passed%20%28771%20core%20%2B%2040%20git--hook%20%2B%2017%20manifest%29-brightgreen.svg)](https://github.com/MokuLakshithReddy/Secret_Leak_Detector/actions)
