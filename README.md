@@ -12,6 +12,26 @@
 
 ---
 
+## Visual proof: from detection to a safe commit
+
+```mermaid
+flowchart TD
+    A["Workspace, staged diff, CLI or VS Code"] --> B["Collect signals: patterns, entropy, syntax and context"]
+    B --> C["Correlate findings and attach evidence"]
+    C --> D{"Confirmed secret?"}
+    D -->|No| E["Continue with a clean scan"]
+    D -->|Yes| F["Fail-closed commit protection"]
+    F --> G["Trace exposure and affected files"]
+    G --> H["Apply guided remediation"]
+    H --> I["Rescan and verify"]
+```
+
+**Why it matters:** catches exposed credentials before they become Git history, then connects each finding to traceable remediation and a verification scan.
+
+**Evidence to inspect:** [validation methodology](docs/VALIDATION.md) · [benchmark design](docs/benchmarks.md) · [reproducible benchmark reports](evaluation/reports/). The benchmark section below reports author-run controlled and curated corpora; it is not an independent third-party certification.
+
+---
+
 ## 📦 Installation
 
 ### VS Code Extension
