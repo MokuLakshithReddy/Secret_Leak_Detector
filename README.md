@@ -8,9 +8,32 @@
 [![Precision](https://img.shields.io/badge/precision-100%25-00e5b0.svg)]()
 [![License: Proprietary](https://img.shields.io/badge/License-Proprietary-red.svg)](LICENSE)
 
+[![Stars](https://img.shields.io/github/stars/MokuLakshithReddy/Secret_Leak_Detector?style=flat-square)](https://github.com/MokuLakshithReddy/Secret_Leak_Detector/stargazers)
+[![Forks](https://img.shields.io/github/forks/MokuLakshithReddy/Secret_Leak_Detector?style=flat-square)](https://github.com/MokuLakshithReddy/Secret_Leak_Detector/network/members)
+[![Open Issues](https://img.shields.io/github/issues/MokuLakshithReddy/Secret_Leak_Detector?style=flat-square)](https://github.com/MokuLakshithReddy/Secret_Leak_Detector/issues)
+[![Last Commit](https://img.shields.io/github/last-commit/MokuLakshithReddy/Secret_Leak_Detector?style=flat-square)](https://github.com/MokuLakshithReddy/Secret_Leak_Detector/commits/main)
+
 > **Secret Leak Detector** is a dependable, context-aware credential exposure detection and remediation system for Git repositories and VS Code. It combines multi-signal pattern detection, Shannon entropy analysis, lexical & AST parsing, fail-closed Git commit protection, exposure graph analysis, and transactional remediation to prevent credentials from ever leaking to version control.
 
 ---
+
+## How the detector works
+
+```mermaid
+flowchart TD
+    A["Working tree, staged files or commit"] --> B["DETECT: pattern, entropy and syntax-aware scanners"]
+    B --> C["PROVE: finding evidence and source location"]
+    C --> D["TRACE: exposure context and related history"]
+    D --> E["FIX: review and apply a proposed remediation"]
+    E --> F["RESCAN: verify the candidate change"]
+    F --> G{"Findings remain?"}
+    G -->|Yes| C
+    G -->|No| H["Allow clean commit / report completion"]
+    B --> I["Git hook / VS Code / CLI surfaces"]
+    I --> J["Block commit when policy requires"]
+```
+
+**Why it matters:** A secret scanner is most useful when it does more than print a match. The workflow connects detection to evidence, exposure context, an actionable fix, and a fresh scan—while keeping commit protection in the developer workflow.
 
 ## 📦 Installation
 
