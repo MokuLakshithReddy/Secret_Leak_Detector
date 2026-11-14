@@ -39,8 +39,6 @@ flowchart TD
 
 ### Fresh 1.0.4 held-out CI evaluation
 
-<badge></badge>
-
 [Latest cross-platform CI run · 14 November 2026](https://github.com/MokuLakshithReddy/Secret_Leak_Detector/actions/runs/43547626046)
 
 The current 1.0.4 CI run executed `npm run benchmark:heldout` on Ubuntu, Windows, and macOS. The Ubuntu run reported the following deterministic, author-labelled 40-case fixture result:
