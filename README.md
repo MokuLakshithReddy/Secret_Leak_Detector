@@ -37,7 +37,18 @@ flowchart TD
 
 ## Benchmark evidence
 
-![Multi-scanner benchmark comparison](docs/multi-scanner-benchmark.svg)
+### Controlled 1,000-file scanner comparison
+
+*Historical author-reported run · scanner version 1.0.3 · 8 October 2026*
+
+| Scanner | Precision | Recall | F1 | False-positive rate |
+| --- | ---: | ---: | ---: | ---: |
+| **Secret Leak Detector** | **100.0%** | **100.0%** | **100.0%** | **0.0%** |
+| Gitleaks 8.30.1 | 100.0% | 72.8% | 84.3% | 0.0% |
+| TruffleHog 3.99.2 | 100.0% | 54.2% | 70.3% | 0.0% |
+| detect-secrets 1.5.0 | 68.7% | 73.2% | 70.9% | 50.0% |
+
+**Corpus composition:** 500 positive credential fixtures, 400 benign/high-entropy strings, and 100 adversarial fixtures. These are controlled generated fixtures—not a representative sample of all real repositories and not an independent reproduction.
 
 This visual summarises the committed **author-reported 1,000-file controlled corpus** from 8 October 2026. It used the 1.0.3 scanner binary and a deterministic corpus generator; this repository is now at 1.0.4. Treat these as historical internal measurements, not independent validation or a guarantee of performance on arbitrary repositories.
 
