@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="820" viewBox="0 0 1200 820" role="img" aria-labelledby="title desc">
+<title id="title">Secret Leak Detector multi-scanner benchmark</title>
+<desc id="desc">Author-reported comparison on a controlled 1000-file corpus, with precision, recall, F1, and false-positive rate for Secret Leak Detector, Gitleaks, TruffleHog, and detect-secrets.</desc>
+<defs>
+ <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0b1220"/><stop offset="1" stop-color="#111827"/></linearGradient>
+ <linearGradient id="main" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#34d399"/><stop offset="1" stop-color="#2dd4bf"/></linearGradient>
+ <linearGradient id="others" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#60a5fa"/><stop offset="1" stop-color="#818cf8"/></linearGradient>
+ <style>
+  .h{font:700 34px Inter,Segoe UI,Arial,sans-serif;fill:#f8fafc}
+  .sub{font:400 16px Inter,Segoe UI,Arial,sans-serif;fill:#94a3b8}
+  .panel{fill:#111c2d;stroke:#263549;stroke-width:1.5}
+  .pt{font:700 20px Inter,Segoe UI,Arial,sans-serif;fill:#e2e8f0}
+  .lab{font:500 14px Inter,Segoe UI,Arial,sans-serif;fill:#cbd5e1}
+  .muted{font:400 12px Inter,Segoe UI,Arial,sans-serif;fill:#94a3b8}
+  .value{font:700 14px Inter,Segoe UI,Arial,sans-serif;fill:#f8fafc}
+  .small{font:400 11px Inter,Segoe UI,Arial,sans-serif;fill:#94a3b8}
+ </style>
+</defs>
+<rect width="1200" height="820" rx="26" fill="url(#bg)"/>
+<text x="56" y="72" class="h">Secret Leak Detector · Multi-Scanner Study</text>
+<text x="56" y="105" class="sub">Controlled 1,000-file corpus · historical author-reported run · 8 Oct 2026</text>
+<rect x="56" y="132" width="1088" height="110" rx="18" class="panel"/>
+<text x="84" y="171" class="pt">Corpus design</text>
+<g>
+ <rect x="84" y="190" width="250" height="30" rx="8" fill="#183c40"/><text x="209" y="210" text-anchor="middle" class="lab">500 credential fixtures</text>
+ <rect x="350" y="190" width="250" height="30" rx="8" fill="#24334a"/><text x="475" y="210" text-anchor="middle" class="lab">400 benign strings</text>
+ <rect x="616" y="190" width="250" height="30" rx="8" fill="#3b2b47"/><text x="741" y="210" text-anchor="middle" class="lab">100 adversarial fixtures</text>
+ <text x="890" y="209" class="muted">Seed 0x5eec73 · Node v24 / Windows x64</text>
+</g>
+<rect x="56" y="270" width="1088" height="398" rx="18" class="panel"/>
+<text x="84" y="310" class="pt">Detection metrics</text>
+<text x="84" y="336" class="muted">Higher precision / recall / F1 is better; lower false-positive rate is better.</text>
+<text x="84" y="379" class="lab">Scanner</text>
+<text x="372" y="379" class="lab">Precision</text>
+<text x="568" y="379" class="lab">Recall</text>
+<text x="764" y="379" class="lab">F1</text>
+<text x="960" y="379" class="lab">False-positive rate</text>
+<g>
+ <text x="84" y="426" class="value">Secret Leak Detector 1.0.3</text>
+ <rect x="372" y="408" width="150" height="16" rx="8" fill="#263549"/><rect x="372" y="408" width="150" height="16" rx="8" fill="url(#main)"/><text x="535" y="422" class="value">100.0%</text>
+ <rect x="568" y="408" width="150" height="16" rx="8" fill="#263549"/><rect x="568" y="408" width="150" height="16" rx="8" fill="url(#main)"/><text x="731" y="422" class="value">100.0%</text>
+ <rect x="764" y="408" width="150" height="16" rx="8" fill="#263549"/><rect x="764" y="408" width="150" height="16" rx="8" fill="url(#main)"/><text x="927" y="422" class="value">100.0%</text>
+ <text x="1070" y="422" text-anchor="end" class="value">0.0%</text>
+ <text x="84" y="486" class="lab">Gitleaks 8.30.1</text>
+ <rect x="372" y="468" width="150" height="16" rx="8" fill="#263549"/><rect x="372" y="468" width="150" height="16" rx="8" fill="url(#others)"/><text x="535" y="482" class="value">100.0%</text>
+ <rect x="568" y="468" width="150" height="16" rx="8" fill="#263549"/><rect x="568" y="468" width="109" height="16" rx="8" fill="url(#others)"/><text x="731" y="482" class="value">72.8%</text>
+ <rect x="764" y="468" width="150" height="16" rx="8" fill="#263549"/><rect x="764" y="468" width="126.5" height="16" rx="8" fill="url(#others)"/><text x="927" y="482" class="value">84.3%</text>
+ <text x="1070" y="482" text-anchor="end" class="value">0.0%</text>
+ <text x="84" y="546" class="lab">TruffleHog 3.99.2</text>
+ <rect x="372" y="528" width="150" height="16" rx="8" fill="#263549"/><rect x="372" y="528" width="150" height="16" rx="8" fill="url(#others)"/><text x="535" y="542" class="value">100.0%</text>
+ <rect x="568" y="528" width="150" height="16" rx="8" fill="#263549"/><rect x="568" y="528" width="81.3" height="16" rx="8" fill="url(#others)"/><text x="731" y="542" class="value">54.2%</text>
+ <rect x="764" y="528" width="150" height="16" rx="8" fill="#263549"/><rect x="764" y="528" width="105.5" height="16" rx="8" fill="url(#others)"/><text x="927" y="542" class="value">70.3%</text>
+ <text x="1070" y="542" text-anchor="end" class="value">0.0%</text>
+ <text x="84" y="606" class="lab">detect-secrets 1.5.0</text>
+ <rect x="372" y="588" width="150" height="16" rx="8" fill="#263549"/><rect x="372" y="588" width="103.1" height="16" rx="8" fill="url(#others)"/><text x="535" y="602" class="value">68.7%</text>
+ <rect x="568" y="588" width="150" height="16" rx="8" fill="#263549"/><rect x="568" y="588" width="109.8" height="16" rx="8" fill="url(#others)"/><text x="731" y="602" class="value">73.2%</text>
+ <rect x="764" y="588" width="150" height="16" rx="8" fill="#263549"/><rect x="764" y="588" width="106.4" height="16" rx="8" fill="url(#others)"/><text x="927" y="602" class="value">70.9%</text>
+ <text x="1070" y="602" text-anchor="end" class="value">50.0%</text>
+</g>
+<text x="56" y="710" class="lab">Interpretation and scope</text>
+<text x="56" y="738" class="sub">These results belong to a controlled, author-generated corpus and are not a third-party reproduction.</text>
+<text x="56" y="764" class="sub">The benchmark binary was version 1.0.3; the repository now identifies the extension as 1.0.4.</text>
+<text x="56" y="796" class="muted">Source: evaluation/reports/multi_scanner_benchmark.json · docs/benchmarks.md</text>
+</svg>
