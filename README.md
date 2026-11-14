@@ -37,6 +37,27 @@ flowchart TD
 
 ## Benchmark evidence
 
+### Fresh 1.0.4 held-out CI evaluation
+
+<badge></badge>
+
+[Latest cross-platform CI run · 14 November 2026](https://github.com/MokuLakshithReddy/Secret_Leak_Detector/actions/runs/43547626046)
+
+The current 1.0.4 CI run executed `npm run benchmark:heldout` on Ubuntu, Windows, and macOS. The Ubuntu run reported the following deterministic, author-labelled 40-case fixture result:
+
+| Measure | Result |
+| --- | ---: |
+| True positives | 20 / 20 |
+| False positives | 0 |
+| True negatives | 20 / 20 |
+| False negatives | 0 |
+| Precision | 100.0% |
+| Recall | 100.0% |
+| F1 | 100.0% |
+| False-positive rate | 0.0% |
+
+**Scope:** 20 realistic fake credentials and 20 high-entropy or placeholder non-secrets, all labelled by the project author. This is a small deterministic fixture set, not a representative sample of all repositories or an independently curated third-party benchmark. The 100% figures describe this exact held-out set only.
+
 ### Controlled 1,000-file scanner comparison
 
 *Historical author-reported run · scanner version 1.0.3 · 8 October 2026*
@@ -50,7 +71,7 @@ flowchart TD
 
 **Corpus composition:** 500 positive credential fixtures, 400 benign/high-entropy strings, and 100 adversarial fixtures. These are controlled generated fixtures—not a representative sample of all real repositories and not an independent reproduction.
 
-This visual summarises the committed **author-reported 1,000-file controlled corpus** from 8 October 2026. It used the 1.0.3 scanner binary and a deterministic corpus generator; this repository is now at 1.0.4. Treat these as historical internal measurements, not independent validation or a guarantee of performance on arbitrary repositories.
+This comparison summarises the committed **author-reported 1,000-file controlled corpus** from 8 October 2026. It used the 1.0.3 scanner binary and a deterministic corpus generator; this repository is now at 1.0.4. Treat these as historical internal measurements, not independent validation or a guarantee of performance on arbitrary repositories.
 
 The main-branch CI currently rebuilds the scanner, runs the regression gate, and executes the 40-case held-out evaluation. The separate cross-scanner comparison is documented in [docs/benchmarks.md](docs/benchmarks.md); it is not automatically rerun by the current workflow.
 
