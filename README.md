@@ -35,6 +35,26 @@ flowchart TD
 
 **Why it matters:** A secret scanner is most useful when it does more than print a match. The workflow connects detection to evidence, exposure context, an actionable fix, and a fresh scan—while keeping commit protection in the developer workflow.
 
+## Benchmark evidence
+
+![Multi-scanner benchmark comparison](docs/multi-scanner-benchmark.svg)
+
+This visual summarises the committed **author-reported 1,000-file controlled corpus** from 8 October 2026. It used the 1.0.3 scanner binary and a deterministic corpus generator; this repository is now at 1.0.4. Treat these as historical internal measurements, not independent validation or a guarantee of performance on arbitrary repositories.
+
+The main-branch CI currently rebuilds the scanner, runs the regression gate, and executes the 40-case held-out evaluation. The separate cross-scanner comparison is documented in [docs/benchmarks.md](docs/benchmarks.md); it is not automatically rerun by the current workflow.
+
+**Reproduce the committed held-out suite**
+
+```bash
+npm ci
+npm run build
+npm run benchmark:heldout
+```
+
+For full methodology, corpus composition, confidence intervals, and historical baseline details, see [Validation Methodology](docs/VALIDATION.md) and [Multi-Scanner Study](docs/benchmarks.md).
+
+---
+
 ## 📦 Installation
 
 ### VS Code Extension
