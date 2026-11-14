@@ -8,7 +8,80 @@
 [![Precision](https://img.shields.io/badge/precision-100%25-00e5b0.svg)]()
 [![License: Proprietary](https://img.shields.io/badge/License-Proprietary-red.svg)](LICENSE)
 
+[![Stars](https://img.shields.io/github/stars/MokuLakshithReddy/Secret_Leak_Detector?style=flat-square)](https://github.com/MokuLakshithReddy/Secret_Leak_Detector/stargazers)
+[![Forks](https://img.shields.io/github/forks/MokuLakshithReddy/Secret_Leak_Detector?style=flat-square)](https://github.com/MokuLakshithReddy/Secret_Leak_Detector/network/members)
+[![Open Issues](https://img.shields.io/github/issues/MokuLakshithReddy/Secret_Leak_Detector?style=flat-square)](https://github.com/MokuLakshithReddy/Secret_Leak_Detector/issues)
+[![Last Commit](https://img.shields.io/github/last-commit/MokuLakshithReddy/Secret_Leak_Detector?style=flat-square)](https://github.com/MokuLakshithReddy/Secret_Leak_Detector/commits/main)
+
 > **Secret Leak Detector** is a dependable, context-aware credential exposure detection and remediation system for Git repositories and VS Code. It combines multi-signal pattern detection, Shannon entropy analysis, lexical & AST parsing, fail-closed Git commit protection, exposure graph analysis, and transactional remediation to prevent credentials from ever leaking to version control.
+
+---
+
+## How the detector works
+
+```mermaid
+flowchart TD
+    A["Working tree, staged files or commit"] --> B["DETECT: pattern, entropy and syntax-aware scanners"]
+    B --> C["PROVE: finding evidence and source location"]
+    C --> D["TRACE: exposure context and related history"]
+    D --> E["FIX: review and apply a proposed remediation"]
+    E --> F["RESCAN: verify the candidate change"]
+    F --> G{"Findings remain?"}
+    G -->|Yes| C
+    G -->|No| H["Allow clean commit / report completion"]
+    B --> I["Git hook / VS Code / CLI surfaces"]
+    I --> J["Block commit when policy requires"]
+```
+
+**Why it matters:** A secret scanner is most useful when it does more than print a match. The workflow connects detection to evidence, exposure context, an actionable fix, and a fresh scan—while keeping commit protection in the developer workflow.
+
+## Benchmark evidence
+
+### Fresh 1.0.4 held-out CI evaluation
+
+[Latest cross-platform CI run · 14 November 2026](https://github.com/MokuLakshithReddy/Secret_Leak_Detector/actions/runs/43547626046)
+
+The current 1.0.4 CI run executed `npm run benchmark:heldout` on Ubuntu, Windows, and macOS. The Ubuntu run reported the following deterministic, author-labelled 40-case fixture result:
+
+| Measure | Result |
+| --- | ---: |
+| True positives | 20 / 20 |
+| False positives | 0 |
+| True negatives | 20 / 20 |
+| False negatives | 0 |
+| Precision | 100.0% |
+| Recall | 100.0% |
+| F1 | 100.0% |
+| False-positive rate | 0.0% |
+
+**Scope:** 20 realistic fake credentials and 20 high-entropy or placeholder non-secrets, all labelled by the project author. This is a small deterministic fixture set, not a representative sample of all repositories or an independently curated third-party benchmark. The 100% figures describe this exact held-out set only.
+
+### Controlled 1,000-file scanner comparison
+
+*Historical author-reported run · scanner version 1.0.3 · 8 October 2026*
+
+| Scanner | Precision | Recall | F1 | False-positive rate |
+| --- | ---: | ---: | ---: | ---: |
+| **Secret Leak Detector** | **100.0%** | **100.0%** | **100.0%** | **0.0%** |
+| Gitleaks 8.30.1 | 100.0% | 72.8% | 84.3% | 0.0% |
+| TruffleHog 3.99.2 | 100.0% | 54.2% | 70.3% | 0.0% |
+| detect-secrets 1.5.0 | 68.7% | 73.2% | 70.9% | 50.0% |
+
+**Corpus composition:** 500 positive credential fixtures, 400 benign/high-entropy strings, and 100 adversarial fixtures. These are controlled generated fixtures—not a representative sample of all real repositories and not an independent reproduction.
+
+This comparison summarises the committed **author-reported 1,000-file controlled corpus** from 8 October 2026. It used the 1.0.3 scanner binary and a deterministic corpus generator; this repository is now at 1.0.4. Treat these as historical internal measurements, not independent validation or a guarantee of performance on arbitrary repositories.
+
+The main-branch CI currently rebuilds the scanner, runs the regression gate, and executes the 40-case held-out evaluation. The separate cross-scanner comparison is documented in [docs/benchmarks.md](docs/benchmarks.md); it is not automatically rerun by the current workflow.
+
+**Reproduce the committed held-out suite**
+
+```bash
+npm ci
+npm run build
+npm run benchmark:heldout
+```
+
+For full methodology, corpus composition, confidence intervals, and historical baseline details, see [Validation Methodology](docs/VALIDATION.md) and [Multi-Scanner Study](docs/benchmarks.md).
 
 ---
 
