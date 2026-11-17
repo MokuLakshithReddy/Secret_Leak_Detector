@@ -658,6 +658,8 @@ export function applyControlledRemediation(
     const suggestedName = finding.remediation?.envVarName || 'API_KEY';
     const { varName, isReused } = resolveUniqueEnvVarName(envContent, suggestedName, finding.rawSecret);
     const replacementCode = getLanguageReplacement(targetFile, varName);
+    // Validate the exact source span before mutating .env or any configuration file.
+    const newContent = replaceFindingSource(originalFileContent, finding, replacementCode);
     const escapedValue = escapeEnvValue(finding.rawSecret);
     const envLine = `${varName}="${escapedValue}"\n`;
 
@@ -693,9 +695,7 @@ export function applyControlledRemediation(
       fsModule.appendFileSync(envExamplePath, `${exPrefix}${exampleLine}`, 'utf8');
     }
 
-    // 5. Replace exactly the source span that produced this finding.
-    // Duplicate literals elsewhere in the file are deliberately left untouched.
-    const newContent = replaceFindingSource(originalFileContent, finding, replacementCode);
+    // 5. Write the prevalidated source replacement atomically as part of the rollback transaction.
 
     fsModule.writeFileSync(targetFile, newContent, 'utf8');
 
