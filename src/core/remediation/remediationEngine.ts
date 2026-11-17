@@ -536,7 +536,7 @@ export function replaceFindingSource(
 
   let lineStart = 0;
   for (let line = 1; line < finding.line; line++) {
-    const newline = content.indexOf('\\n', lineStart);
+    const newline = content.indexOf('\n', lineStart);
     if (newline === -1) {
       throw new Error('Cannot safely remediate: finding line is outside the current source file.');
     }
@@ -555,8 +555,8 @@ export function replaceFindingSource(
       throw new Error('Cannot safely remediate: the detected source expression has changed. Rescan before retrying.');
     }
 
-    const leadingWhitespace = actualExpression.match(/^\\s*/)?.[0] || '';
-    const trailingWhitespace = actualExpression.match(/\\s*$/)?.[0] || '';
+    const leadingWhitespace = actualExpression.match(/^\s*/)?.[0] || '';
+    const trailingWhitespace = actualExpression.match(/\s*$/)?.[0] || '';
     if (leadingWhitespace.length + trailingWhitespace.length >= actualExpression.length) {
       throw new Error('Cannot safely remediate: the detected source expression is empty or ambiguous.');
     }
