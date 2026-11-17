@@ -607,7 +607,7 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
 
   const finding = (w: string): any => {
     const source = fs.readFileSync(path.join(w, 'config.ts'), 'utf8');
-    const sourceLine = source.split(/\\r?\\n/)[1] || '';
+    const sourceLine = source.split(/\r?\n/)[1] || '';
     return {
       type: 'AWS Access Key ID',
       provider: 'Amazon Web Services',
@@ -2109,7 +2109,7 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
         file: 'test.js',
         fullPath: remFile,
         line: 2,
-        column: (fs.readFileSync(remFile, 'utf8').split(/\\r?\\n/)[1] || '').indexOf('"part1_" + "part2_abcdef1234567890"') + 1,
+        column: (fs.readFileSync(remFile, 'utf8').split(/\r?\n/)[1] || '').indexOf('"part1_" + "part2_abcdef1234567890"') + 1,
         length: '"part1_" + "part2_abcdef1234567890"'.length,
         remediation: { envVarName: 'TEST_API_KEY' },
       };
@@ -3686,10 +3686,14 @@ exit 0
       // 3. Remediation communicates degraded security state when Windows ACLs are unsupported
       const remEnv = path.join(shallowRepoDir, '.env');
       fs.writeFileSync(remEnv, 'VAR="val"\n', 'utf8');
+      const degradedLine = 'const t = "token_degraded_val_123";';
       const degradedFinding: any = {
         id: 'f-degraded',
         fullPath: path.join(shallowRepoDir, 'source.ts'),
         file: 'source.ts',
+        line: 2,
+        column: degradedLine.indexOf('token_degraded_val_123') + 1,
+        length: 'token_degraded_val_123'.length,
         rawSecret: 'token_degraded_val_123',
         type: 'Test Token',
         remediation: { envVarName: 'TEST_TOKEN' },
