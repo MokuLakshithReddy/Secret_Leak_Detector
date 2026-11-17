@@ -13,7 +13,7 @@
 | **T2** | Zombie Git History Exposure | `HIGH` | Secret deleted from HEAD in a subsequent commit, but remains readable in git log. | Full commit history scanner (`history`) + provenance tracer (`trace`). | Git log commit SHA identified; purge command generated; alert issued. |
 | **T3** | False Positive Alert Fatigue | `MEDIUM` | Scanner triggers on docs, UUIDs, or mocks, causing developers to disable the tool. | Multi-signal evidence model + Shannon entropy + placeholder suppression + file discounting. | Precision reaches 100% on benchmark fixtures; 0% false positives. |
 | **T4** | Adversarial Obfuscation Evasion | `HIGH` | Malicious actor or accident splits credentials across concatenated strings or inline comments. | Adversarial de-concatenation normalizer + whitespace-tolerant token parsing. | Adversarial detection rate achieves 100% on concatenation tests. |
-| **T5** | Secondary Secret Leakage by Scanner | `HIGH` | Scanner prints or logs unredacted secret in terminal, logs, or SARIF output. | Strict redaction masks (`AKIA••••••••••••7F2`) + SHA-256 fingerprinting. | Plaintext secret never emitted to stdout or unencrypted reports. |
+| **T5** | Secondary Secret Leakage by Scanner | `HIGH` | Scanner prints or logs unredacted secret in terminal, logs, or SARIF output. | Strict redaction masks (`AKIA••••••••••••7F2`) + full-length HMAC-SHA-256 fingerprints using a private repository key. | Plaintext secret never emitted to stdout or unencrypted reports. |
 | **T6** | Destructive Remediation Regressions | `MEDIUM` | Automated fix damages application syntax or deletes legitimate code. | Controlled remediation workflow (diff preview + approval gate + .env isolation). | Tests and rescan verification validate syntax integrity before commit. |
 
 ---
@@ -51,7 +51,7 @@
 - **Attack Vector:** CI logs, terminal banners, or SARIF reports leak the plaintext secret into public build pipelines.
 - **Countermeasures:**
   1. *Masking by Default:* Only initial prefixes and safe trailing characters are displayed (`sk_live_••••••••••••4567`).
-  2. *Anonymous Fingerprinting:* Unique SHA-256 digests identify finding identity across scans and baselines without persisting the plaintext value.
+  2. *Keyed Fingerprinting:* Full-length HMAC-SHA-256 digests identify findings across scans and baselines without persisting the plaintext credential; private repository keys keep low-entropy values from being testable against a public default key.
 
 ### Threat T6: Remediation Integrity
 - **Attack Vector:** Automatic code rewriting breaks syntax or overwrites crucial logic.
