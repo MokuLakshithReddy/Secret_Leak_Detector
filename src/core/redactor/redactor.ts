@@ -11,6 +11,15 @@ import * as cp from 'child_process';
 const LEGACY_PUBLIC_FINGERPRINT_SALT = 'sld_fingerprint_salt_v1_d8e9f2a1b4c3e7f0';
 const PRIVATE_SALT_BYTES = 32;
 
+/**
+ * The repository key is permission-checked and loaded once per process.
+ * Re-running Windows ACL discovery (icacls) for every finding made scanning
+ * prohibitively slow. Environment overrides are still read before this cache,
+ * so callers can explicitly switch to SLD_SALT without restarting the process.
+ * A local .sld/salt rotation takes effect after the process restarts.
+ */
+const PRIVATE_SALT_CACHE = new Map<string, string>();
+
 function validatePrivateSalt(value: string, source: string): string {
   const normalized = value.trim();
   if (normalized.length < PRIVATE_SALT_BYTES * 2) {
@@ -195,7 +204,8 @@ export function initializePrivateSalt(workspaceRoot: string): PrivateSaltInitial
   } catch (error: any) {
     throw new Error('Cannot safely read private fingerprint salt ' + saltPath + ': ' + (error.message || error));
   }
-  validatePrivateSalt(value, 'Private fingerprint salt ' + saltPath);
+  const validatedValue = validatePrivateSalt(value, 'Private fingerprint salt ' + saltPath);
+  PRIVATE_SALT_CACHE.set(root, validatedValue);
 
   return { path: saltPath, created };
 }
@@ -210,9 +220,17 @@ export function resolveSalt(customSalt?: string, workspaceRoot?: string): string
   const envSalt = process.env.SLD_SALT || process.env.SLD_FINGERPRINT_SALT;
   if (envSalt) return validatePrivateSalt(envSalt, 'SLD_SALT');
 
-  const root = workspaceRoot || process.cwd();
+  const root = path.resolve(workspaceRoot || process.cwd());
+  const cached = PRIVATE_SALT_CACHE.get(root);
+  if (cached) return cached;
+
   const initialized = initializePrivateSalt(root);
-  return fs.readFileSync(initialized.path, 'utf8').trim();
+  const value = validatePrivateSalt(
+    fs.readFileSync(initialized.path, 'utf8').trim(),
+    'Private fingerprint salt ' + initialized.path
+  );
+  PRIVATE_SALT_CACHE.set(root, value);
+  return value;
 }
 
 /** A non-secret key identifier used to reject baselines created with another private key. */
