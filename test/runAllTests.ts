@@ -82,6 +82,7 @@ assert(maskedAws.includes('•'), 'Redaction masks intermediate sensitive charac
 const fp1 = generateFingerprint('secret-12345');
 const fp2 = generateFingerprint('secret-12345');
 const fp3 = generateFingerprint('secret-99999');
+assert(/^[a-f0-9]{64}$/.test(fp1), 'New private fingerprints retain the full 256-bit HMAC output');
 assert(fp1 === fp2, 'Identical secrets yield identical fingerprints');
 assert(fp1 !== fp3, 'Different secrets yield unique fingerprints');
 const multilineCRLF = 'dummy-multiline-token-sample\r\nsecond-line-payload\r\nthird-line-suffix';
