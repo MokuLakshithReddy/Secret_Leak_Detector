@@ -67,6 +67,12 @@ export function validateBaselineSchema(parsed: unknown): BaselineFile {
     if (typeof item.fingerprint !== 'string' || item.fingerprint.trim().length === 0) {
       throw new BaselineValidationError(`findings[${i}].fingerprint must be a non-empty string.`);
     }
+    if (
+      obj.fingerprintScheme === 'hmac-sha256-private-v2' &&
+      !/^[a-f0-9]{64}$/.test(item.fingerprint)
+    ) {
+      throw new BaselineValidationError(`findings[${i}].fingerprint must be a full 256-bit hexadecimal HMAC for private v2 baselines.`);
+    }
 
     if (typeof item.file !== 'string' || item.file.trim().length === 0) {
       throw new BaselineValidationError(`findings[${i}].file must be a non-empty string.`);
