@@ -11,7 +11,7 @@ import { DETECTOR_RULES } from '../src/core/detectors/rules';
 import { calculateRiskAssessment } from '../src/core/risk/riskEngine';
 import { GitTimelineEngine } from '../src/core/history/gitTimeline';
 import { GitService } from '../src/git/gitService';
-import { applyControlledRemediation, resolveUniqueEnvVarName, escapeEnvValue, enforceEnvFilePermissions, getCurrentSecurityPrincipal, isPrincipalAuthorized, supportsDotEnvMigration } from '../src/core/remediation/remediationEngine';
+import { applyControlledRemediation, resolveUniqueEnvVarName, escapeEnvValue, enforceEnvFilePermissions, getCurrentSecurityPrincipal, isPrincipalAuthorized, supportsDotEnvMigration, replaceFindingSource } from '../src/core/remediation/remediationEngine';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as cp from 'child_process';
@@ -86,6 +86,47 @@ assert(
   !supportsDotEnvMigration("const token = 'placeholder';", 'config.yaml'),
   'Unknown configuration runtimes do not receive automatic .env migration'
 );
+
+console.log('\\n--- Exact-Span Remediation Safety ---');
+const repeatedCredential = 'repeated_credential_value_123456';
+const repeatedSource = "import 'dotenv/config';\\n" +
+  'const first = "' + repeatedCredential + '";\\n' +
+  'const second = "' + repeatedCredential + '";\\n';
+const secondLine = 'const second = "' + repeatedCredential + '";';
+const repeatedColumn = secondLine.indexOf(repeatedCredential) + 1;
+const exactReplacement = replaceFindingSource(repeatedSource, {
+  line: 3,
+  column: repeatedColumn,
+  length: repeatedCredential.length,
+  rawSecret: repeatedCredential,
+}, 'process.env.SECRET');
+assert(exactReplacement.includes('const first = "' + repeatedCredential + '";'), 'Exact-span remediation leaves identical credentials at other locations untouched');
+assert(exactReplacement.includes('const second = process.env.SECRET;'), 'Exact-span remediation replaces only the finding location');
+
+const splitExpression = '"ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz"';
+const splitSource = "import 'dotenv/config';\\nconst token = " + splitExpression + ';\\n';
+const splitColumn = splitSource.split('\\n')[1].indexOf(splitExpression) + 1;
+const splitReplacement = replaceFindingSource(splitSource, {
+  line: 2,
+  column: splitColumn,
+  length: splitExpression.length,
+  rawSecret: 'ghp_1234567890abcdefghijklmnopqrstuvwxyz',
+  sourceExpression: splitExpression,
+}, 'process.env.GITHUB_TOKEN');
+assert(splitReplacement.includes('const token = process.env.GITHUB_TOKEN;'), 'Deobfuscated finding replaces its exact original expression');
+
+let staleSourceRejected = false;
+try {
+  replaceFindingSource(repeatedSource, {
+    line: 3,
+    column: repeatedColumn,
+    length: repeatedCredential.length,
+    rawSecret: 'different_credential_value_123',
+  }, 'process.env.SECRET');
+} catch {
+  staleSourceRejected = true;
+}
+assert(staleSourceRejected, 'Exact-span remediation fails closed when the source no longer matches the finding');
 
 console.log('============================================================');
 console.log('🧪 RUNNING COMPREHENSIVE SECURITY ENGINEERING TEST SUITE');
