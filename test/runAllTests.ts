@@ -605,22 +605,29 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
     return w;
   };
 
-  const finding = (w: string): any => ({
-    type: 'AWS Access Key ID',
-    provider: 'Amazon Web Services',
-    file: 'config.ts',
-    fullPath: path.join(w, 'config.ts'),
-    rawSecret: remSecret,
-    remediation: {
-      envVarName: 'AWS_ACCESS_KEY_ID',
-      replacementCode: 'process.env.AWS_ACCESS_KEY_ID',
-      steps: [],
-      envFileSnippet: '',
-      envExampleSnippet: '',
-      gitHistoryPurgeCommand: '',
-      diffPreview: '',
-    },
-  });
+  const finding = (w: string): any => {
+    const source = fs.readFileSync(path.join(w, 'config.ts'), 'utf8');
+    const sourceLine = source.split(/\\r?\\n/)[1] || '';
+    return {
+      type: 'AWS Access Key ID',
+      provider: 'Amazon Web Services',
+      file: 'config.ts',
+      fullPath: path.join(w, 'config.ts'),
+      line: 2,
+      column: sourceLine.indexOf(remSecret) + 1,
+      length: remSecret.length,
+      rawSecret: remSecret,
+      remediation: {
+        envVarName: 'AWS_ACCESS_KEY_ID',
+        replacementCode: 'process.env.AWS_ACCESS_KEY_ID',
+        steps: [],
+        envFileSnippet: '',
+        envExampleSnippet: '',
+        gitHistoryPurgeCommand: '',
+        diffPreview: '',
+      },
+    };
+  };
 
   const assertOriginalPreserved = (w: string, msg: string) => {
     const content = fs.readFileSync(path.join(w, 'config.ts'), 'utf8');
@@ -2101,8 +2108,9 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
         redactedSecret: 'part••••••••••••',
         file: 'test.js',
         fullPath: remFile,
-        line: 1,
-        column: 15,
+        line: 2,
+        column: (fs.readFileSync(remFile, 'utf8').split(/\\r?\\n/)[1] || '').indexOf('"part1_" + "part2_abcdef1234567890"') + 1,
+        length: '"part1_" + "part2_abcdef1234567890"'.length,
         remediation: { envVarName: 'TEST_API_KEY' },
       };
       const remRes = applyControlledRemediation(fakeFinding, remDir);
