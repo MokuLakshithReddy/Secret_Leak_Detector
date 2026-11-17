@@ -517,6 +517,72 @@ export function enforceEnvFilePermissions(
   }
 }
 
+/**
+ * Replace only the exact source span that produced the finding. A repeated
+ * credential elsewhere in the file must not be rewritten as a side effect.
+ * Findings from the direct scanner point at the secret characters; findings
+ * produced by deobfuscation point at the complete source expression.
+ */
+export function replaceFindingSource(
+  content: string,
+  finding: Pick<SecretFinding, 'line' | 'column' | 'length' | 'rawSecret' | 'sourceExpression'>,
+  replacementCode: string
+): string {
+  if (!Number.isInteger(finding.line) || finding.line < 1 ||
+      !Number.isInteger(finding.column) || finding.column < 1 ||
+      !Number.isInteger(finding.length) || finding.length < 1) {
+    throw new Error('Cannot safely remediate a finding with invalid source coordinates.');
+  }
+
+  let lineStart = 0;
+  for (let line = 1; line < finding.line; line++) {
+    const newline = content.indexOf('\\n', lineStart);
+    if (newline === -1) {
+      throw new Error('Cannot safely remediate: finding line is outside the current source file.');
+    }
+    lineStart = newline + 1;
+  }
+
+  const sourceStart = lineStart + finding.column - 1;
+  if (sourceStart > content.length) {
+    throw new Error('Cannot safely remediate: finding column is outside the current source line.');
+  }
+
+  if (finding.sourceExpression !== undefined) {
+    const sourceEnd = sourceStart + finding.length;
+    const actualExpression = content.slice(sourceStart, sourceEnd);
+    if (actualExpression !== finding.sourceExpression) {
+      throw new Error('Cannot safely remediate: the detected source expression has changed. Rescan before retrying.');
+    }
+
+    const leadingWhitespace = actualExpression.match(/^\\s*/)?.[0] || '';
+    const trailingWhitespace = actualExpression.match(/\\s*$/)?.[0] || '';
+    if (leadingWhitespace.length + trailingWhitespace.length >= actualExpression.length) {
+      throw new Error('Cannot safely remediate: the detected source expression is empty or ambiguous.');
+    }
+
+    return content.slice(0, sourceStart) + leadingWhitespace + replacementCode +
+      trailingWhitespace + content.slice(sourceEnd);
+  }
+
+  const secretEnd = sourceStart + finding.rawSecret.length;
+  if (content.slice(sourceStart, secretEnd) !== finding.rawSecret) {
+    throw new Error('Cannot safely remediate: the detected credential has moved or changed. Rescan before retrying.');
+  }
+
+  let replaceStart = sourceStart;
+  let replaceEnd = secretEnd;
+  const quoteBefore = content[replaceStart - 1];
+  const quoteAfter = content[replaceEnd];
+  if ((quoteBefore === '"' || quoteBefore === "'" || quoteBefore === '`') &&
+      quoteAfter === quoteBefore) {
+    replaceStart--;
+    replaceEnd++;
+  }
+
+  return content.slice(0, replaceStart) + replacementCode + content.slice(replaceEnd);
+}
+
 export function applyControlledRemediation(
   finding: SecretFinding,
   workspaceRoot: string,
@@ -627,24 +693,9 @@ export function applyControlledRemediation(
       fsModule.appendFileSync(envExamplePath, `${exPrefix}${exampleLine}`, 'utf8');
     }
 
-    // 5. Replace secret literal in source file, stripping enclosing quotes so replacementCode is evaluated
-    let newContent = originalFileContent;
-    const targetExpr = finding.sourceExpression || finding.rawSecret;
-    const doubleQuoted = `"${targetExpr}"`;
-    const singleQuoted = `'${targetExpr}'`;
-    const backtickQuoted = `\`${targetExpr}\``;
-
-    if (newContent.includes(doubleQuoted)) {
-      newContent = newContent.replace(new RegExp(escapeRegExp(doubleQuoted), 'g'), replacementCode);
-    } else if (newContent.includes(singleQuoted)) {
-      newContent = newContent.replace(new RegExp(escapeRegExp(singleQuoted), 'g'), replacementCode);
-    } else if (newContent.includes(backtickQuoted)) {
-      newContent = newContent.replace(new RegExp(escapeRegExp(backtickQuoted), 'g'), replacementCode);
-    } else if (newContent.includes(targetExpr)) {
-      newContent = newContent.replace(new RegExp(escapeRegExp(targetExpr), 'g'), replacementCode);
-    } else {
-      newContent = newContent.replace(new RegExp(escapeRegExp(finding.rawSecret), 'g'), replacementCode);
-    }
+    // 5. Replace exactly the source span that produced this finding.
+    // Duplicate literals elsewhere in the file are deliberately left untouched.
+    const newContent = replaceFindingSource(originalFileContent, finding, replacementCode);
 
     fsModule.writeFileSync(targetFile, newContent, 'utf8');
 
