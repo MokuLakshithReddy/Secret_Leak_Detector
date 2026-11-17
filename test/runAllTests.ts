@@ -270,6 +270,7 @@ fs.rmSync(keyMismatchRoot, { recursive: true, force: true });
 // Explicit initialization creates a high-entropy, access-restricted local key.
 const saltTestRoot = path.join(__dirname, '..', 'scratch', 'test_private_salt_init');
 fs.rmSync(saltTestRoot, { recursive: true, force: true });
+fs.mkdirSync(saltTestRoot, { recursive: true });
 const originalSldSaltForInit = process.env.SLD_SALT;
 const originalLegacySaltForInit = process.env.SLD_FINGERPRINT_SALT;
 try {
