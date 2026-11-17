@@ -239,6 +239,7 @@ fs.mkdirSync(keyMismatchRoot, { recursive: true });
 const originalSldSaltForMismatch = process.env.SLD_SALT;
 const originalLegacySaltForMismatch = process.env.SLD_FINGERPRINT_SALT;
 let privateKeyMismatchRejected = false;
+let privateKeyMismatchError = '';
 try {
   process.env.SLD_SALT = 'A'.repeat(64);
   delete process.env.SLD_FINGERPRINT_SALT;
@@ -251,12 +252,16 @@ try {
     line: 1,
     risk: 'HIGH',
   };
+  const originalKeyId = getFingerprintKeyId(keyMismatchRoot);
   mismatchEngine.saveBaseline([mismatchFinding]);
   process.env.SLD_SALT = 'B'.repeat(64);
+  const changedKeyId = getFingerprintKeyId(keyMismatchRoot);
+  assert(originalKeyId !== changedKeyId, 'Changing SLD_SALT changes the private fingerprint key identifier');
   try {
     mismatchEngine.filterAgainstBaseline([mismatchFinding], { forceFile: true });
   } catch (error: any) {
-    privateKeyMismatchRejected = error instanceof BaselineValidationError && /key mismatch/i.test(error.message);
+    privateKeyMismatchError = String(error?.message || error);
+    privateKeyMismatchRejected = /fingerprint key mismatch/i.test(privateKeyMismatchError);
   }
 } finally {
   if (originalSldSaltForMismatch === undefined) delete process.env.SLD_SALT;
@@ -264,7 +269,7 @@ try {
   if (originalLegacySaltForMismatch === undefined) delete process.env.SLD_FINGERPRINT_SALT;
   else process.env.SLD_FINGERPRINT_SALT = originalLegacySaltForMismatch;
 }
-assert(privateKeyMismatchRejected, 'Private baseline rejects scans using a different fingerprint key');
+assert(privateKeyMismatchRejected, `Private baseline rejects scans using a different fingerprint key (got: ${privateKeyMismatchError || 'no mismatch error'})`);
 fs.rmSync(keyMismatchRoot, { recursive: true, force: true });
 
 // Explicit initialization creates a high-entropy, access-restricted local key.
@@ -1243,7 +1248,7 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
       const mkFinding = (file: string, line: number, fp: string) =>
         ({
           id: 'sec_x_' + fp,
-          fingerprint: fp,
+          fingerprint: crypto.createHash('sha256').update(fp).digest('hex'),
           type: 'AWS Access Key ID',
           file,
           line,
@@ -1438,7 +1443,7 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
     const baselineEngine = new BaselineEngine(process.cwd(), 'scratch-baseline-resolution.json');
     const mockFindingA: any = {
       id: 'sec_1',
-      fingerprint: 'fp_shared_123',
+      fingerprint: crypto.createHash('sha256').update('fp_shared_123').digest('hex'),
       type: 'AWS Access Key ID',
       provider: 'Amazon Web Services',
       file: 'src/fileA.ts',
@@ -1447,7 +1452,7 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
     };
     const mockFindingB: any = {
       id: 'sec_2',
-      fingerprint: 'fp_shared_123',
+      fingerprint: crypto.createHash('sha256').update('fp_shared_123').digest('hex'),
       type: 'AWS Access Key ID',
       provider: 'Amazon Web Services',
       file: 'src/fileB.ts',
