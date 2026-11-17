@@ -228,7 +228,7 @@ Commit Message:     "feat: implement auth credentials"
 ```
 
 ### 5. FIX — Controlled Remediation Engine
-- **Safe Masking:** Secrets are masked by default (`AKIA••••••••••••DEF`) with deterministic SHA-256 fingerprints to prevent secondary log leaks.
+- **Safe Masking:** Secrets are masked by default (`AKIA••••••••••••DEF`); finding identities use keyed HMAC-SHA-256 fingerprints rather than storing plaintext credentials.
 - **Controlled Patch Preview:** Unified diff preview before applying changes.
 - **Safe `.env` Migration:** Automatically updates `.env`, generates blank `.env.example` templates, and secures `.gitignore`.
 - **Cross-Platform File Protection:** Enforces mode `0600` on POSIX systems, and hardens Windows NTFS Access Control Lists (ACLs) via `icacls` to restrict permissions exclusively to the current user.
@@ -303,7 +303,9 @@ npx secret-leak-detector hook install
 When the extension is uninstalled, the `vscode:uninstall` hook automatically cleans up pre-commit hooks managed by Secret Leak Detector (`# [SLD_HOOK_MANAGED]`). It inspects repositories registered in `~/.sld/installed-hooks.json`, global storage history (`storage.json`), and common workspace directories (`Projects`, `Documents`, `Desktop`, `workspace`, `repos`, `src`, `dev`, `code`). Only hooks marked with `# [SLD_HOOK_MANAGED]` are touched; custom user hooks are preserved or restored from backup. In addition, hooks feature an auto-recovery mechanism: if the extension is uninstalled while an unindexed hook remains, the hook detects the missing scanner on next commit, cleans itself up, and unblocks the commit.
 
 ### Private Repository Salt (`.sld/salt`)
-Baseline fingerprints use HMAC-SHA-256 with a standardized domain salt to ensure portable, team-consistent baseline tracking. For environments requiring non-guessable fingerprint tracking, you can configure a private salt via the `SLD_SALT` environment variable or place a private salt in `.sld/salt` in your repository root.
+New baseline entries use full 256-bit HMAC-SHA-256 fingerprints keyed with a randomly generated 256-bit repository secret stored in `.sld/salt` (ignored by Git). Run `secret-leak-detector salt init` to initialize the key. For a shared baseline, distribute the same key to authorized developers through an approved secret manager and configure `SLD_SALT` in each developer environment and GitHub Actions. Never commit the key or place it in an issue, PR, log, or chat.
+
+Existing metadata-free v1 baselines remain readable only through a legacy compatibility path. After coordinating the private key across the team and CI, run `secret-leak-detector baseline update` to migrate still-present known findings to the private fingerprint scheme. Old public-salt fingerprints remain vulnerable to offline guessing; rotate affected credentials and remove resolved legacy entries. The validated key is cached for the lifetime of a process, so restart the CLI or VS Code extension after rotating the local key.
 
 ## 🛡️ Threat Model
 
