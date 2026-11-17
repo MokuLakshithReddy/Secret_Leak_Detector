@@ -186,7 +186,7 @@ npm run build && node dist/test-suite.js
 |---------|-------------|
 | §01 | Core Scanner: AWS access keys, Stripe live/restricted keys, GitHub PATs, generic high-entropy secrets |
 | §02 | Shannon Entropy Engine: correct bit calculations, normalized entropy, empty/short strings |
-| §03 | Redactor: masking format, SHA-256 fingerprint generation, secret isolation |
+| §03 | Redactor: masking format, private-key HMAC-SHA-256 fingerprint generation, secret isolation |
 | §04 | Baseline Engine: add/update/lookup/remove fingerprints, schema validation |
 | §05 | SARIF Formatter: schema fields, result mapping, location URIs |
 | §06 | Risk Engine: confidence-to-tier mapping, evidence weighting |
