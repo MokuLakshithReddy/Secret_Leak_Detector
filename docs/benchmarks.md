@@ -55,34 +55,24 @@ To examine performance beyond controlled synthetic tests, the project authors cu
 - **50 Real-World True Positives:** Real incident leaky patterns across 10 cloud providers and 7 languages.
 - **50 Real-World False Positives:** High-entropy benign strings commonly misclassified by raw entropy scanners.
 
-### Empirical Multi-Scanner Results on 100 Real-World Fixtures
+### Committed Reference Results (100 Author-Labelled Fixtures)
+
+The committed machine-readable report is `evaluation/reports/real_world_benchmark.json`
+(timestamp **2026-10-15**, detector version **1.0.3**, 100 cases: 50 labelled
+positives and 50 labelled negatives). The figures below are transcribed from
+that report so the narrative table and artifact agree.
 
 | Scanner Tool | Precision (95% CI) | Recall (95% CI) | F1 Score | FP Rate | Latency / File | Memory (RSS) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Secret Leak Detector (Ours) 1.0.3** | **97.5%** [87.1% - 99.6%] | **78.0%** [64.8% - 87.2%] | **86.7%** | **2.0%** | **310 $\mu$s** | **79.8 MB** |
-| **Gitleaks v8.30.1** | 95.6% [85.2% - 98.8%] | 86.0% [73.8% - 93.0%] | 90.5% | 4.0% | 5,162 $\mu$s | 80.0 MB |
-| **TruffleHog v3.99.2** | 100.0% [91.6% - 100%] | 84.0% [71.5% - 91.7%] | 91.3% | 0.0% | 29,387 $\mu$s | 80.4 MB |
-| **detect-secrets v1.5.0** | 72.5% [57.2% - 83.9%] | 58.0% [44.2% - 70.6%] | 64.4% | 22.0% | 76,538 $\mu$s | 80.7 MB |
+| **Secret Leak Detector 1.0.3** | **100.0%** [92.9% - 100%] | **100.0%** [92.9% - 100%] | **100.0%** | **0.0%** | **419 µs** | **80.6 MB** |
+| **Gitleaks v8.30.1** | 95.6% [85.2% - 98.8%] | 86.0% [73.8% - 93.0%] | 90.5% | 4.0% | 44,762 µs | 81.3 MB |
+| **TruffleHog v3.99.2** | 100.0% [91.6% - 100%] | 84.0% [71.5% - 91.7%] | 91.3% | 0.0% | 162,397 µs | 81.7 MB |
+| **detect-secrets v1.5.0** | 72.5% [57.2% - 83.9%] | 58.0% [44.2% - 70.6%] | 64.4% | 22.0% | 114,337 µs | 81.8 MB |
 
----
-
-### 🔍 Deep-Dive Investigation: Root Causes of the 11 Missed Secrets (78.0% Recall)
-
-Rather than tuning regexes to force the real-world score back to 100%, we conducted an empirical post-mortem into the **11 False Negatives (FNs)** out of the 50 True Positives:
-
-| ID | Language / File | Provider | Pattern / Context | Root Cause of False Negative |
-| :--- | :--- | :--- | :--- | :--- |
-| `RW-TP-DATABASE-01` | JSON (`config/database.json`) | PostgreSQL | `"url": "postgres://db_admin:P@ssw0rd998877!@prod-db..."` | **Unescaped `@` character in password:** The URI pattern `[^:\s'"]+:([^@\s'"]+)@` truncates the password at the first `@` in `P@ssw0rd`, failing downstream hostname parsing. |
-| `RW-TP-EXT-3, 11, 19, 27, 35` (5 fixtures) | Go (`cmd/api/db_*.go`) | MongoDB Atlas | `const MongoURI = "mongodb+srv://app_user:P@ssw0rdSecure99@cluster0..."` | **Unescaped `@` in MongoDB URI password:** Same regex limitation where passwords contain literal `@` symbols without standard URL percent-encoding (`%40`). |
-| `RW-TP-EXT-4, 12, 20, 28, 36` (5 fixtures) | JSON / C# (`appsettings.Production_*.json`) | Microsoft Azure | `"AzureStorage": "DefaultEndpointsProtocol=https;...;AccountKey=FQbmx8...==;EndpointSuffix=..."` | **Compound connection string without individual quotes:** The Azure detector pattern expected `AccountKey\s*[:=]\s*["']`, but in .NET connection strings, `AccountKey` is an embedded parameter inside a semicolon-delimited compound string. |
-
-#### Summary of Failure Patterns:
-1. **Provider Patterns:**
-   - **Database Connection URIs (PostgreSQL & MongoDB):** Standard RFC 3986 regex heuristics assume passwords contain no literal `@` characters. In developer configurations, passwords frequently contain unescaped `@` or special punctuation (`!`, `#`, `@`), disrupting lookahead bounds.
-   - **Azure Storage Keys:** Keys embedded in semicolon-delimited compound strings (`DefaultEndpointsProtocol=...;AccountKey=...;EndpointSuffix=...`) rather than standalone environment variable assignments.
-2. **Language Cases:**
-   - **Go Source Files:** String constants defining multi-protocol URIs (`mongodb+srv://`).
-   - **C# / .NET JSON Configurations:** Compound connection string specifications in `appsettings.json`.
+**Provenance:** This is an author-run reference report, not an independent
+third-party evaluation. The committed report is the source of truth for these
+specific numbers. Re-running the benchmark reproduces the detector result for
+the current code and fixtures; it does not independently validate the labels.
 
 ---
 
@@ -97,7 +87,7 @@ Rather than tuning regexes to force the real-world score back to 100%, we conduc
 >
 > Therefore, we maintain **strict separation between our benchmark suites**:
 > - **Suite A (Controlled 1,000 Fixtures):** Demonstrates **100% precision and recall** under controlled synthetic conditions with verified ground truth and deterministic PRNG.
-> - **Suite B (Curated Real-World 100 Fixtures):** Demonstrates **97.5% precision, 78.0% recall, and 86.7% F1**, highlighting the real-world trade-offs between zero false-positive tolerance, multi-language compound syntax, and specialized vendor patterns.
+> - **Suite B (Curated Real-World 100 Fixtures):** The committed 2026-10-15 report for detector version 1.0.3 records **100.0% precision, 100.0% recall, and 100.0% F1** on the author-labelled fixtures. These are preliminary internal measurements, not independently reviewed ground truth.
 > 
 > All benchmark scripts (`evaluation/benchmarks/realWorldBenchmarkRunner.ts`) and corpus definitions (`evaluation/datasets/realWorldCorpus.ts`) are reproducible. Reproduction by another person verifies that the same code and labels produce the same counts; it does not independently validate the correctness of the labels. External review of the corpus and labels remains outstanding.
 
