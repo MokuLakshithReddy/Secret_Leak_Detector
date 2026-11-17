@@ -314,7 +314,7 @@ Secret Leak Detector is engineered against 6 primary security threats:
 - **T2: Zombie Git History Exposure:** Captured via `history` commit log scanner, `timeline`, and `graph` DAG analysis.
 - **T3: False Positive Alert Fatigue:** Mitigated via Shannon entropy thresholds and placeholder suppression.
 - **T4: Adversarial Obfuscation Evasion:** Neutralized via string de-concatenation, comment stripping, and real compiler AST analysis.
-- **T5: Secondary Secret Leakage by Scanner:** Eliminated through masked displays and SHA-256 fingerprinting.
+- **T5: Secondary Secret Leakage by Scanner:** Mitigated through masked displays and private-key HMAC-SHA-256 fingerprints.
 - **T6: Destructive Remediation Regressions:** Prevented by diff previews, approval gates, and rescan verification.
 
 *For complete threat trees and verification criteria, see [docs/threat-model.md](docs/threat-model.md).*
