@@ -263,5 +263,5 @@ export function redactSecret(secret: string): string {
 export function generateFingerprint(secret: string, customSalt?: string, workspaceRoot?: string): string {
   const salt = resolveSalt(customSalt, workspaceRoot);
   const canonicalSecret = secret.replace(/\r\n/g, '\n');
-  return crypto.createHmac('sha256', salt).update(canonicalSecret).digest('hex').substring(0, 16);
+  return crypto.createHmac('sha256', salt).update(canonicalSecret).digest('hex');
 }
