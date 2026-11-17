@@ -26,6 +26,9 @@ const ALLOWED_FILES = new Set([
   'dist/cli.js',
   'dist/ast-parser.js',
   'dist/uninstall.js',
+  'dist/extension.js',
+  'media/icon.png',
+  'media/shield.svg',
 ]);
 const REQUIRED_FILES = [
   'package.json',
