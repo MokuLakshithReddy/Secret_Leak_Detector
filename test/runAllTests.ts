@@ -87,11 +87,11 @@ assert(
   'Unknown configuration runtimes do not receive automatic .env migration'
 );
 
-console.log('\\n--- Exact-Span Remediation Safety ---');
+console.log('\n--- Exact-Span Remediation Safety ---');
 const repeatedCredential = 'repeated_credential_value_123456';
-const repeatedSource = "import 'dotenv/config';\\n" +
-  'const first = "' + repeatedCredential + '";\\n' +
-  'const second = "' + repeatedCredential + '";\\n';
+const repeatedSource = "import 'dotenv/config';\n" +
+  'const first = "' + repeatedCredential + '";\n' +
+  'const second = "' + repeatedCredential + '";\n';
 const secondLine = 'const second = "' + repeatedCredential + '";';
 const repeatedColumn = secondLine.indexOf(repeatedCredential) + 1;
 const exactReplacement = replaceFindingSource(repeatedSource, {
@@ -104,8 +104,8 @@ assert(exactReplacement.includes('const first = "' + repeatedCredential + '";'),
 assert(exactReplacement.includes('const second = process.env.SECRET;'), 'Exact-span remediation replaces only the finding location');
 
 const splitExpression = '"ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz"';
-const splitSource = "import 'dotenv/config';\\nconst token = " + splitExpression + ';\\n';
-const splitColumn = splitSource.split('\\n')[1].indexOf(splitExpression) + 1;
+const splitSource = "import 'dotenv/config';\nconst token = " + splitExpression + ';\n';
+const splitColumn = splitSource.split('\n')[1].indexOf(splitExpression) + 1;
 const splitReplacement = replaceFindingSource(splitSource, {
   line: 2,
   column: splitColumn,
