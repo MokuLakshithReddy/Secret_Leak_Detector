@@ -248,6 +248,7 @@ try {
     id: 'private-finding',
     fingerprint: generateFingerprint('private-key-example', undefined, keyMismatchRoot),
     rawSecret: 'private-key-example',
+    type: 'Test Credential',
     file: 'private.ts',
     line: 1,
     risk: 'HIGH',
@@ -1269,9 +1270,8 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
 
       // Multiline CRLF vs LF backwards compatibility in baseline matching
       const multilineSecret = Buffer.from('LS0tLS1CRUdJTiBURVNUIEtFWS0tLS0tCmxpbmUxCnNlY3JldAotLS0tLUVORCBURVNUIEtFWS0tLS0t', 'base64').toString('utf8');
-      const salt = resolveSalt(undefined, bdir);
       const crlfSecret = multilineSecret.replace(/\n/g, '\r\n');
-      const crlfHash = crypto.createHmac('sha256', salt).update(crlfSecret).digest('hex').substring(0, 16);
+      const crlfHash = generateLegacyFingerprint(crlfSecret);
       const legacyBaselineFile: any = {
         version: 1,
         generatedAt: new Date().toISOString(),
@@ -1984,7 +1984,7 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
         try {
           const sldSaltDir = path.join(saltDir, '.sld');
           fs.mkdirSync(sldSaltDir, { recursive: true });
-          fs.writeFileSync(path.join(sldSaltDir, 'salt'), 'test_scanner_salt_999\n', 'utf8');
+          fs.writeFileSync(path.join(sldSaltDir, 'salt'), 'C'.repeat(64) + '\n', 'utf8');
 
           const findingsDefault = scanContent('const k = "AKIA1234567890ABCDEF";', 'key.ts');
           const findingsCustom = scanContent('const k = "AKIA1234567890ABCDEF";', 'key.ts', { workspaceRoot: saltDir });
