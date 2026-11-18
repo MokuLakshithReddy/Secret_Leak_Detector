@@ -66,7 +66,7 @@ function resolveComparatorBinary(toolName: string, candidateRelativePaths: strin
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
     }).trim();
-    const candidate = output.split(/\\r?\\n/)[0]?.trim();
+    const candidate = output.split(/\r?\n/)[0]?.trim();
     if (candidate && fs.existsSync(candidate)) return candidate;
   } catch {
     // A missing optional comparator is handled explicitly by the caller.
@@ -99,7 +99,7 @@ function readComparatorVersion(binary: string, args: string[], label: string): s
       stdio: ['ignore', 'pipe', 'ignore'],
       windowsHide: true,
     }).trim();
-    return output.split(/\\r?\\n/)[0] || 'unknown';
+    return output.split(/\r?\n/)[0] || 'unknown';
   } catch {
     return 'unknown';
   }
@@ -157,7 +157,7 @@ export function runRealWorldBenchmark(options: { sldOnly?: boolean } = {}): Real
   fs.mkdirSync(reportsDir, { recursive: true });
   console.log('================================================================================================');
   console.log('🌍 EXECUTING BENCHMARK ON AUTHOR-LABELLED, REAL-WORLD-INSPIRED FIXTURES...');
-  console.log('================================================================================================\\n');
+  console.log('================================================================================================\n');
 
   const corpus = writeRealWorldCorpusToDisk(corpusDir);
   const results: RealWorldMetrics[] = [];
@@ -165,7 +165,7 @@ export function runRealWorldBenchmark(options: { sldOnly?: boolean } = {}): Real
   try {
     console.log(`✅ Author-generated fixture corpus staged: ${corpus.length} files`);
     console.log(`   - Labelled positives: ${corpus.filter((c) => c.category === 'true_positive').length}`);
-    console.log(`   - Labelled negatives: ${corpus.filter((c) => c.category === 'false_positive').length}\\n`);
+    console.log(`   - Labelled negatives: ${corpus.filter((c) => c.category === 'false_positive').length}\n`);
 
     // 1. Secret Leak Detector
     console.log('[1/4] Running Secret Leak Detector...');
@@ -224,7 +224,7 @@ export function runRealWorldBenchmark(options: { sldOnly?: boolean } = {}): Real
           'filesystem', corpusDir, '--json', '--no-verification', '--no-update',
         ], 'TruffleHog');
         const detected = new Set<string>();
-        for (const line of output.split('\\n')) {
+        for (const line of output.split('\n')) {
           if (!line.trim()) continue;
           let parsed: any;
           try { parsed = JSON.parse(line); } catch {
@@ -282,7 +282,7 @@ export function runRealWorldBenchmark(options: { sldOnly?: boolean } = {}): Real
       totalFiles: corpus.length,
       results,
     }, null, 2), 'utf8');
-    console.log(`\\n📄 Real-World-Inspired Benchmark Report saved to: ${reportPath}\\n`);
+    console.log(`\n📄 Real-World-Inspired Benchmark Report saved to: ${reportPath}\n`);
 
     return results;
   } finally {
@@ -346,7 +346,7 @@ function evaluateScanner(
 
 function printRealWorldSummary(results: RealWorldMetrics[], totalFiles: number) {
   console.log('\n======================================================================================================================');
-  console.log(`📊 REAL-WORLD BENCHMARK REPORT (${totalFiles} Independently Labelled Fixtures: 50 True Positives, 50 False Positives)`);
+  console.log(`📊 REAL-WORLD BENCHMARK REPORT (${totalFiles} Author-Labelled Synthetic Fixtures: 50 True Positives, 50 False Positives)`);
   console.log('======================================================================================================================');
   console.log('| Scanner Tool                | Precision (95% CI)   | Recall (95% CI)      | F1 Score | FP Rate | Latency/File | Memory (RSS) |');
   console.log('|:----------------------------|:---------------------|:---------------------|:---------|:--------|:-------------|:-------------|');
