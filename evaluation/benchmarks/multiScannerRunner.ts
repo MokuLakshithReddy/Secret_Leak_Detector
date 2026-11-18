@@ -6,7 +6,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { generateCorpus, CorpusItem } from '../datasets/corpusGenerator';
 import { scanContent } from '../../src/core/scanner/scanner';
 import { getPackageVersion } from '../../src/core/version';
@@ -25,12 +25,25 @@ function resolveComparatorBinary(toolName: string, candidateRelativePaths: strin
   // Check system PATH
   try {
     const whichCmd = isWin ? 'where' : 'which';
-    const out = execSync(`${whichCmd} ${toolName}`, { stdio: ['pipe', 'pipe', 'ignore'], encoding: 'utf8' }).trim();
+    const out = execFileSync(whichCmd, [toolName], { stdio: ['ignore', 'pipe', 'ignore'], encoding: 'utf8' }).trim();
     const candidate = out.split(/\r?\n/)[0]?.trim();
     if (candidate && fs.existsSync(candidate)) return candidate;
   } catch {}
 
   return null;
+}
+
+function readComparatorVersion(binary: string, args: string[]): string {
+  try {
+    const output = execFileSync(binary, args, {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
+    }).trim();
+    return output.split(/\r?\n/)[0] || 'unknown';
+  } catch {
+    return 'unknown';
+  }
 }
 
 export interface ScannerMetrics {
@@ -138,30 +151,30 @@ export function runMultiScannerBenchmark(options: { sldOnly?: boolean } = {}): S
   if (gitleaksBin) {
     try {
       const gStart = process.hrtime.bigint();
-      try {
-        execSync(`"${gitleaksBin}" dir "${corpusDir}" --report-format json --report-path "${gitleaksReport}" --no-banner --exit-code 0`, {
-          stdio: 'pipe',
-        });
-      } catch {
-        // gitleaks returns non-zero if leaks are found unless --exit-code 0 is set
-      }
+      execFileSync(gitleaksBin, [
+        'dir', corpusDir, '--report-format', 'json', '--report-path', gitleaksReport,
+        '--no-banner', '--exit-code', '0',
+      ], { stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024, windowsHide: true });
       const gEnd = process.hrtime.bigint();
       gitleaksWallClockMs = Number(gEnd - gStart) / 1e6;
 
-      if (fs.existsSync(gitleaksReport)) {
-        const rawJson = JSON.parse(fs.readFileSync(gitleaksReport, 'utf8'));
-        if (Array.isArray(rawJson)) {
-          for (const leak of rawJson) {
-            const rel = path.relative(corpusDir, leak.File || leak.file);
-            gitleaksDetectedFiles.add(normalizePath(rel));
-          }
-        }
-        fs.unlinkSync(gitleaksReport);
+      if (!fs.existsSync(gitleaksReport)) {
+        throw new Error('Gitleaks completed without producing its JSON report.');
       }
-    } catch (err) {
-      console.warn('Gitleaks execution encountered error:', err);
+      const rawJson = JSON.parse(fs.readFileSync(gitleaksReport, 'utf8'));
+      if (!Array.isArray(rawJson)) throw new Error('Gitleaks report is not a JSON array.');
+      for (const leak of rawJson) {
+        const rawFile = leak.File || leak.file;
+        if (typeof rawFile !== 'string') throw new Error('Gitleaks report entry is missing a file path.');
+        const rel = path.relative(corpusDir, rawFile);
+        gitleaksDetectedFiles.add(normalizePath(rel));
+      }
+      fs.unlinkSync(gitleaksReport);
+    } catch (err: any) {
+      try { fs.rmSync(gitleaksReport, { force: true }); } catch {}
+      throw new Error(`Gitleaks benchmark failed; refusing to write partial metrics: ${err?.message || err}`);
     }
-    results.push(evaluateScanner('Gitleaks', 'v8.30.1', corpus, gitleaksDetectedFiles, gitleaksWallClockMs));
+    results.push(evaluateScanner('Gitleaks', readComparatorVersion(gitleaksBin, ['version']), corpus, gitleaksDetectedFiles, gitleaksWallClockMs));
   } else {
     if (allowMissing) {
       console.warn('⚠️  Gitleaks binary not found on PATH or in tools/. Skipping Gitleaks evaluation.');
@@ -190,10 +203,9 @@ export function runMultiScannerBenchmark(options: { sldOnly?: boolean } = {}): S
       const tStart = process.hrtime.bigint();
       let output = '';
       try {
-        output = execSync(`"${trufflehogBin}" filesystem "${corpusDir}" --json --no-verification --no-update`, {
-          encoding: 'utf8',
-          stdio: ['pipe', 'pipe', 'ignore'],
-        });
+        output = execFileSync(trufflehogBin, [
+          'filesystem', corpusDir, '--json', '--no-verification', '--no-update',
+        ], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024, windowsHide: true });
       } catch (err: any) {
         output = err.stdout || '';
       }
@@ -211,13 +223,14 @@ export function runMultiScannerBenchmark(options: { sldOnly?: boolean } = {}): S
             trufflehogDetectedFiles.add(normalizePath(rel));
           }
         } catch {
-          // ignore non-json log lines
+          throw new Error('TruffleHog emitted a non-JSON line; refusing to create a report from incomplete output.');
         }
       }
-    } catch (err) {
-      console.warn('TruffleHog execution error:', err);
+      if (!output.trim()) throw new Error('TruffleHog produced no output; refusing to count an empty run as zero detections.');
+    } catch (err: any) {
+      throw new Error(`TruffleHog benchmark failed; refusing to write partial metrics: ${err?.message || err}`);
     }
-    results.push(evaluateScanner('TruffleHog', 'v3.99.2', corpus, trufflehogDetectedFiles, trufflehogWallClockMs));
+    results.push(evaluateScanner('TruffleHog', readComparatorVersion(trufflehogBin, ['--version']), corpus, trufflehogDetectedFiles, trufflehogWallClockMs));
   } else {
     if (allowMissing) {
       console.warn('⚠️  TruffleHog binary not found on PATH or in tools/. Skipping TruffleHog evaluation.');
@@ -247,9 +260,11 @@ export function runMultiScannerBenchmark(options: { sldOnly?: boolean } = {}): S
       const dStart = process.hrtime.bigint();
       let output = '';
       try {
-        output = execSync(`"${detectSecretsBin}" scan --all-files "${corpusDir}"`, {
+        output = execFileSync(detectSecretsBin, ['scan', '--all-files', corpusDir], {
           encoding: 'utf8',
-          stdio: ['pipe', 'pipe', 'ignore'],
+          stdio: ['ignore', 'pipe', 'pipe'],
+          maxBuffer: 64 * 1024 * 1024,
+          windowsHide: true,
         });
       } catch (err: any) {
         output = err.stdout || '';
@@ -257,21 +272,21 @@ export function runMultiScannerBenchmark(options: { sldOnly?: boolean } = {}): S
       const dEnd = process.hrtime.bigint();
       detectSecretsWallClockMs = Number(dEnd - dStart) / 1e6;
 
-      try {
-        const parsed = JSON.parse(output);
-        if (parsed.results) {
-          for (const rawFile of Object.keys(parsed.results)) {
-            const rel = path.relative(corpusDir, rawFile);
-            detectSecretsDetectedFiles.add(normalizePath(rel));
-          }
-        }
-      } catch {
-        // ignore parse error
+      let parsed: any;
+      try { parsed = JSON.parse(output); } catch {
+        throw new Error('detect-secrets did not emit valid JSON.');
       }
-    } catch (err) {
-      console.warn('detect-secrets execution error:', err);
+      if (!parsed || typeof parsed.results !== 'object' || parsed.results === null || Array.isArray(parsed.results)) {
+        throw new Error('detect-secrets output is missing its results object.');
+      }
+      for (const rawFile of Object.keys(parsed.results)) {
+        const rel = path.relative(corpusDir, rawFile);
+        detectSecretsDetectedFiles.add(normalizePath(rel));
+      }
+    } catch (err: any) {
+      throw new Error(`detect-secrets benchmark failed; refusing to write partial metrics: ${err?.message || err}`);
     }
-    results.push(evaluateScanner('detect-secrets', 'v1.5.0', corpus, detectSecretsDetectedFiles, detectSecretsWallClockMs));
+    results.push(evaluateScanner('detect-secrets', readComparatorVersion(detectSecretsBin, ['--version']), corpus, detectSecretsDetectedFiles, detectSecretsWallClockMs));
   } else {
     if (allowMissing) {
       console.warn('⚠️  detect-secrets binary not found on PATH or in tools/. Skipping detect-secrets evaluation.');
@@ -298,8 +313,23 @@ export function runMultiScannerBenchmark(options: { sldOnly?: boolean } = {}): S
   // ---------------------------------------------------------------------------
   printBenchmarkSummary(results, corpus.length);
 
+  let sourceCommit = 'unknown';
+  try {
+    sourceCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {}
+
   const reportPath = path.join(reportsDir, 'multi_scanner_benchmark.json');
-  fs.writeFileSync(reportPath, JSON.stringify({ timestamp: new Date().toISOString(), totalFiles: corpus.length, results }, null, 2), 'utf8');
+  fs.writeFileSync(reportPath, JSON.stringify({
+    timestamp: new Date().toISOString(),
+    sourceCommit,
+    detectorVersion: getPackageVersion(),
+    corpusProvenance: 'Author-generated synthetic fixtures with maintainer-assigned labels; not an independent real-world evaluation.',
+    totalFiles: corpus.length,
+    results,
+  }, null, 2), 'utf8');
   console.log(`\n📄 Report saved to: ${reportPath}`);
 
   return results;

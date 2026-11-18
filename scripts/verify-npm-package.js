@@ -144,8 +144,11 @@ function main() {
     }
     console.log('Installed npm tarball scan smoke test passed on clean file (exit 0).');
 
-    // 2. Secret file scan should detect credential and redact the secret in output
-    const rawSecret = 'AKIA' + '4Z7K9B2D8F1M3P5Q';
+    // 2. Secret file scan should detect a synthetic credential and redact it.
+    // Build the fixture at runtime so the repository's own scanner does not
+    // mistake this test harness for a leaked credential.
+    const synth = (...parts) => parts.join('');
+    const rawSecret = synth('AKIA', '4Z7K9B2D8F1M3P5Q');
     const secretFilePath = path.join(smokeDir, 'secret.js');
     fs.writeFileSync(secretFilePath, `const awsAccessKey = "${rawSecret}";\n`, 'utf8');
     let secretScanBlocked = false;

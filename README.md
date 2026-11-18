@@ -4,9 +4,8 @@
 
 [![Visual Studio Code](https://img.shields.io/badge/VS%20Code-v1.85+-blue.svg?logo=visualstudiocode)](https://code.visualstudio.com/)
 [![CI Status](https://github.com/MokuLakshithReddy/Secret_Leak_Detector/actions/workflows/secret-leak-detector.yml/badge.svg)](https://github.com/MokuLakshithReddy/Secret_Leak_Detector/actions)
-[![Tests](https://img.shields.io/badge/tests-863%20passed%20%28806%20core%20%2B%2040%20git--hook%20%2B%2017%20manifest%29-brightgreen.svg)](https://github.com/MokuLakshithReddy/Secret_Leak_Detector/actions)
 [![Internal Benchmark F1](https://img.shields.io/badge/internal%20benchmark%20F1-100%25-brightgreen.svg)](docs/VALIDATION.md)
-[![Corpus](https://img.shields.io/badge/corpus-1%2C000%20synthetic%20%2B%20100%20curated-blueviolet.svg)](docs/VALIDATION.md)
+[![Corpus](https://img.shields.io/badge/corpus-1%2C000%20synthetic%20%2B%20100%20author--labelled-blueviolet.svg)](docs/VALIDATION.md)
 [![Internal Precision](https://img.shields.io/badge/internal%20precision-100%25-00e5b0.svg)](docs/VALIDATION.md)
 [![License: Proprietary](https://img.shields.io/badge/License-Proprietary-red.svg)](LICENSE)
 
@@ -57,8 +56,8 @@ npx secret-leak-detector hook install
 | **TruffleHog v3.99.2** | **100.0%** [98.8% - 100%] | 54.2% [50.2% - 58.1%] | 70.3% | **0.0%** | 25.0% | 4,947 $\mu$s | 85.2 MB |
 | **detect-secrets v1.5.0** | 68.7% [65.0% - 72.2%] | 73.2% [69.5% - 76.6%] | 70.9% | 50.0% | 92.0% | 88,987 $\mu$s | 85.2 MB |
 
-### Suite B: 100-File Curated Real-World Benchmark Corpus
-*50 Real-World Leaks (GitHub Actions, Dockerfiles, Terraform tfvars, Django settings, Kubernetes manifests, Go APIs, and C# configs) vs 50 Real-World High-Entropy Noise cases (Subresource Integrity SHA digests, 40-char Git commit SHAs, UUIDs, PNG pixels, RFC 7519 JWT examples):*
+### Suite B: 100-File Author-Generated Real-World-Inspired Synthetic Corpus
+*50 author-generated fake credential fixtures in representative configuration layouts vs 50 synthetic benign/high-entropy fixtures. These cases are not raw incident samples and have not received independent label review:*
 
 | Scanner Tool | Precision (95% CI) | Recall (95% CI) | F1 Score | FP Rate | Latency / Target | Memory (RSS) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -68,8 +67,7 @@ npx secret-leak-detector hook install
 | **detect-secrets v1.5.0** | 72.5% [57.2% - 83.9%] | 58.0% [44.2% - 70.6%] | 64.4% | 22.0% | 114,337 $\mu$s | 81.8 MB |
 
 > **🔬 Engineering Improvements & Failure Analysis:**
-> In prior revisions, real-world recall was 78% due to unescaped `@` characters in database passwords disrupting URI boundaries, and unquoted `AccountKey=...` parameters inside compound Azure connection strings.
-> These patterns were systematically resolved in v1.0.3 with dedicated regression tests, bringing real-world recall to 100% while maintaining 0% false positives on localhost development configs.
+> Earlier internal fixture runs exposed misses involving unescaped `@` characters in database-password examples and compound Azure connection strings. The project added regression coverage for these patterns in v1.0.3. The 100% result shown above is an author-reported measurement on this synthetic, author-labelled fixture set; it is not a real-world production recall estimate.
 >
 > **Fail-Closed Security Guarantees:**
 > - **Git Protection:** Scan errors return explicit `ERROR` status and fail closed (commit blocked when enforcement is enabled).
@@ -325,7 +323,7 @@ Secret Leak Detector is engineered against 6 primary security threats:
 
 ## 🧪 Testing & Verification
 
-Run the comprehensive security engineering test suite (863 tests: 806 core unit/AST/risk/baseline/history tests across 50 sections, 40 Git hook scenario tests, and 17 VS Code manifest & mock tests):
+Run the comprehensive security engineering test suites (the main regression suite, Git-hook integration tests, and VS Code manifest/architecture tests). Each command prints the exact number of passing tests for the checked-out revision:
 
 ```bash
 npm test

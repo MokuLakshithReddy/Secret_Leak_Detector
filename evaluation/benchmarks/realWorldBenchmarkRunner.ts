@@ -1,14 +1,19 @@
 /**
- * Independently Labelled Real-World Benchmark Runner
- * Evaluates Secret Leak Detector, Gitleaks, TruffleHog, and detect-secrets
- * against 100 independently labelled real-world fixtures (50 True Positives, 50 False Positives).
+ * Author-Generated, Real-World-Inspired Benchmark Runner
+ * Evaluates Secret Leak Detector and any explicitly available comparator tools
+ * against 100 deterministic, author-labelled fixtures.
+ *
+ * The fixture corpus is synthetic and pattern-inspired; it is not a collection
+ * of independently sourced incident files and its labels are not independently
+ * adjudicated. Missing comparators are never represented as zero-result scans.
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { writeRealWorldCorpusToDisk, RealWorldFixture } from '../datasets/realWorldCorpus';
 import { scanContent } from '../../src/core/scanner/scanner';
+import { getPackageVersion } from '../../src/core/version';
 
 export interface RealWorldMetrics {
   name: string;
@@ -44,164 +49,245 @@ function normalize(p: string): string {
   return p.replace(/\\/g, '/').toLowerCase();
 }
 
-export function runRealWorldBenchmark(): RealWorldMetrics[] {
+function resolveComparatorBinary(toolName: string, candidateRelativePaths: string[]): string | null {
+  const isWin = process.platform === 'win32';
+  for (const relativePath of candidateRelativePaths) {
+    const directPath = path.resolve(process.cwd(), relativePath);
+    if (fs.existsSync(directPath)) return directPath;
+    if (isWin && !relativePath.toLowerCase().endsWith('.exe')) {
+      const windowsPath = path.resolve(process.cwd(), relativePath + '.exe');
+      if (fs.existsSync(windowsPath)) return windowsPath;
+    }
+  }
+
+  try {
+    const locator = isWin ? 'where' : 'which';
+    const output = execFileSync(locator, [toolName], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    const candidate = output.split(/\r?\n/)[0]?.trim();
+    if (candidate && fs.existsSync(candidate)) return candidate;
+  } catch {
+    // A missing optional comparator is handled explicitly by the caller.
+  }
+  return null;
+}
+
+function runComparator(binary: string, args: string[], label: string): string {
+  try {
+    return execFileSync(binary, args, {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      maxBuffer: 64 * 1024 * 1024,
+      windowsHide: true,
+    }) as string;
+  } catch (error: any) {
+    const stdout = error?.stdout == null ? '' : String(error.stdout);
+    // Some scanners use a non-zero exit code when findings are present. Their
+    // structured stdout is still usable; a failure without output is not.
+    if (stdout.trim()) return stdout;
+    const detail = error?.stderr == null ? (error?.message || String(error)) : String(error.stderr);
+    throw new Error(`${label} failed to run: ${detail}`);
+  }
+}
+
+function readComparatorVersion(binary: string, args: string[], label: string): string {
+  try {
+    const output = execFileSync(binary, args, {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
+    }).trim();
+    return output.split(/\r?\n/)[0] || 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
+export function runRealWorldBenchmark(options: { sldOnly?: boolean } = {}): RealWorldMetrics[] {
   const rootDir = process.cwd();
   const corpusDir = path.join(rootDir, 'evaluation', 'real_world_corpus');
   const reportsDir = path.join(rootDir, 'evaluation', 'reports');
-  fs.mkdirSync(reportsDir, { recursive: true });
+  const args = process.argv.slice(2);
+  const sldOnly = options.sldOnly === true || args.includes('--sld-only');
+  const allowMissing = !!(process.env.SLD_ALLOW_MISSING_COMPARATORS || args.includes('--allow-missing'));
 
+  const comparators = [
+    {
+      key: 'gitleaks',
+      label: 'Gitleaks',
+      binary: resolveComparatorBinary('gitleaks', [
+        path.join('tools', 'bin', 'gitleaks.exe'),
+        path.join('tools', 'bin', 'gitleaks'),
+        path.join('tools', 'gitleaks'),
+      ]),
+    },
+    {
+      key: 'trufflehog',
+      label: 'TruffleHog',
+      binary: resolveComparatorBinary('trufflehog', [
+        path.join('tools', 'bin', 'trufflehog.exe'),
+        path.join('tools', 'bin', 'trufflehog'),
+        path.join('tools', 'trufflehog'),
+      ]),
+    },
+    {
+      key: 'detect-secrets',
+      label: 'detect-secrets',
+      binary: resolveComparatorBinary('detect-secrets', [
+        path.join('tools', 'python', 'Scripts', 'detect-secrets.exe'),
+        path.join('tools', 'python', 'Scripts', 'detect-secrets'),
+        path.join('tools', 'bin', 'detect-secrets.exe'),
+        path.join('tools', 'bin', 'detect-secrets'),
+        path.join('tools', 'detect-secrets'),
+      ]),
+    },
+  ];
+
+  if (!sldOnly && !allowMissing) {
+    const missing = comparators.filter((tool) => !tool.binary).map((tool) => tool.label);
+    if (missing.length) {
+      throw new Error(
+        `Missing required comparator(s): ${missing.join(', ')}. Install the tools and add them to PATH, or pass --allow-missing to omit unavailable tools, or --sld-only to run SLD alone. No benchmark report was written.`
+      );
+    }
+  }
+
+  fs.mkdirSync(reportsDir, { recursive: true });
   console.log('================================================================================================');
-  console.log('🌍 EXECUTING BENCHMARK ON INDEPENDENTLY LABELLED REAL-WORLD CORPUS (100 Curated Fixtures)...');
+  console.log('🌍 EXECUTING BENCHMARK ON AUTHOR-LABELLED, REAL-WORLD-INSPIRED FIXTURES...');
   console.log('================================================================================================\n');
 
   const corpus = writeRealWorldCorpusToDisk(corpusDir);
-  console.log(`✅ Real-world corpus staged: ${corpus.length} files`);
-  console.log(`   - True Positives (Leaked Real Credentials):  ${corpus.filter((c) => c.category === 'true_positive').length}`);
-  console.log(`   - False Positives (High-Entropy Noise):       ${corpus.filter((c) => c.category === 'false_positive').length}\n`);
-
   const results: RealWorldMetrics[] = [];
 
-  // 1. Secret Leak Detector
-  console.log('[1/4] Running Secret Leak Detector...');
-  const sldDetected = new Set<string>();
-  const sldStart = process.hrtime.bigint();
-  for (const item of corpus) {
-    const fullPath = path.join(corpusDir, item.relativePath);
-    const content = fs.readFileSync(fullPath, 'utf8');
-    const findings = scanContent(content, item.relativePath, corpusDir);
-    if (findings.length > 0) {
-      sldDetected.add(normalize(item.relativePath));
-    }
-  }
-  const sldEnd = process.hrtime.bigint();
-  const sldMs = Number(sldEnd - sldStart) / 1e6;
-  results.push(evaluateScanner('Secret Leak Detector (Ours)', '1.0.3', corpus, sldDetected, sldMs));
-
-  // 2. Gitleaks
-  console.log('[2/4] Running Gitleaks...');
-  const gitleaksBin = path.join(rootDir, 'tools', 'bin', 'gitleaks.exe');
-  const gitleaksReport = path.join(reportsDir, 'gitleaks_rw_report.json');
-  const gitleaksDetected = new Set<string>();
-  let gitleaksMs = 0;
-
-  if (fs.existsSync(gitleaksBin)) {
-    try {
-      const gStart = process.hrtime.bigint();
-      try {
-        execSync(`"${gitleaksBin}" dir "${corpusDir}" --report-format json --report-path "${gitleaksReport}" --no-banner --exit-code 0`, {
-          stdio: 'pipe',
-        });
-      } catch {}
-      const gEnd = process.hrtime.bigint();
-      gitleaksMs = Number(gEnd - gStart) / 1e6;
-
-      if (fs.existsSync(gitleaksReport)) {
-        const rawJson = JSON.parse(fs.readFileSync(gitleaksReport, 'utf8'));
-        if (Array.isArray(rawJson)) {
-          for (const leak of rawJson) {
-            const rel = path.relative(corpusDir, leak.File || leak.file);
-            gitleaksDetected.add(normalize(rel));
-          }
-        }
-        fs.unlinkSync(gitleaksReport);
-      }
-    } catch (e) {
-      console.warn('Gitleaks execution error:', e);
-    }
-  }
-  results.push(evaluateScanner('Gitleaks', 'v8.30.1', corpus, gitleaksDetected, gitleaksMs));
-
-  // 3. TruffleHog
-  console.log('[3/4] Running TruffleHog...');
-  const trufflehogBin = path.join(rootDir, 'tools', 'bin', 'trufflehog.exe');
-  const trufflehogDetected = new Set<string>();
-  let trufflehogMs = 0;
-
-  if (fs.existsSync(trufflehogBin)) {
-    try {
-      const tStart = process.hrtime.bigint();
-      let output = '';
-      try {
-        output = execSync(`"${trufflehogBin}" filesystem "${corpusDir}" --json --no-verification --no-update`, {
-          encoding: 'utf8',
-          stdio: ['pipe', 'pipe', 'ignore'],
-        });
-      } catch (err: any) {
-        output = err.stdout || '';
-      }
-      const tEnd = process.hrtime.bigint();
-      trufflehogMs = Number(tEnd - tStart) / 1e6;
-
-      for (const line of output.split('\n')) {
-        if (!line.trim()) continue;
-        try {
-          const parsed = JSON.parse(line);
-          const rawFile = parsed?.SourceMetadata?.Data?.Filesystem?.file;
-          if (rawFile) {
-            const rel = path.relative(corpusDir, rawFile);
-            trufflehogDetected.add(normalize(rel));
-          }
-        } catch {}
-      }
-    } catch (e) {
-      console.warn('TruffleHog execution error:', e);
-    }
-  }
-  results.push(evaluateScanner('TruffleHog', 'v3.99.2', corpus, trufflehogDetected, trufflehogMs));
-
-  // 4. detect-secrets
-  console.log('[4/4] Running detect-secrets...');
-  const detectSecretsBin = path.join(rootDir, 'tools', 'python', 'Scripts', 'detect-secrets.exe');
-  const detectSecretsDetected = new Set<string>();
-  let detectSecretsMs = 0;
-
-  if (fs.existsSync(detectSecretsBin)) {
-    try {
-      const dStart = process.hrtime.bigint();
-      let output = '';
-      try {
-        output = execSync(`"${detectSecretsBin}" scan --all-files "${corpusDir}"`, {
-          encoding: 'utf8',
-          stdio: ['pipe', 'pipe', 'ignore'],
-        });
-      } catch (err: any) {
-        output = err.stdout || '';
-      }
-      const dEnd = process.hrtime.bigint();
-      detectSecretsMs = Number(dEnd - dStart) / 1e6;
-
-      try {
-        const parsed = JSON.parse(output);
-        if (parsed.results) {
-          for (const rawFile of Object.keys(parsed.results)) {
-            const rel = path.relative(corpusDir, rawFile);
-            detectSecretsDetected.add(normalize(rel));
-          }
-        }
-      } catch {}
-    } catch (e) {
-      console.warn('detect-secrets execution error:', e);
-    }
-  }
-  results.push(evaluateScanner('detect-secrets', 'v1.5.0', corpus, detectSecretsDetected, detectSecretsMs));
-
-  // Clean up
   try {
-    fs.rmSync(corpusDir, { recursive: true, force: true });
-  } catch {}
+    console.log(`✅ Author-generated fixture corpus staged: ${corpus.length} files`);
+    console.log(`   - Labelled positives: ${corpus.filter((c) => c.category === 'true_positive').length}`);
+    console.log(`   - Labelled negatives: ${corpus.filter((c) => c.category === 'false_positive').length}\n`);
 
-  // Print results
-  printRealWorldSummary(results, corpus.length);
+    // 1. Secret Leak Detector
+    console.log('[1/4] Running Secret Leak Detector...');
+    const sldDetected = new Set<string>();
+    const sldStart = process.hrtime.bigint();
+    for (const item of corpus) {
+      const fullPath = path.join(corpusDir, item.relativePath);
+      const content = fs.readFileSync(fullPath, 'utf8');
+      const findings = scanContent(content, item.relativePath, corpusDir);
+      if (findings.length > 0) sldDetected.add(normalize(item.relativePath));
+    }
+    const sldEnd = process.hrtime.bigint();
+    const sldMs = Number(sldEnd - sldStart) / 1e6;
+    results.push(evaluateScanner('Secret Leak Detector', getPackageVersion(), corpus, sldDetected, sldMs));
 
-  const reportPath = path.join(reportsDir, 'real_world_benchmark.json');
-  fs.writeFileSync(
-    reportPath,
-    JSON.stringify({ timestamp: new Date().toISOString(), totalFiles: corpus.length, results }, null, 2),
-    'utf8'
-  );
-  console.log(`\n📄 Real-World Benchmark Report saved to: ${reportPath}\n`);
+    if (!sldOnly) {
+      // 2. Gitleaks
+      const gitleaks = comparators[0];
+      if (gitleaks.binary) {
+        console.log('[2/4] Running Gitleaks...');
+        const reportPath = path.join(reportsDir, `gitleaks_rw_report.${process.pid}.json`);
+        const detected = new Set<string>();
+        const start = process.hrtime.bigint();
+        try {
+          runComparator(gitleaks.binary, [
+            'dir', corpusDir,
+            '--report-format', 'json',
+            '--report-path', reportPath,
+            '--no-banner',
+            '--exit-code', '0',
+          ], 'Gitleaks');
+          if (!fs.existsSync(reportPath)) throw new Error('Gitleaks completed without producing its JSON report.');
+          const parsed = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
+          if (!Array.isArray(parsed)) throw new Error('Gitleaks report is not a JSON array.');
+          for (const leak of parsed) {
+            const rawFile = leak.File || leak.file;
+            if (typeof rawFile !== 'string') throw new Error('Gitleaks report entry is missing a file path.');
+            detected.add(normalize(path.relative(corpusDir, rawFile)));
+          }
+        } finally {
+          try { fs.rmSync(reportPath, { force: true }); } catch {}
+        }
+        const elapsed = Number(process.hrtime.bigint() - start) / 1e6;
+        const version = readComparatorVersion(gitleaks.binary, ['version'], 'Gitleaks');
+        results.push(evaluateScanner('Gitleaks', version, corpus, detected, elapsed));
+      } else {
+        console.warn('Skipping Gitleaks: binary not installed (explicit --allow-missing).');
+      }
 
-  return results;
+      // 3. TruffleHog
+      const trufflehog = comparators[1];
+      if (trufflehog.binary) {
+        console.log('[3/4] Running TruffleHog...');
+        const start = process.hrtime.bigint();
+        const output = runComparator(trufflehog.binary, [
+          'filesystem', corpusDir, '--json', '--no-verification', '--no-update',
+        ], 'TruffleHog');
+        const detected = new Set<string>();
+        for (const line of output.split('\n')) {
+          if (!line.trim()) continue;
+          let parsed: any;
+          try { parsed = JSON.parse(line); } catch {
+            throw new Error('TruffleHog emitted a non-JSON line; refusing to create a benchmark report from incomplete output.');
+          }
+          const rawFile = parsed?.SourceMetadata?.Data?.Filesystem?.file;
+          if (typeof rawFile === 'string') detected.add(normalize(path.relative(corpusDir, rawFile)));
+        }
+        if (!output.trim()) throw new Error('TruffleHog produced no output; refusing to record an empty scan as zero detections.');
+        const elapsed = Number(process.hrtime.bigint() - start) / 1e6;
+        const version = readComparatorVersion(trufflehog.binary, ['--version'], 'TruffleHog');
+        results.push(evaluateScanner('TruffleHog', version, corpus, detected, elapsed));
+      } else {
+        console.warn('Skipping TruffleHog: binary not installed (explicit --allow-missing).');
+      }
+
+      // 4. detect-secrets
+      const detectSecrets = comparators[2];
+      if (detectSecrets.binary) {
+        console.log('[4/4] Running detect-secrets...');
+        const start = process.hrtime.bigint();
+        const output = runComparator(detectSecrets.binary, ['scan', '--all-files', corpusDir], 'detect-secrets');
+        let parsed: any;
+        try { parsed = JSON.parse(output); } catch {
+          throw new Error('detect-secrets did not emit valid JSON; refusing to create a benchmark report.');
+        }
+        if (!parsed || typeof parsed.results !== 'object' || parsed.results === null || Array.isArray(parsed.results)) {
+          throw new Error('detect-secrets JSON output is missing its results object.');
+        }
+        const detected = new Set<string>();
+        for (const rawFile of Object.keys(parsed.results)) {
+          detected.add(normalize(path.relative(corpusDir, rawFile)));
+        }
+        const elapsed = Number(process.hrtime.bigint() - start) / 1e6;
+        const version = readComparatorVersion(detectSecrets.binary, ['--version'], 'detect-secrets');
+        results.push(evaluateScanner('detect-secrets', version, corpus, detected, elapsed));
+      } else {
+        console.warn('Skipping detect-secrets: binary not installed (explicit --allow-missing).');
+      }
+    }
+
+    printRealWorldSummary(results, corpus.length);
+
+    let sourceCommit = 'unknown';
+    try {
+      sourceCommit = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    } catch {}
+
+    const reportPath = path.join(reportsDir, 'real_world_benchmark.json');
+    fs.writeFileSync(reportPath, JSON.stringify({
+      timestamp: new Date().toISOString(),
+      detectorVersion: getPackageVersion(),
+      sourceCommit,
+      corpusProvenance: 'Author-generated synthetic, real-world-inspired fixtures; labels are author-assigned and not independently reviewed.',
+      totalFiles: corpus.length,
+      results,
+    }, null, 2), 'utf8');
+    console.log(`\n📄 Real-World-Inspired Benchmark Report saved to: ${reportPath}\n`);
+
+    return results;
+  } finally {
+    try { fs.rmSync(corpusDir, { recursive: true, force: true }); } catch {}
+  }
 }
 
 function evaluateScanner(
@@ -260,7 +346,7 @@ function evaluateScanner(
 
 function printRealWorldSummary(results: RealWorldMetrics[], totalFiles: number) {
   console.log('\n======================================================================================================================');
-  console.log(`📊 REAL-WORLD BENCHMARK REPORT (${totalFiles} Independently Labelled Fixtures: 50 True Positives, 50 False Positives)`);
+  console.log(`📊 REAL-WORLD BENCHMARK REPORT (${totalFiles} Author-Labelled Synthetic Fixtures: 50 True Positives, 50 False Positives)`);
   console.log('======================================================================================================================');
   console.log('| Scanner Tool                | Precision (95% CI)   | Recall (95% CI)      | F1 Score | FP Rate | Latency/File | Memory (RSS) |');
   console.log('|:----------------------------|:---------------------|:---------------------|:---------|:--------|:-------------|:-------------|');
