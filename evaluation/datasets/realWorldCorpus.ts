@@ -1,11 +1,11 @@
 /**
- * Independently Labelled Real-World Benchmark Corpus (100 Curated Fixtures)
+ * Author-Generated Real-World-Inspired Benchmark Corpus (100 Synthetic Fixtures)
  * 
- * Sourced from real-world repository layouts, production incident patterns,
- * infrastructure manifests (Terraform, Docker, GitHub Actions, K8s),
+ * Synthetic fixtures authored to resemble common repository layouts and credential-exposure patterns,
+ * infrastructure manifests (Terraform, Docker, GitHub Actions, Kubernetes),
  * and common non-secret false positive generators (SRI, UUIDs, Git hashes, build manifests).
  * 
- * Every fixture is independently labelled with ground truth classification,
+ * Every fixture is author-labelled with an intended ground-truth classification,
  * provider family, and architectural origin reference.
  */
 
@@ -44,7 +44,7 @@ export function getRealWorldCorpus(): RealWorldFixture[] {
   const fixtures: RealWorldFixture[] = [];
 
   // =========================================================================
-  // 1. REAL-WORLD TRUE POSITIVES (50 Fixtures across real-world architectures)
+  // 1. SYNTHETIC POSITIVE FIXTURES (50 fixtures inspired by common credential-exposure patterns)
   // =========================================================================
 
   // AWS in CI/CD Workflow
@@ -363,7 +363,7 @@ CMD ["node", "dist/server.js"]
   }
 
   // =========================================================================
-  // 2. REAL-WORLD FALSE POSITIVES (50 Fixtures of realistic noise & edge cases)
+  // 2. SYNTHETIC NEGATIVE FIXTURES (50 benign high-entropy and placeholder patterns)
   // =========================================================================
 
   // HTML Subresource Integrity (SRI) Hash
