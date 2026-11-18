@@ -497,6 +497,25 @@ try {
 } catch (linkErr) {
   // If filesystem doesn't support hardlinks (some virtual FS), skip gracefully
 }
+
+// 4. Atomic write replaces a valid baseline without truncating its inode in place.
+const atomicBaselinePath = path.join(baselineSecurityRoot, 'atomic-baseline.json');
+fs.writeFileSync(atomicBaselinePath, '{"previous":"contents"}\n', 'utf8');
+const previousInode = fs.statSync(atomicBaselinePath).ino;
+const atomicEngine = new BaselineEngine(baselineSecurityRoot, 'atomic-baseline.json');
+const atomicResult = atomicEngine.saveBaseline([]);
+const atomicOnDisk = JSON.parse(fs.readFileSync(atomicBaselinePath, 'utf8'));
+assert(atomicOnDisk.fingerprintScheme === 'hmac-sha256-private-v2', 'Atomic baseline save writes private-v2 scheme');
+assert(atomicOnDisk.fingerprintKeyId === atomicResult.fingerprintKeyId, 'Atomic baseline save persists matching key identifier');
+assert(fs.statSync(atomicBaselinePath).nlink === 1, 'Atomic baseline save leaves a single-link destination');
+if (process.platform !== 'win32') {
+  assert(fs.statSync(atomicBaselinePath).ino !== previousInode, 'Atomic baseline save replaces the destination inode instead of truncating it in place');
+}
+assert(
+  !fs.readdirSync(baselineSecurityRoot).some((entry) => entry.startsWith('.atomic-baseline.json.') && entry.endsWith('.tmp')),
+  'Atomic baseline save cleans up its temporary file'
+);
+
 fs.rmSync(baselineSecurityRoot, { recursive: true, force: true });
 
 // Clean up test baseline
