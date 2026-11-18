@@ -7,6 +7,11 @@ This guide lets an external security reviewer assess the ground-truth labels in
 the scanner. Reproducing the current confusion matrix is **not** independent
 validation of the labels.
 
+The maintainer should send the generated packet to the reviewer separately; do not
+ask the reviewer to inspect the labelled source or detector output before they
+submit their initial classifications. This is a process-based blind review, not
+technical access control: the labelled source remains public in this repository.
+
 ## Current status
 
 - Corpus: 40 synthetic cases (20 intended positive, 20 intended negative)
@@ -16,23 +21,45 @@ validation of the labels.
 
 ## Review procedure
 
-1. Use a clean checkout and record the repository commit SHA, reviewer name or
-   organization, date, and relevant security-review experience.
-2. Review each case's content and context without first looking at the detector's
-   output for that case.
-3. Assign one of: `positive`, `negative`, or `ambiguous`. A positive case
+1. The maintainer generates a fresh packet from a clean checkout:
+   `npm ci && npm run review:packet`. The command writes a shuffled JSON
+   packet and a blank CSV worksheet to a private temporary directory outside
+   the repository. It omits the maintainer's labels, detector rule names,
+   original case IDs, descriptions, and scanner outcomes.
+2. Send only those two generated files to an eligible external reviewer. Record
+   the repository commit SHA used to generate the packet, the packet ID,
+   reviewer name or organization, review date, relevant experience, and any
+   conflicts of interest.
+3. The reviewer classifies every case from its content and file/line context
+   before seeing the labelled corpus, scanner output, or expected results.
+   Assign one of: `positive`, `negative`, or `ambiguous`. A positive case
    should represent a credential or credential-bearing value under the stated
    context. A negative case should be a benign value that should not be treated
-   as a credential. Use ambiguous when the intended classification depends on
-   deployment context or cannot be supported from the fixture.
-4. Record a short rationale for every label. Do not silently rewrite the
-   expected label; record proposed changes and their evidence.
-5. Compare the independent labels with the maintainer labels. Document all
-   disagreements and how they were adjudicated. Preserve the original review
-   record and reviewer sign-off.
+   as a credential. Use ambiguous when the classification depends on deployment
+   context or cannot be supported from the fixture.
+4. The reviewer records a concise rationale for every case in the supplied
+   worksheet and returns the completed worksheet with a signed review record.
+   Reviewers must not silently change the fixture content or original labels.
+5. After the initial labels are submitted and locked, compare them with the
+   maintainer's labels. Document every disagreement, the evidence considered,
+   the adjudication outcome, and the person responsible for adjudication.
+   Preserve both the unmodified reviewer worksheet and the adjudicated record.
 6. Only after labels are locked, run `npm ci && npm run build &&
    npm run benchmark:heldout` and compare detector outcomes with the reviewed
-   labels. Record TP, FP, TN, FN and confidence intervals.
+   labels. Record TP, FP, TN, FN and confidence intervals. Recompute metrics
+   against the reviewer/adjudicated labels; do not reuse the author's
+   `expectedResults` without verifying the labels.
+
+### Blinding limitation
+
+This repository is public and the author-assigned labels remain visible in
+`evaluation/datasets/heldOutCorpus.ts` and the reference report. The generated
+packet removes labels and identifying descriptions, but it cannot technically
+prevent a reviewer from discovering those public labels. The maintainer must
+send the packet separately and ask the reviewer not to inspect the labelled
+source or detector output until the initial worksheet is submitted. Describe
+this accurately as a *process-based blind review*, not a controlled or
+access-isolated blinded study.
 
 ## Review record template
 
