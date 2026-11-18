@@ -730,7 +730,7 @@ async function runBaseline(cmdArgs: string[], cwd: string) {
   const acceptAll = cmdArgs.includes('--accept-all') || cmdArgs.includes('--yes') || cmdArgs.includes('-y') || isForce;
   const subCommand = cmdArgs.find((a) => a === 'init' || a === 'update' || a === 'migrate' || a === 'rollback') || 'init';
   if (subCommand !== 'init' && subCommand !== 'update' && subCommand !== 'migrate' && subCommand !== 'rollback') {
-    fail('Usage: secret-leak-detector baseline [init|update|migrate|rollback] [--force] [--accept-all] [--salt <key>] [--dry-run] [--no-backup]');
+    fail('Usage: secret-leak-detector baseline [init|update|migrate|rollback] [--force] [--accept-all] [--salt <key>] [--dry-run] [--no-backup] [--allow-partial] [--drop-unresolved]');
   }
 
   const baselineEngine = new BaselineEngine(cwd);
@@ -743,12 +743,16 @@ async function runBaseline(cmdArgs: string[], cwd: string) {
     const saltIdx = cmdArgs.indexOf('--salt');
     const customSalt = saltIdx !== -1 ? cmdArgs[saltIdx + 1] : undefined;
     const noBackup = cmdArgs.includes('--no-backup');
+    const allowPartial = cmdArgs.includes('--allow-partial');
+    const dropUnresolved = cmdArgs.includes('--drop-unresolved');
 
     try {
       const res = baselineEngine.migrateBaseline({
         customSalt,
         dryRun: isDryRun,
         createBackup: !noBackup,
+        allowPartial,
+        dropUnresolved,
       });
       console.log(`\n============================================================`);
       console.log(`📦 BASELINE MIGRATION: ${res.previousScheme} ➔ ${res.newScheme}`);
@@ -757,7 +761,11 @@ async function runBaseline(cmdArgs: string[], cwd: string) {
       console.log(`Key ID:            ${res.keyId}`);
       console.log(`Migrated Findings: ${res.migratedCount} / ${res.totalFindings}`);
       if (res.unmigratedFindings.length > 0) {
-        console.warn(`⚠️  Warning: ${res.unmigratedFindings.length} finding(s) could not be matched to secrets in workspace:`);
+        if (dropUnresolved) {
+          console.warn(`⚠️  Warning: ${res.unmigratedFindings.length} finding(s) could not be resolved and were dropped (--drop-unresolved):`);
+        } else {
+          console.warn(`⚠️  Warning: ${res.unmigratedFindings.length} unresolved finding(s) were preserved in the baseline:`);
+        }
         for (const uf of res.unmigratedFindings) {
           console.warn(`   • ${uf.file}:${uf.line} [${uf.ruleId}] ${uf.fingerprint.substring(0, 16)}...`);
         }

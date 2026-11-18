@@ -81,9 +81,12 @@ export function validateBaselineSchema(parsed: unknown): BaselineFile {
     }
     if (
       obj.fingerprintScheme === 'hmac-sha256-private-v2' &&
-      !/^[a-f0-9]{64}$/.test(item.fingerprint)
+      !/^[a-f0-9]{64}$/.test(item.fingerprint) &&
+      !/^[a-f0-9]{16}$/.test(item.fingerprint)
     ) {
-      throw new BaselineValidationError(`findings[${i}].fingerprint must be a full 256-bit hexadecimal HMAC for private v2 baselines.`);
+      throw new BaselineValidationError(
+        `findings[${i}].fingerprint must be a valid hexadecimal hash (64-character private HMAC or 16-character legacy).`
+      );
     }
 
     if (typeof item.file !== 'string' || item.file.trim().length === 0) {
@@ -453,13 +456,17 @@ export class BaselineEngine {
   /**
    * Upgrades a baseline file to the modern hmac-sha256-private-v2 fingerprint scheme.
    * Scans referenced files in workspaceRoot to locate original credentials and recompute
-   * fingerprints using the private repository salt. Unmigratable entries (where source files
-   * or secrets no longer exist) are preserved and reported.
+   * fingerprints using the private repository salt. Only exact cryptographic legacy matches
+   * are migrated; proximity heuristics are strictly prohibited to prevent newly introduced
+   * secrets from being inadvertently whitelisted. Unresolved entries require explicit
+   * manual reconciliation or allowPartial: true.
    */
   public migrateBaseline(options?: {
     customSalt?: string;
     dryRun?: boolean;
     createBackup?: boolean;
+    allowPartial?: boolean;
+    dropUnresolved?: boolean;
   }): BaselineMigrationResult {
     const baseline = this.loadBaseline();
     if (!baseline) {
@@ -505,17 +512,14 @@ export class BaselineEngine {
         fileScanCache.set(fullPath, scannedFindings);
       }
 
-      let match = scannedFindings.find((sf) => {
-        if (sf.rawSecret) {
-          const legCandidates = [
-            generateLegacyFingerprint(sf.rawSecret),
-            generateLegacyFingerprint(sf.rawSecret.replace(/\r?\n/g, '\r\n'), false),
-            generateLegacyFingerprint(sf.rawSecret.replace(/\r?\n/g, '\n'), false),
-          ];
-          if (legCandidates.includes(f.fingerprint)) return true;
-        }
-        const matchesRule = sf.type === f.ruleId || sf.id.includes(f.ruleId);
-        return matchesRule && Math.abs(sf.line - f.line) <= 5;
+      const match = scannedFindings.find((sf) => {
+        if (!sf.rawSecret) return false;
+        const legCandidates = [
+          generateLegacyFingerprint(sf.rawSecret),
+          generateLegacyFingerprint(sf.rawSecret.replace(/\r?\n/g, '\r\n'), false),
+          generateLegacyFingerprint(sf.rawSecret.replace(/\r?\n/g, '\n'), false),
+        ];
+        return legCandidates.includes(f.fingerprint);
       });
 
       if (match && match.rawSecret) {
@@ -534,6 +538,21 @@ export class BaselineEngine {
       }
     }
 
+    if (unmigratedFindings.length > 0 && !options?.allowPartial && !options?.dryRun) {
+      throw new BaselineValidationError(
+        `Migration aborted: ${unmigratedFindings.length} baseline finding(s) could not be resolved by exact cryptographic legacy match in the workspace. Pass allowPartial: true (--allow-partial) to proceed with partial migration, or reconcile these findings manually.`
+      );
+    }
+
+    // Explicit handling for partial migrations: preserve unresolved findings
+    // unless dropUnresolved is explicitly true.
+    const finalFindings: BaselineFinding[] = [...updatedFindings];
+    if (unmigratedFindings.length > 0 && options?.allowPartial && !options?.dropUnresolved) {
+      for (const uf of unmigratedFindings) {
+        finalFindings.push({ ...uf });
+      }
+    }
+
     const backupPath = this.baselinePath + '.bak';
     if (!options?.dryRun && options?.createBackup !== false) {
       this.writeBaselineFileAtomically(baseline, backupPath);
@@ -545,7 +564,7 @@ export class BaselineEngine {
       generator: `Secret Leak Detector v${getPackageVersion()}`,
       fingerprintScheme: 'hmac-sha256-private-v2',
       fingerprintKeyId: targetKeyId,
-      findings: updatedFindings,
+      findings: finalFindings,
     };
 
     if (!options?.dryRun) {
@@ -649,14 +668,14 @@ export class BaselineEngine {
       let key = `${normFile}:${finding.fingerprint}`;
       let match = baselineByFileAndFp.get(key);
 
-      // Legacy public-salt fingerprints are consulted only for pre-metadata
-      // baselines. New baselines never use or emit these fingerprints.
-      if (!match && isLegacyBaseline && finding.rawSecret) {
-        const legacyCandidates = new Set([
+      // Legacy public-salt fingerprints are consulted when finding did not match directly,
+      // supporting pre-v2 baselines as well as unmigrated entries in partially-migrated baselines.
+      if (!match && finding.rawSecret) {
+        const legacyCandidates = [
           generateLegacyFingerprint(finding.rawSecret),
           generateLegacyFingerprint(finding.rawSecret.replace(/\r?\n/g, '\r\n'), false),
           generateLegacyFingerprint(finding.rawSecret.replace(/\r?\n/g, '\n'), false),
-        ]);
+        ];
         for (const legacyFingerprint of legacyCandidates) {
           const legacyKey = `${normFile}:${legacyFingerprint}`;
           const legacyMatch = baselineByFileAndFp.get(legacyKey);

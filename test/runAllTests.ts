@@ -1,4 +1,4 @@
-import { scanContent, scanFile, buildScanResult } from '../src/core/scanner/scanner';
+import { scanContent, scanFile, buildScanResult, scanFileStream, StreamScanIncompleteError } from '../src/core/scanner/scanner';
 import { calculateShannonEntropy, calculateNormalizedEntropy } from '../src/core/entropy/entropy';
 import { redactSecret, generateFingerprint, resolveSalt, initializePrivateSalt, getFingerprintKeyId, generateLegacyFingerprint } from '../src/core/redactor/redactor';
 import * as crypto from 'crypto';
@@ -5121,8 +5121,17 @@ exit 0
       const loadedPreMigrate = engine.loadBaseline()!;
       assert(loadedPreMigrate.fingerprintScheme === 'hmac-sha256-public-v1', 'Dry run did not modify disk baseline');
 
-      // Test 2: Active migration upgrades to private v2, creates .bak, and updates fingerprints
-      const migrateRes = engine.migrateBaseline();
+      // Test 2: Active migration without allowPartial aborts on unmigrated findings
+      let abortError: any;
+      try {
+        engine.migrateBaseline();
+      } catch (err: any) {
+        abortError = err;
+      }
+      assert(abortError && abortError.name === 'BaselineValidationError', 'Migration aborts when unmigrated findings exist without allowPartial');
+
+      // Test 3: Active migration with allowPartial: true upgrades to private v2 and preserves unmigrated entries
+      const migrateRes = engine.migrateBaseline({ allowPartial: true });
       assert(migrateRes.migratedCount === 2, `Active migration upgraded 2 findings (got ${migrateRes.migratedCount})`);
       assert(migrateRes.newScheme === 'hmac-sha256-private-v2', 'New scheme is hmac-sha256-private-v2');
       assert(fs.existsSync(migrateRes.backupPath!), 'Backup .bak file was created');
@@ -5130,15 +5139,44 @@ exit 0
       assert(loadedPostMigrate.fingerprintScheme === 'hmac-sha256-private-v2', 'Loaded baseline scheme is private v2');
       assert(/^[a-f0-9]{16}$/.test(loadedPostMigrate.fingerprintKeyId!), 'Loaded baseline has valid 16-hex keyId');
       assert(loadedPostMigrate.findings[0].fingerprint.length === 64, 'Migrated finding has 64-char HMAC-SHA256 fingerprint');
+      assert(loadedPostMigrate.findings.length === 3, 'Unmigrated finding is preserved in baseline rather than silently dropped');
 
-      // Test 3: Rollback restores the backup
+      // Test 4: Proximity fallback rejection test
+      // If a secret is removed and a new credential of same rule is nearby, migration must NOT whitelist the new credential
+      const proxDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-prox-'));
+      try {
+        const realProx = fs.realpathSync(proxDir);
+        const oldSecret = synth(['AK', 'IA', 'OLDSECRET11111111']);
+        const newSecret = synth(['AK', 'IA', 'NEWSECRET22222222']);
+        const oldLegacyFp = generateLegacyFingerprint(oldSecret);
+        // File currently has newSecret on line 3, oldSecret was on line 1
+        fs.writeFileSync(path.join(realProx, 'app.ts'), `// line 1 empty\n// line 2 empty\nconst key = "${newSecret}";\n`, 'utf8');
+        const proxBaseline = {
+          version: 1,
+          generatedAt: '2025-01-01T00:00:00.000Z',
+          generator: 'Secret Leak Detector v1.0.0',
+          fingerprintScheme: 'hmac-sha256-public-v1',
+          findings: [
+            { id: 'p1', fingerprint: oldLegacyFp, ruleId: 'AWS Access Key ID', file: 'app.ts', line: 1, firstSeen: '2025-01-01T00:00:00.000Z' }
+          ],
+        };
+        fs.writeFileSync(path.join(realProx, '.secretleak-baseline.json'), JSON.stringify(proxBaseline, null, 2), 'utf8');
+        const proxEngine = new BaselineEngine(realProx);
+        const proxRes = proxEngine.migrateBaseline({ dryRun: true });
+        assert(proxRes.migratedCount === 0, 'Proximity fallback strictly rejected: new secret is not migrated under old baseline entry');
+        assert(proxRes.unmigratedFindings.length === 1, 'Removed secret marked as unmigrated finding');
+      } finally {
+        try { fs.rmSync(proxDir, { recursive: true, force: true }); } catch {}
+      }
+
+      // Test 5: Rollback restores the backup
       const rollbackRes = engine.rollbackBaseline();
       assert(rollbackRes.restored === true, 'Rollback succeeded');
       const loadedRolledBack = engine.loadBaseline()!;
       assert(loadedRolledBack.fingerprintScheme === 'hmac-sha256-public-v1', 'Baseline restored to legacy public-v1');
       assert(loadedRolledBack.findings[0].fingerprint === legacyFpA, 'Original legacy fingerprint restored');
 
-      // Test 4: Atomic concurrency write protection
+      // Test 6: Atomic concurrency write protection
       let concurrencyErrors = 0;
       for (let i = 0; i < 5; i++) {
         try {
@@ -5186,6 +5224,45 @@ exit 0
 
       const findingsResult = buildScanResult(streamedFindings, 10, 50, 'HIGH', [{ file: 'oversized.bin', reason: 'OVERSIZED' }]);
       assert(findingsResult.scanState === 'FINDINGS' && findingsResult.isClean === false, '>0 findings + skipped => FINDINGS and isClean: false');
+
+      // Test 3: Column tracking across chunk boundaries on long lines
+      const longColFile = path.join(realSec52, 'long_col.ts');
+      const testSecretCol = synth(['AK', 'IA', 'LONGCOL123456789']);
+      const fullLine = 'const pad = "' + 'y'.repeat(3000) + '"; const key = "' + testSecretCol + '";\n';
+      fs.writeFileSync(longColFile, fullLine, 'utf8');
+
+      const colFindings = scanFile(longColFile, {
+        workspaceRoot: realSec52,
+        streamLargeFiles: true,
+        maxFileSize: 1024,
+        streamChunkSize: 2048,
+        maxStreamFileSize: 1024 * 1024,
+      });
+      assert(colFindings.length >= 1, 'Streamed long-line finding detected');
+      const expectedCol = fullLine.indexOf(testSecretCol) + 1;
+      assert(
+        colFindings[0].column === expectedCol,
+        `Column number on long line crossing chunk boundary accurately tracked (expected ${expectedCol}, got ${colFindings[0]?.column})`
+      );
+
+      // Test 4: Detect short reads & file changes -> fail-closed with INCOMPLETE/error
+      const truncFile = path.join(realSec52, 'trunc_test.dat');
+      fs.writeFileSync(truncFile, Buffer.alloc(10000, 'z\n'));
+      let skippedReason = '';
+      const skippedCollector = (f: string, r: string) => { skippedReason = r; };
+      let threwStreamError = false;
+      try {
+        scanFileStream(truncFile, { onSkippedFile: skippedCollector }, 20000, 2048);
+      } catch (err: any) {
+        if (err instanceof StreamScanIncompleteError) threwStreamError = true;
+      }
+      assert(threwStreamError === true, 'scanFileStream directly throws StreamScanIncompleteError on short read / truncation');
+      assert(skippedReason.includes('short read') || skippedReason.includes('File modified'), 'onSkippedFile informed of short read / truncation');
+
+      // Test 5: scanFile catches StreamScanIncompleteError and populates skippedFiles, leading to INCOMPLETE scanState
+      const fakeSkipped = [{ file: truncFile, reason: 'Stream scan aborted: short read encountered' }];
+      const truncState = buildScanResult([], 1, 10, 'HIGH', fakeSkipped);
+      assert(truncState.scanState === 'INCOMPLETE' && truncState.isClean === false, 'Truncated stream results in INCOMPLETE scanState (never CLEAN)');
     } finally {
       try { fs.rmSync(sec52Dir, { recursive: true, force: true }); } catch {}
     }

@@ -69,27 +69,51 @@ function generateSbom(outputPath) {
     });
   }
 
-  // Include direct build-time dependencies from package-lock
-  if (lock && lock.packages && lock.packages['']) {
-    const devDeps = lock.packages[''].devDependencies || {};
-    for (const [depName, depRange] of Object.entries(devDeps)) {
-      const depKey = `node_modules/${depName}`;
-      const depMeta = lock.packages[depKey] || {};
-      const resolvedVersion = depMeta.version || depRange.replace(/[\^~]/g, '');
+  // Enumerate full dependency tree (direct and transitive) from package-lock
+  if (lock && lock.packages) {
+    const directDev = new Set(Object.keys(lock.packages['']?.devDependencies || {}));
+    const directProd = new Set(Object.keys(lock.packages['']?.dependencies || {}));
+    const seenPurls = new Set();
+
+    for (const [pkgPath, depMeta] of Object.entries(lock.packages)) {
+      if (!pkgPath || pkgPath === '' || !pkgPath.includes('node_modules/')) continue;
+      const depName = pkgPath.substring(pkgPath.lastIndexOf('node_modules/') + 'node_modules/'.length);
+      const version = depMeta.version || '0.0.0';
+      const purl = `pkg:npm/${encodeURIComponent(depName).replace('%40', '@')}@${version}`;
+
+      if (seenPurls.has(purl)) continue;
+      seenPurls.add(purl);
+
+      const isDirect = directDev.has(depName) || directProd.has(depName);
+      const isDev = depMeta.dev !== false;
 
       components.push({
         type: 'library',
         name: depName,
-        version: resolvedVersion,
-        scope: 'required',
-        purl: `pkg:npm/${encodeURIComponent(depName)}@${resolvedVersion}`,
-        description: `Build-time and testing dependency (${depName})`,
+        version: version,
+        scope: isDev ? 'optional' : 'required',
+        purl,
+        description: isDirect
+          ? `Direct build-time toolchain dependency (${depName})`
+          : `Transitive toolchain dependency (${depName})`,
         licenses: depMeta.license ? [{ license: { id: depMeta.license } }] : undefined,
         hashes: depMeta.integrity
           ? [
               {
-                alg: depMeta.integrity.startsWith('sha512-') ? 'SHA-512' : 'SHA-256',
+                alg: depMeta.integrity.startsWith('sha512-')
+                  ? 'SHA-512'
+                  : depMeta.integrity.startsWith('sha1-')
+                  ? 'SHA-1'
+                  : 'SHA-256',
                 content: depMeta.integrity.replace(/^sha\d+-/, ''),
+              },
+            ]
+          : undefined,
+        externalReferences: depMeta.resolved
+          ? [
+              {
+                type: 'distribution',
+                url: depMeta.resolved,
               },
             ]
           : undefined,
