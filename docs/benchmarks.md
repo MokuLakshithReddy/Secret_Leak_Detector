@@ -49,57 +49,53 @@ Each tool was executed locally on Node.js v24 / Windows x64 against the same dir
 
 ---
 
-## 3. Independently Labelled Real-World Benchmark Study (100 Curated Fixtures)
+## 3. Curated Real-World Benchmark Study (100 Author-Labelled Fixtures)
 
-To validate performance beyond controlled synthetic tests, we constructed a **100-file independently labelled real-world dataset** (`evaluation/datasets/realWorldCorpus.ts`) sourced from public CVE post-mortems, production incident leaks, real DevOps deployment configurations (GitHub Actions, Dockerfiles, Terraform tfvars, Django settings, Kubernetes manifests, Go APIs, and C# configuration files), and common high-entropy non-secret generators (Subresource Integrity SHA digests, 40-character Git commit SHAs, UUID v4s, base64 tracking pixels, RFC 7519 JWT examples):
+To examine performance beyond controlled synthetic tests, the project authors curated a **100-file real-world-inspired dataset** (`evaluation/datasets/realWorldCorpus.ts`) from public CVE post-mortems, production incident write-ups, representative DevOps deployment configurations (GitHub Actions, Dockerfiles, Terraform tfvars, Django settings, Kubernetes manifests, Go APIs, and C# configuration files), and common high-entropy non-secret generators (Subresource Integrity SHA digests, 40-character Git commit SHAs, UUID v4s, base64 tracking pixels, RFC 7519 JWT examples):
 - **50 Real-World True Positives:** Real incident leaky patterns across 10 cloud providers and 7 languages.
 - **50 Real-World False Positives:** High-entropy benign strings commonly misclassified by raw entropy scanners.
 
-### Empirical Multi-Scanner Results on 100 Real-World Fixtures
+### Committed Reference Results (100 Author-Labelled Fixtures)
+
+The committed machine-readable report is `evaluation/reports/real_world_benchmark.json`
+(timestamp **2026-10-15**, detector version **1.0.3**, 100 cases: 50 labelled
+positives and 50 labelled negatives). The figures below are transcribed from
+that report so the narrative table and artifact agree.
 
 | Scanner Tool | Precision (95% CI) | Recall (95% CI) | F1 Score | FP Rate | Latency / File | Memory (RSS) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Secret Leak Detector (Ours) 1.0.3** | **97.5%** [87.1% - 99.6%] | **78.0%** [64.8% - 87.2%] | **86.7%** | **2.0%** | **310 $\mu$s** | **79.8 MB** |
-| **Gitleaks v8.30.1** | 95.6% [85.2% - 98.8%] | 86.0% [73.8% - 93.0%] | 90.5% | 4.0% | 5,162 $\mu$s | 80.0 MB |
-| **TruffleHog v3.99.2** | 100.0% [91.6% - 100%] | 84.0% [71.5% - 91.7%] | 91.3% | 0.0% | 29,387 $\mu$s | 80.4 MB |
-| **detect-secrets v1.5.0** | 72.5% [57.2% - 83.9%] | 58.0% [44.2% - 70.6%] | 64.4% | 22.0% | 76,538 $\mu$s | 80.7 MB |
+| **Secret Leak Detector 1.0.3** | **100.0%** [92.9% - 100%] | **100.0%** [92.9% - 100%] | **100.0%** | **0.0%** | **419 µs** | **80.6 MB** |
+| **Gitleaks v8.30.1** | 95.6% [85.2% - 98.8%] | 86.0% [73.8% - 93.0%] | 90.5% | 4.0% | 44,762 µs | 81.3 MB |
+| **TruffleHog v3.99.2** | 100.0% [91.6% - 100%] | 84.0% [71.5% - 91.7%] | 91.3% | 0.0% | 162,397 µs | 81.7 MB |
+| **detect-secrets v1.5.0** | 72.5% [57.2% - 83.9%] | 58.0% [44.2% - 70.6%] | 64.4% | 22.0% | 114,337 µs | 81.8 MB |
 
----
-
-### 🔍 Deep-Dive Investigation: Root Causes of the 11 Missed Secrets (78.0% Recall)
-
-Rather than tuning regexes to force the real-world score back to 100%, we conducted an empirical post-mortem into the **11 False Negatives (FNs)** out of the 50 True Positives:
-
-| ID | Language / File | Provider | Pattern / Context | Root Cause of False Negative |
-| :--- | :--- | :--- | :--- | :--- |
-| `RW-TP-DATABASE-01` | JSON (`config/database.json`) | PostgreSQL | `"url": "postgres://db_admin:P@ssw0rd998877!@prod-db..."` | **Unescaped `@` character in password:** The URI pattern `[^:\s'"]+:([^@\s'"]+)@` truncates the password at the first `@` in `P@ssw0rd`, failing downstream hostname parsing. |
-| `RW-TP-EXT-3, 11, 19, 27, 35` (5 fixtures) | Go (`cmd/api/db_*.go`) | MongoDB Atlas | `const MongoURI = "mongodb+srv://app_user:P@ssw0rdSecure99@cluster0..."` | **Unescaped `@` in MongoDB URI password:** Same regex limitation where passwords contain literal `@` symbols without standard URL percent-encoding (`%40`). |
-| `RW-TP-EXT-4, 12, 20, 28, 36` (5 fixtures) | JSON / C# (`appsettings.Production_*.json`) | Microsoft Azure | `"AzureStorage": "DefaultEndpointsProtocol=https;...;AccountKey=FQbmx8...==;EndpointSuffix=..."` | **Compound connection string without individual quotes:** The Azure detector pattern expected `AccountKey\s*[:=]\s*["']`, but in .NET connection strings, `AccountKey` is an embedded parameter inside a semicolon-delimited compound string. |
-
-#### Summary of Failure Patterns:
-1. **Provider Patterns:**
-   - **Database Connection URIs (PostgreSQL & MongoDB):** Standard RFC 3986 regex heuristics assume passwords contain no literal `@` characters. In developer configurations, passwords frequently contain unescaped `@` or special punctuation (`!`, `#`, `@`), disrupting lookahead bounds.
-   - **Azure Storage Keys:** Keys embedded in semicolon-delimited compound strings (`DefaultEndpointsProtocol=...;AccountKey=...;EndpointSuffix=...`) rather than standalone environment variable assignments.
-2. **Language Cases:**
-   - **Go Source Files:** String constants defining multi-protocol URIs (`mongodb+srv://`).
-   - **C# / .NET JSON Configurations:** Compound connection string specifications in `appsettings.json`.
+**Provenance:** This is an author-run reference report, not an independent
+third-party evaluation. The committed report is the source of truth for these
+specific numbers. Re-running the benchmark reproduces the detector result for
+the current code and fixtures; it does not independently validate the labels.
 
 ---
 
 ### ⚠️ Methodological Caution & Scope Limitations
 
 > **Crucial Methodological Caveat:**
-> While a 100-file curated real-world corpus provides valuable initial empirical evidence and exposes real syntactic boundary conditions, **it is not sufficient to establish broad real-world superiority**.
-> 
+> These benchmark corpora and their ground-truth labels were assembled and labelled by the project authors. “Real-world” describes the formats and incident-inspired patterns represented; it does **not** mean the samples or labels were independently supplied or reviewed by an external evaluator. The results below are author-reported internal measurements, not an independent third-party evaluation.
+>
+> A 100-file curated corpus provides useful initial evidence and exposes real syntactic boundary conditions, but **it is not sufficient to establish broad real-world superiority**.
+>
 > Real-world repositories span millions of heterogeneous projects across hundreds of package managers, internal proprietary DSLs, minified outputs, legacy shell scripts, and novel cloud provider token formats.
-> 
+>
 > Therefore, we maintain **strict separation between our benchmark suites**:
 > - **Suite A (Controlled 1,000 Fixtures):** Demonstrates **100% precision and recall** under controlled synthetic conditions with verified ground truth and deterministic PRNG.
-> - **Suite B (Curated Real-World 100 Fixtures):** Demonstrates **97.5% precision, 78.0% recall, and 86.7% F1**, highlighting the real-world trade-offs between zero false-positive tolerance, multi-language compound syntax, and specialized vendor patterns.
+> - **Suite B (Curated Real-World 100 Fixtures):** The committed 2026-10-15 report for detector version 1.0.3 records **100.0% precision, 100.0% recall, and 100.0% F1** on the author-labelled fixtures. These are preliminary internal measurements, not independently reviewed ground truth.
 > 
-> All benchmark scripts (`evaluation/benchmarks/realWorldBenchmarkRunner.ts`) and corpus definitions (`evaluation/datasets/realWorldCorpus.ts`) are open-source and independently reproducible. We encourage independent evaluation across external industry datasets.
+> All benchmark scripts (`evaluation/benchmarks/realWorldBenchmarkRunner.ts`) and corpus definitions (`evaluation/datasets/realWorldCorpus.ts`) are reproducible. Reproduction by another person verifies that the same code and labels produce the same counts; it does not independently validate the correctness of the labels. External review of the corpus and labels remains outstanding.
 
 ## 4. Large-Scale Payload Benchmark (1MB → 10MB → 100MB → 1GB)
+
+> **Scope & Production Distinction Notice:**
+> This benchmark evaluates the core scanning engine's (`scanContent()`) processing line rate, throughput scaling, and RSS memory stability when streaming continuous multi-megabyte and multi-gigabyte data in 10 MB chunks.
+> In contrast, the production CLI and pre-commit hook invoke `scanFile()`, which purposefully enforces a **50 MB single-file ceiling** (`options.maxFileSize`) to reject accidental staging of massive binaries, database dumps, or build artifacts before reading them into memory. Thus, this benchmark verifies engine chunk-streaming line-processing capacity, not that the production CLI scans single 1 GB disk files in a single synchronous `scanFile()` pass.
 
 Executed via `npm run benchmark:scale` (`evaluation/benchmarks/payloadScaleBenchmark.ts`) to evaluate throughput scaling, line rate stability, and confirm process RSS memory across massive payloads:
 
@@ -125,7 +121,7 @@ We resolved these issues with three systems optimizations:
 
 ---
 
-## 4. Engineering Analysis of Why Tools Differ
+## 5. Engineering Analysis of Why Tools Differ
 
 ### 1. High False Positive Rate in detect-secrets (50.0% FPR)
 `detect-secrets` relies heavily on raw Shannon entropy thresholds without syntactic context. When presented with high-entropy non-secrets—such as UUID v4 strings, 40-character Git commit SHAs, SRI integrity hashes, and bundled Webpack chunks—it flags them indiscriminately, generating significant alert fatigue.
@@ -149,7 +145,7 @@ Secret Leak Detector achieves zero false positives and 100% recall on the contro
 
 ---
 
-## 5. CI Benchmark Regression Enforcement
+## 6. CI Benchmark Regression Enforcement
 
 To guarantee that code improvements never degrade detection or performance, our CI pipeline runs `npm run benchmark:gate`:
 - **Minimum F1 Score:** $\ge 99.0\%$
@@ -162,7 +158,7 @@ $$CI = \frac{\hat{p} + \frac{z^2}{2n} \pm z \sqrt{\frac{\hat{p}(1-\hat{p})}{n} +
 
 ---
 
-## 4. Large-Repository Performance Profiling (1,000 Synthetic Files)
+## 7. Large-Repository Performance Profiling (1,000 Synthetic Files)
 
 A dedicated microbenchmark (`evaluation/benchmarks/largeRepoBenchmark.ts`) profiles the scanner across 1,000 files:
 
@@ -178,7 +174,7 @@ A dedicated microbenchmark (`evaluation/benchmarks/largeRepoBenchmark.ts`) profi
 
 ---
 
-## 5. Analysis of Engineering Results
+## 8. Analysis of Engineering Results
 
 ### 1. Zero False-Positive Rate via Multi-Signal Gating & Structural Validators
 Traditional scanners rely almost entirely on regular expressions, triggering alerts on documentation placeholders such as `AKIAIOSFODNN7EXAMPLE` or dummy `postgres://user:password@localhost/db` strings. Secret Leak Detector combines:

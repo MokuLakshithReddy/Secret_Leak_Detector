@@ -1,7 +1,12 @@
 /**
- * Large-Scale Payload Performance Benchmark
+ * Large-Scale In-Memory Throughput Benchmark
  * Evaluates Secret Leak Detector throughput, memory footprint,
- * and linear scaling characteristics across 1MB, 10MB, 100MB, and 1GB payloads.
+ * and linear scaling characteristics across 1MB, 10MB, 100MB, and 1GB cumulative stream inputs.
+ *
+ * NOTE: Production CLI scanFile() reads files synchronously and enforces a 50MB
+ * single-file ceiling (options.maxFileSize) to prevent out-of-memory issues on non-code
+ * archives. This benchmark demonstrates core engine throughput over a continuous stream of
+ * code in 10MB chunks via scanContent(), not scanning a single 1GB disk file via scanFile().
  */
 
 import { scanContent } from '../../src/core/scanner/scanner';
@@ -66,8 +71,8 @@ export function runPayloadScaleBenchmark(): ScaleTierResult[] {
   const tiers = [
     { label: '1 MB', bytes: 1 * 1024 * 1024, injectCount: 1 },
     { label: '10 MB', bytes: 10 * 1024 * 1024, injectCount: 1 },
-    { label: '100 MB (Streamed)', bytes: 100 * 1024 * 1024, injectCount: 10 },
-    { label: '1 GB (Streamed)', bytes: 1024 * 1024 * 1024, injectCount: 100 },
+    { label: '100 MB (10MB Chunks)', bytes: 100 * 1024 * 1024, injectCount: 10 },
+    { label: '1 GB (10MB Chunks)', bytes: 1024 * 1024 * 1024, injectCount: 100 },
   ];
 
   const results: ScaleTierResult[] = [];
