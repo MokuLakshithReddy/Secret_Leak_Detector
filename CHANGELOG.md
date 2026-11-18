@@ -3,6 +3,15 @@
 All notable changes to **Secret Leak Detector** are documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Evaluation & Documentation
+- Make the 40-case held-out confidence intervals prominent in the README and state explicitly that labels remain author-assigned.
+- Document evaluation report schema version 1.1 and its additive provenance/confidence-interval fields in `evaluation/reports/SCHEMA.md`.
+- Clarify author-labelled provenance and correct historical test-count references in the validation methodology.
+- Name and document the standard-normal critical value used for two-sided 95% Wilson intervals.
+
+
 ## [1.0.4] - 2026-11-07
 
 ### Reliability & Git History Hardening

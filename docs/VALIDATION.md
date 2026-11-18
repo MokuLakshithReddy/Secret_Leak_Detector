@@ -1,18 +1,18 @@
 # Validation Methodology — Secret Leak Detector
 
 > **Version:** 1.0.4 | **Document date:** 2026-11
->
-> **Evidence status:** Internal validation only. The 40-case held-out corpus is author-labelled and has not received independent ground-truth review.
 
 ---
 
 ## 1. Purpose
 
-This document provides a rigorous, independently reproducible validation
-methodology for Secret Leak Detector (SLD). It is addressed to:
+This document provides a reproducible validation methodology for Secret Leak
+Detector (SLD). Reproduction can be performed independently; the current
+corpus labels themselves have not been independently reviewed by a third party.
+It is addressed to:
 
 - **Security reviewers** assessing whether the tool actually blocks credentials.
-- **Independent evaluators** who want to reproduce benchmark results without trusting author-reported numbers.
+- **External evaluators** who want to reproduce the benchmark and assess the limits of the author-reported results.
 - **Project maintainers** who need a definitive test inventory.
 
 The document makes four concrete, independently verifiable claims:
@@ -21,7 +21,7 @@ The document makes four concrete, independently verifiable claims:
 |-------|----------|
 | SLD detects realistic fake credentials | `demo/` — block-and-remediate fixture repo |
 | SLD ignores high-entropy non-secrets (low FP rate) | `evaluation/datasets/heldOutCorpus.ts` |
-| Core detector logic is covered by 399 automated tests | `test/runAllTests.ts` |
+| Core detector logic is covered by 771 automated regression assertions | `test/runAllTests.ts` |
 | Pre-commit hook *actually* blocks commits | `test/integration/gitHookScenarios.test.ts` |
 
 ---
@@ -107,6 +107,13 @@ rules were finalized. No case from this file influenced threshold tuning or
 pattern selection. It is structurally analogous to a held-out test set in ML
 evaluation.
 
+**Label provenance:** The project author created the cases and assigned their
+TP/TN labels. “Held out” means the cases were separated from detector tuning;
+it does **not** mean that the cases or labels were independently authored,
+adjudicated, or reviewed. The results are independently reproducible, but they
+are not an independent third-party measurement of precision or recall. External
+label review remains outstanding.
+
 **Synthesized credentials:** All credentials are built with the `synth()`
 helper (`parts.join('')`) so the repository's own scanner does not flag this
 source file. No real credentials appear anywhere.
@@ -120,7 +127,7 @@ npm run benchmark:heldout
 
 ### How to read the output
 
-The benchmark also prints two-sided 95% Wilson score intervals for precision, recall, and false-positive rate. With 20/20 TP detections and 20/20 TN rejections, the nominal precision and recall intervals are approximately 83.9%–100.0%; the nominal false-positive-rate interval is 0.0%–16.1%. These wide intervals show how little 20 examples can establish. They describe binomial sampling uncertainty only and do **not** correct for synthetic purposive sampling, author-assigned labels, or distribution shift. They are not production-performance guarantees.
+The benchmark also prints two-sided 95% Wilson score intervals for precision, recall, and false-positive rate. With 20/20 TP detections and 20/20 TN rejections, the nominal precision and recall intervals are approximately **83.9%–100.0%**; the nominal false-positive-rate interval is **0.0%–16.1%**. These wide intervals show how little 20 examples can establish. They describe binomial sampling uncertainty only and do **not** correct for synthetic purposive sampling, author-assigned labels, or distribution shift. They are not production-performance guarantees.
 
 ```
 ══════════════════════════════════════════════════════════════
@@ -173,7 +180,7 @@ with the output of `npm run benchmark:heldout` and your Node.js + OS version.
 
 ### Overview
 
-`test/runAllTests.ts` contains **643 tests** across 45 sections. It is the
+`test/runAllTests.ts` contains **771 core regression assertions** across 50 sections, as reported by the latest recorded CI run. The separate Git-hook suite reports 40 tests and the manifest integration suite reports 17 tests. The test suite is the
 primary regression guard run on every CI push/PR.
 
 ### Run
@@ -309,15 +316,15 @@ npm run test:manifest        # 17 VS Code manifest & architecture tests
 npm run package              # .vsix packaging
 ```
 
-### Held-out corpus actual results and evidence limitations
+### Held-out corpus actual results
 
-The current 40 labels were authored by the project maintainer and have not been independently adjudicated. Independent reproduction verifies that the detector produces the recorded outputs for these fixtures; it does not verify that the ground-truth labels are unbiased or representative of real repositories. The independent-review requirement remains open until external reviewers complete the protocol in `evaluation/REVIEW_GUIDE.md` and their findings are recorded.
-
+The machine-readable report uses schema version `1.1`; see [report schema and migration notes](../evaluation/reports/SCHEMA.md) before updating consumers.
 
 See `evaluation/reports/held_out_results.json`. The `expectedResults` object
-contains the confusion matrix recorded on the reference machine. An independent
-evaluator should expect to match these counts exactly (the corpus is
-deterministic).
+contains the confusion matrix recorded on the reference machine. A reproduction
+should match these counts exactly because the corpus is deterministic. Matching
+the counts confirms reproducibility only; it does not independently establish
+that the author-assigned labels are correct.
 
 ---
 
@@ -333,8 +340,6 @@ proven by the above tests:
 - **macOS / Linux platform equivalence** — the benchmark results were recorded
   on Windows x64. Platform-specific path handling and shell differences have not
   been systematically tested across macOS and Linux.
-
-- **Independent label review** — the held-out labels are author-assigned. No independent evaluator has reviewed the cases or adjudicated disagreements. See `evaluation/REVIEW_GUIDE.md`.
 
 - **Multi-user developer studies** — no human-subject study has been conducted.
   The false-positive and false-negative rates reported here are measured against

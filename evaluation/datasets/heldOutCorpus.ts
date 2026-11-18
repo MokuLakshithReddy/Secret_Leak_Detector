@@ -277,9 +277,15 @@ export interface EvaluationResult {
  * sampling uncertainty only; it does not correct for purposive synthetic
  * sampling or author-assigned labels.
  */
-export function wilsonInterval(successes: number, trials: number, z = 1.959963984540054): { lower: number; upper: number } {
+/** Standard-normal 97.5th percentile: the critical value for a two-sided 95% Wilson interval. */
+export const WILSON_95_Z_SCORE = 1.959963984540054;
+
+export function wilsonInterval(successes: number, trials: number, z = WILSON_95_Z_SCORE): { lower: number; upper: number } {
   if (!Number.isInteger(successes) || !Number.isInteger(trials) || trials < 0 || successes < 0 || successes > trials) {
     throw new RangeError('Wilson interval requires integer counts with 0 <= successes <= trials.');
+  }
+  if (!Number.isFinite(z) || z <= 0) {
+    throw new RangeError('Wilson interval z-score must be a finite positive number.');
   }
   if (trials === 0) return { lower: 0, upper: 1 };
   const proportion = successes / trials;

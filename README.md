@@ -1,6 +1,6 @@
 # 🛡️ Secret Leak Detector
 
-> **Benchmark evidence status:** Badge and table metrics are author-reported internal measurements, not independently validated accuracy claims. See [validation methodology](docs/VALIDATION.md) for sample sizes, confidence intervals, corpus provenance, and the outstanding external-review requirement.
+> **Held-out evaluation (40 author-labelled synthetic cases):** Observed precision and recall are 100% (20/20 each), with two-sided 95% Wilson intervals of **83.9%–100.0%**. The observed false-positive rate is 0% (0/20), with a 95% interval of **0.0%–16.1%**. The labels have not been independently reviewed; these intervals describe binomial sampling uncertainty only, not production accuracy. See [validation methodology](docs/VALIDATION.md) and the [external-review status](evaluation/REVIEW_GUIDE.md).
 
 [![Visual Studio Code](https://img.shields.io/badge/VS%20Code-v1.85+-blue.svg?logo=visualstudiocode)](https://code.visualstudio.com/)
 [![CI Status](https://github.com/MokuLakshithReddy/Secret_Leak_Detector/actions/workflows/secret-leak-detector.yml/badge.svg)](https://github.com/MokuLakshithReddy/Secret_Leak_Detector/actions)
@@ -68,8 +68,8 @@ npx secret-leak-detector hook install
 | **detect-secrets v1.5.0** | 72.5% [57.2% - 83.9%] | 58.0% [44.2% - 70.6%] | 64.4% | 22.0% | 114,337 $\mu$s | 81.8 MB |
 
 > **🔬 Engineering Improvements & Failure Analysis:**
-> In prior revisions, real-world recall was 78% due to unescaped `@` characters in database passwords disrupting URI boundaries, and unquoted `AccountKey=...` parameters inside compound Azure connection strings.
-> These patterns were systematically resolved in v1.0.3 with dedicated regression tests, bringing real-world recall to 100% while maintaining 0% false positives on localhost development configs.
+> The committed reference report (2026-10-15, detector 1.0.3) records 50/50 author-labelled positive fixtures detected and 50/50 author-labelled negative fixtures ignored. This is a result on the curated fixture set, not an independently validated estimate of production recall or false-positive rate.
+> Regression coverage includes database passwords containing `@` and Azure `AccountKey=...` parameters embedded in compound connection strings.
 >
 > **Fail-Closed Security Guarantees:**
 > - **Git Protection:** Scan errors return explicit `ERROR` status and fail closed (commit blocked when enforcement is enabled).
