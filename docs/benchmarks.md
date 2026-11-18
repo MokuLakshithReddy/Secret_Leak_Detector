@@ -8,19 +8,19 @@
 > The extension runtime, CLI binary, test suite, and packaging integrity are authoritatively verified exclusively via GitHub Actions CI and local testing (`npm run build`, `npm test`, `npm run benchmark:gate`, `npm run package`).
 
 ## 1. Methodology & Corpus Construction (1,000 Files)
-To eliminate guesswork and marketing claims, we constructed a standardized corpus generator (`evaluation/datasets/corpusGenerator.ts`) that writes **1,000 realistic files** to disk across multiple languages (`TypeScript`, `Python`, `Go`, `Shell`, `JSON`, `YAML`, `.env`) and executes the standalone binaries of all 4 scanners against the identical directory.
+To eliminate guesswork and marketing claims, we constructed a standardized corpus generator (`evaluation/datasets/corpusGenerator.ts`) that writes **1,000 synthetic fixture files** to disk across multiple languages (`TypeScript`, `Python`, `Go`, `Shell`, `JSON`, `YAML`, `.env`) and executes the standalone binaries of all 4 scanners against the identical directory.
 
 ### Dataset Distribution:
-1. **True Positives (500 files):**
+1. **Synthetic Positive Fixtures (500 files):**
    - 10 distinct credential types: AWS (Access & Secret Keys), Stripe (Live & Restricted Keys), GitHub (PATs & OAuth), Slack (Bot & User tokens), OpenAI, Anthropic Claude, Google Cloud, PostgreSQL/Database URLs, PEM Private Keys, and tripartite JSON Web Tokens.
    - Varied syntactic locations: direct assignments, environment fallbacks (`process.env.KEY || "..."`, `os.getenv("KEY", "...")`), deeply nested configuration objects, function arguments, and HTTP headers.
-2. **False Positives (400 files):**
+2. **Synthetic Negative Fixtures (400 files):**
    - Official cloud vendor documentation examples (`AKIAIOSFODNN7EXAMPLE`, `wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY`).
    - Configuration templates: `.env.example` with `YOUR_API_KEY_HERE`, `insert_secret_token`.
    - Test mocks and repetitive fillers (`00000000000000000000000000000000`, `test_fake_token_12345`).
    - High-entropy benign strings: UUID v4s, 40-char Git commit SHAs, SHA-256 integrity hashes, Webpack asset bundle filenames (`vendor.3f8a92b1c4d5.js`), Base64 inline PNG assets.
    - Benign local connection strings: `postgres://user:password@localhost:5432/test_db`.
-3. **Adversarial Obfuscations (100 files):**
+3. **Synthetic Adversarial Fixtures (100 files):**
    - String concatenation token splitting (`"ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz"`).
    - Multiline whitespace and indentation stretching.
    - Inline comment interruptions (`const token /* authorization */ = "sk_live_..."`).
@@ -45,7 +45,7 @@ Each tool was executed locally on Node.js v24 / Windows x64 against the same dir
 
 *Confidence Intervals calculated using the Wilson Score Interval with continuity correction for binomial populations ($z = 1.96$).*
 
-> **Scientific Framing & Scope:** These metrics evaluate performance on a **1,000-file controlled benchmark corpus**. This demonstrates that under identical ground truth conditions, Secret Leak Detector outperforms regex-only and entropy-only scanners on provider-specific signatures, adversarial evasion techniques, and benign fixtures.
+> **Scientific Framing & Scope:** These historical internal metrics evaluate performance on a **1,000-file author-generated synthetic corpus** with author-assigned labels. They describe results on these fixtures only; they do not establish broad superiority on live repositories or independently reviewed ground truth.
 
 ---
 
@@ -87,7 +87,7 @@ the current code and fixtures; it does not independently validate the labels.
 >
 > Therefore, we maintain **strict separation between our benchmark suites**:
 > - **Suite A (Controlled 1,000 Fixtures):** Demonstrates **100% precision and recall** under controlled synthetic conditions with verified ground truth and deterministic PRNG.
-> - **Suite B (Curated Real-World 100 Fixtures):** The committed 2026-10-15 report for detector version 1.0.3 records **100.0% precision, 100.0% recall, and 100.0% F1** on the author-labelled fixtures. These are preliminary internal measurements, not independently reviewed ground truth.
+> - **Suite B (Author-Generated Real-World-Inspired 100 Fixtures):** The committed 2026-10-15 report for detector version 1.0.3 records **100.0% precision, 100.0% recall, and 100.0% F1** on the author-labelled fixtures. These are preliminary internal measurements, not independently reviewed ground truth.
 > 
 > All benchmark scripts (`evaluation/benchmarks/realWorldBenchmarkRunner.ts`) and corpus definitions (`evaluation/datasets/realWorldCorpus.ts`) are reproducible. Reproduction by another person verifies that the same code and labels produce the same counts; it does not independently validate the correctness of the labels. External review of the corpus and labels remains outstanding.
 
