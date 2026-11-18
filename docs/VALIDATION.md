@@ -8,11 +8,13 @@
 
 ## 1. Purpose
 
-This document provides a rigorous, independently reproducible validation
-methodology for Secret Leak Detector (SLD). It is addressed to:
+This document provides a reproducible validation methodology for Secret Leak
+Detector (SLD). Reproduction can be performed independently; the current
+corpus labels themselves have not been independently reviewed by a third party.
+It is addressed to:
 
 - **Security reviewers** assessing whether the tool actually blocks credentials.
-- **Independent evaluators** who want to reproduce benchmark results without trusting author-reported numbers.
+- **External evaluators** who want to reproduce the benchmark and assess the limits of the author-reported results.
 - **Project maintainers** who need a definitive test inventory.
 
 The document makes four concrete, independently verifiable claims:
@@ -21,7 +23,7 @@ The document makes four concrete, independently verifiable claims:
 |-------|----------|
 | SLD detects realistic fake credentials | `demo/` — block-and-remediate fixture repo |
 | SLD ignores high-entropy non-secrets (low FP rate) | `evaluation/datasets/heldOutCorpus.ts` |
-| Core detector logic is covered by 399 automated tests | `test/runAllTests.ts` |
+| Core detector logic is covered by 771 automated regression assertions | `test/runAllTests.ts` |
 | Pre-commit hook *actually* blocks commits | `test/integration/gitHookScenarios.test.ts` |
 
 ---
@@ -107,6 +109,13 @@ rules were finalized. No case from this file influenced threshold tuning or
 pattern selection. It is structurally analogous to a held-out test set in ML
 evaluation.
 
+**Label provenance:** The project author created the cases and assigned their
+TP/TN labels. “Held out” means the cases were separated from detector tuning;
+it does **not** mean that the cases or labels were independently authored,
+adjudicated, or reviewed. The results are independently reproducible, but they
+are not an independent third-party measurement of precision or recall. External
+label review remains outstanding.
+
 **Synthesized credentials:** All credentials are built with the `synth()`
 helper (`parts.join('')`) so the repository's own scanner does not flag this
 source file. No real credentials appear anywhere.
@@ -173,7 +182,7 @@ with the output of `npm run benchmark:heldout` and your Node.js + OS version.
 
 ### Overview
 
-`test/runAllTests.ts` contains **643 tests** across 45 sections. It is the
+`test/runAllTests.ts` contains **771 core regression assertions** across 50 sections, as reported by the latest recorded CI run. The separate Git-hook suite reports 40 tests and the manifest integration suite reports 17 tests. The test suite is the
 primary regression guard run on every CI push/PR.
 
 ### Run
@@ -315,9 +324,10 @@ The current 40 labels were authored by the project maintainer and have not been 
 
 
 See `evaluation/reports/held_out_results.json`. The `expectedResults` object
-contains the confusion matrix recorded on the reference machine. An independent
-evaluator should expect to match these counts exactly (the corpus is
-deterministic).
+contains the confusion matrix recorded on the reference machine. A reproduction
+should match these counts exactly because the corpus is deterministic. Matching
+the counts confirms reproducibility only; it does not independently establish
+that the author-assigned labels are correct.
 
 ---
 
