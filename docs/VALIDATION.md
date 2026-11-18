@@ -295,7 +295,7 @@ tests (groups 3–5), still passing the generation and installation tests (group
 |------|---------|----------|
 | Node.js | v24 | Windows x64 |
 | TypeScript (dev/optional) | 5.3.3 | Dynamic AST parsing when present; zero-dependency lexical fallback |
-| Secret Leak Detector | 1.0.3 | — |
+| Secret Leak Detector | 1.0.4 | — |
 
 ### Determinism
 
@@ -310,7 +310,7 @@ git clone https://github.com/MokuLakshithReddy/Secret_Leak_Detector.git
 cd Secret_Leak_Detector
 npm ci
 npm run build
-npm test                     # 771 tests across 50 sections (828 tests total including git-hook and manifest suites)
+npm test                     # Core scanner/security regression suite; use its emitted summary
 npm run benchmark:heldout    # confusion matrix
 npm run benchmark:gate       # 520-fixture regression gate
 npm run test:git-hook        # 40 git-hook integration tests (commit blocking)
@@ -386,7 +386,7 @@ Follow these steps on your own machine to produce independent verification:
    ```bash
    npm test
    ```
-   Expected: final line reads `TEST SUMMARY: 769 PASSED, 0 FAILED`.
+   Expected: the command exits successfully and prints its current `TEST SUMMARY`; test counts are emitted by the checked-out commit and must not be compared with historical hard-coded totals.
 
 5. **Run the held-out evaluation**
    ```bash
