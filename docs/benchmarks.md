@@ -2,7 +2,7 @@
 
 > **Scientific Transparency Notice:**
 > All detection metrics, confusion matrix counts, and throughput speeds reported in this document reflect **internal measurements performed by the authors** using local standalone binaries and deterministic PRNG seeds (`0x5eec73`).
-> While all dataset generators (`evaluation/datasets/corpusGenerator.ts`), real-world fixtures (`evaluation/datasets/realWorldCorpus.ts`), and runner scripts (`npm run benchmark:multi`, `npm run benchmark:realworld`, `npm run benchmark:realworld:diagnose`) are open-source and fully reproducible, these figures are **author-reported results** and should be treated as preliminary until replicated independently by external security teams.
+> While all dataset generators (`evaluation/datasets/corpusGenerator.ts`), real-world-inspired synthetic fixtures (`evaluation/datasets/realWorldCorpus.ts`), and runner scripts (`npm run benchmark:multi`, `npm run benchmark:realworld`, `npm run benchmark:realworld:diagnose`) are open-source and fully reproducible, these figures are **author-reported results** and should be treated as preliminary until replicated independently by external security teams.
 >
 > **Verification Architecture Notice:**
 > The extension runtime, CLI binary, test suite, and packaging integrity are authoritatively verified exclusively via GitHub Actions CI and local testing (`npm run build`, `npm test`, `npm run benchmark:gate`, `npm run package`).
@@ -49,15 +49,15 @@ Each tool was executed locally on Node.js v24 / Windows x64 against the same dir
 
 ---
 
-## 3. Curated Real-World Benchmark Study (100 Author-Labelled Fixtures)
+## 3. Author-Generated Real-World-Inspired Benchmark (100 Synthetic Fixtures)
 
-To examine performance beyond controlled synthetic tests, the project authors curated a **100-file real-world-inspired dataset** (`evaluation/datasets/realWorldCorpus.ts`) from public CVE post-mortems, production incident write-ups, representative DevOps deployment configurations (GitHub Actions, Dockerfiles, Terraform tfvars, Django settings, Kubernetes manifests, Go APIs, and C# configuration files), and common high-entropy non-secret generators (Subresource Integrity SHA digests, 40-character Git commit SHAs, UUID v4s, base64 tracking pixels, RFC 7519 JWT examples):
-- **50 Real-World True Positives:** Real incident leaky patterns across 10 cloud providers and 7 languages.
-- **50 Real-World False Positives:** High-entropy benign strings commonly misclassified by raw entropy scanners.
+This suite is an **author-generated synthetic corpus** (`evaluation/datasets/realWorldCorpus.ts`). Its file layouts and string patterns are inspired by common credential-exposure scenarios and deployment formats (GitHub Actions, Dockerfiles, Terraform tfvars, Django settings, Kubernetes manifests, Go APIs, and C# configuration files). The fixtures are constructed in code by deterministic helper functions; they are not raw samples copied from public incident reports, and their labels have not been independently adjudicated:
+- **50 Synthetic Positive Fixtures:** Fake credential strings placed in representative configuration and source-code layouts.
+- **50 Synthetic Negative Fixtures:** High-entropy benign and placeholder strings intended to probe false-positive behavior.
 
 ### Committed Reference Results (100 Author-Labelled Fixtures)
 
-The committed machine-readable report is `evaluation/reports/real_world_benchmark.json`
+The committed historical machine-readable report is `evaluation/reports/real_world_benchmark.json`
 (timestamp **2026-10-15**, detector version **1.0.3**, 100 cases: 50 labelled
 positives and 50 labelled negatives). The figures below are transcribed from
 that report so the narrative table and artifact agree.
@@ -79,7 +79,7 @@ the current code and fixtures; it does not independently validate the labels.
 ### ⚠️ Methodological Caution & Scope Limitations
 
 > **Crucial Methodological Caveat:**
-> These benchmark corpora and their ground-truth labels were assembled and labelled by the project authors. “Real-world” describes the formats and incident-inspired patterns represented; it does **not** mean the samples or labels were independently supplied or reviewed by an external evaluator. The results below are author-reported internal measurements, not an independent third-party evaluation.
+> These benchmark corpora and their ground-truth labels were assembled and labelled by the project authors. “Real-world-inspired” describes the file layouts and exposure patterns represented; it does **not** mean the samples were collected from live incidents or that labels were independently supplied or reviewed by an external evaluator. The results below are author-reported internal measurements, not an independent third-party evaluation.
 >
 > A 100-file curated corpus provides useful initial evidence and exposes real syntactic boundary conditions, but **it is not sufficient to establish broad real-world superiority**.
 >
@@ -91,11 +91,11 @@ the current code and fixtures; it does not independently validate the labels.
 > 
 > All benchmark scripts (`evaluation/benchmarks/realWorldBenchmarkRunner.ts`) and corpus definitions (`evaluation/datasets/realWorldCorpus.ts`) are reproducible. Reproduction by another person verifies that the same code and labels produce the same counts; it does not independently validate the correctness of the labels. External review of the corpus and labels remains outstanding.
 
-## 4. Large-Scale Payload Benchmark (1MB → 10MB → 100MB → 1GB)
+## 4. Cumulative In-Memory Payload Benchmark (1MB → 10MB → 100MB → 1GB)
 
 > **Scope & Production Distinction Notice:**
-> This benchmark evaluates the core scanning engine's (`scanContent()`) processing line rate, throughput scaling, and RSS memory stability when streaming continuous multi-megabyte and multi-gigabyte data in 10 MB chunks.
-> In contrast, the production CLI and pre-commit hook invoke `scanFile()`, which purposefully enforces a **50 MB single-file ceiling** (`options.maxFileSize`) to reject accidental staging of massive binaries, database dumps, or build artifacts before reading them into memory. Thus, this benchmark verifies engine chunk-streaming line-processing capacity, not that the production CLI scans single 1 GB disk files in a single synchronous `scanFile()` pass.
+> This benchmark evaluates the core scanning engine's (`scanContent()`) throughput by generating independent in-memory chunks of up to 10 MB and scanning each chunk sequentially. The 100 MB and 1 GB labels are cumulative totals across those calls; they do not represent a single disk file or a streaming file API.
+> In contrast, the production CLI and pre-commit hook invoke `scanFile()`, which purposefully enforces a **50 MB single-file ceiling** (`options.maxFileSize`) to reject accidental staging of massive binaries, database dumps, or build artifacts before reading them into memory. Thus, this benchmark is an aggregate in-memory `scanContent()` throughput test, not proof of disk streaming, bounded-memory processing of a single large file, or a 1 GB production CLI scan.
 
 Executed via `npm run benchmark:scale` (`evaluation/benchmarks/payloadScaleBenchmark.ts`) to evaluate throughput scaling, line rate stability, and confirm process RSS memory across massive payloads:
 
@@ -103,8 +103,8 @@ Executed via `npm run benchmark:scale` (`evaluation/benchmarks/payloadScaleBench
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
 | **1 MB** | 25 ms | 39.7 MB/s | 436,416 lines/s | 24.5 MB | 82.4 MB | 100% (1/1) |
 | **10 MB** | 80 ms | 124.3 MB/s | 1,365,817 lines/s | 49.6 MB | 112.2 MB | 100% (1/1) |
-| **100 MB (Streamed)** | 750 ms | 133.4 MB/s | 1,466,034 lines/s | 131.0 MB | 251.5 MB | 100% (10/10) |
-| **1 GB (Streamed)** | 7,384 ms | 138.7 MB/s | 1,518,355 lines/s | 242.5 MB | 384.1 MB | 100% (100/100) |
+| **100 MB (10 MB in-memory chunks)** | 750 ms | 133.4 MB/s | 1,466,034 lines/s | 131.0 MB | 251.5 MB | 100% (10/10) |
+| **1 GB (10 MB in-memory chunks)** | 7,384 ms | 138.7 MB/s | 1,518,355 lines/s | 242.5 MB | 384.1 MB | 100% (100/100) |
 
 ### 🛠️ Memory Architecture Investigation & Engineering Fixes
 In our preliminary load testing, processing a 1 GB payload produced ~2.1 GB RSS. An engineering investigation identified three root causes:
@@ -115,9 +115,9 @@ In our preliminary load testing, processing a 1 GB payload produced ~2.1 GB RSS.
 We resolved these issues with three systems optimizations:
 - **Zero-Allocation Newline Offsets Index:** Instantiated lazily on first match, caching byte offsets of newlines as numeric indices and resolving line/column coordinates via $O(\log L)$ binary search with zero string allocations.
 - **Windowed AST & Lexical Scoping:** Slicing a localized 60-line window surrounding the match ($O(1)$) before invoking `ts.createSourceFile`.
-- **10 MB Stream Chunking:** Streaming multi-gigabyte inputs in 10 MB chunks with bounded reference lifetimes.
+- **10 MB In-Memory Chunk Processing:** Processing cumulative payloads through sequential `scanContent()` calls; this is not a disk-streaming implementation.
 
-**Outcome:** Processing 1 GB dropped from 149 seconds to **6.3 seconds** (a 23x speedup), with peak process heap stabilized at **~218 MB** (an 89% reduction in peak memory consumption).
+**Historical internal outcome:** The reported cumulative 1 GB chunk benchmark dropped from 149 seconds to **6.3 seconds** (a 23x speedup) in the authors' recorded run. The result is not a measurement of single-file disk streaming and is not a production CLI size-limit claim.
 
 ---
 
