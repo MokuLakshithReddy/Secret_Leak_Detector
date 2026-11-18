@@ -1,7 +1,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
-import { SecretFinding, ScanResult, RuleDefinition } from '../types';
+import { SecretFinding, ScanResult, RuleDefinition, Risk } from '../types';
+import { DEFAULT_FAIL_ON, shouldBlock } from '../policy';
 import { CORE_RULES } from '../detectors/rules';
 import { analyzeFileContext, analyzeLexicalContext } from '../context/contextAnalyzer';
 import { analyzeAstContext, createSourceFile } from '../context/astAnalyzer';
@@ -554,7 +555,8 @@ function deduplicateFindings(findings: SecretFinding[]): SecretFinding[] {
 export function buildScanResult(
   findings: SecretFinding[],
   filesScanned: number,
-  durationMs: number
+  durationMs: number,
+  failOn: Risk = DEFAULT_FAIL_ON
 ): ScanResult {
   const riskSummary = {
     critical: findings.filter((f) => f.risk === 'CRITICAL').length,
@@ -563,7 +565,7 @@ export function buildScanResult(
     low: findings.filter((f) => f.risk === 'LOW').length,
   };
 
-  const blocked = riskSummary.critical > 0 || riskSummary.high > 0;
+  const blocked = shouldBlock(findings, failOn);
 
   return {
     findings,
