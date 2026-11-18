@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import * as crypto from 'crypto';
 import { SecretFinding, BaselineFile, BaselineFinding } from '../types';
 import { getPackageVersion } from '../version';
 import { generateLegacyFingerprint, getFingerprintKeyId } from '../redactor/redactor';
@@ -101,66 +102,66 @@ export function assertSafeBaselineDestination(
 ): void {
   let rootReal: string;
   try {
-    rootReal = fs.existsSync(workspaceRoot) ? fs.realpathSync(workspaceRoot) : path.resolve(workspaceRoot);
+    rootReal = fs.realpathSync(workspaceRoot);
   } catch (err: any) {
     throw new BaselineValidationError(`Cannot resolve workspace root for baseline: ${err.message || err}`);
   }
 
-  if (fs.existsSync(baselinePath)) {
-    let stat: fs.Stats;
-    try {
-      stat = fs.lstatSync(baselinePath);
-    } catch (err: any) {
-      throw new BaselineValidationError(`Cannot stat baseline file '${baselinePath}': ${err.message || err}`);
-    }
-
-    if (stat.isSymbolicLink() || !stat.isFile() || stat.nlink > 1) {
-      throw new BaselineValidationError(
-        `Refusing to ${purpose} baseline '${baselinePath}': expected a regular, non-symlink file with a single hard link (got nlink=${stat.nlink}, isSymlink=${stat.isSymbolicLink()}).`
-      );
-    }
-
-    let fileReal: string;
-    try {
-      fileReal = fs.realpathSync(baselinePath);
-    } catch (err: any) {
-      throw new BaselineValidationError(`Cannot resolve canonical path for baseline '${baselinePath}': ${err.message || err}`);
-    }
-
-    const relative = path.relative(rootReal, fileReal);
-    if (relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) {
-      throw new BaselineValidationError(
-        `Refusing to ${purpose} baseline: resolved path '${fileReal}' is outside the workspace root '${rootReal}'.`
-      );
-    }
-  } else if (purpose === 'write') {
-    const parentDir = path.dirname(baselinePath);
-    if (!fs.existsSync(parentDir)) {
-      throw new BaselineValidationError(`Cannot write baseline: parent directory '${parentDir}' does not exist.`);
-    }
-    let parentStat: fs.Stats;
-    try {
-      parentStat = fs.lstatSync(parentDir);
-    } catch (err: any) {
-      throw new BaselineValidationError(`Cannot stat parent directory '${parentDir}': ${err.message || err}`);
-    }
+  const parentDir = path.dirname(path.resolve(baselinePath));
+  let parentStat: fs.Stats;
+  let parentReal: string;
+  try {
+    parentStat = fs.lstatSync(parentDir);
     if (parentStat.isSymbolicLink() || !parentStat.isDirectory()) {
       throw new BaselineValidationError(
-        `Refusing to write baseline: parent directory '${parentDir}' must be a regular directory, not a symlink.`
+        `Refusing to ${purpose} baseline: parent directory '${parentDir}' must be a real directory, not a symlink.`
       );
     }
-    let parentReal: string;
-    try {
-      parentReal = fs.realpathSync(parentDir);
-    } catch (err: any) {
-      throw new BaselineValidationError(`Cannot resolve canonical path for parent directory '${parentDir}': ${err.message || err}`);
+    parentReal = fs.realpathSync(parentDir);
+  } catch (err: any) {
+    if (err instanceof BaselineValidationError) throw err;
+    throw new BaselineValidationError(`Cannot safely resolve baseline parent directory '${parentDir}': ${err.message || err}`);
+  }
+
+  const parentRelative = path.relative(rootReal, parentReal);
+  if (parentRelative === '..' || parentRelative.startsWith('..' + path.sep) || path.isAbsolute(parentRelative)) {
+    throw new BaselineValidationError(
+      `Refusing to ${purpose} baseline: parent directory '${parentReal}' is outside the workspace root '${rootReal}'.`
+    );
+  }
+
+  if (!fs.existsSync(baselinePath)) {
+    if (purpose === 'read') {
+      throw new BaselineValidationError(`Cannot read baseline: file '${baselinePath}' does not exist.`);
     }
-    const parentRel = path.relative(rootReal, parentReal);
-    if (parentRel === '..' || parentRel.startsWith('..' + path.sep) || path.isAbsolute(parentRel)) {
-      throw new BaselineValidationError(
-        `Refusing to write baseline: parent directory '${parentReal}' is outside the workspace root '${rootReal}'.`
-      );
-    }
+    return;
+  }
+
+  let stat: fs.Stats;
+  try {
+    stat = fs.lstatSync(baselinePath);
+  } catch (err: any) {
+    throw new BaselineValidationError(`Cannot stat baseline file '${baselinePath}': ${err.message || err}`);
+  }
+
+  if (stat.isSymbolicLink() || !stat.isFile() || stat.nlink > 1) {
+    throw new BaselineValidationError(
+      `Refusing to ${purpose} baseline '${baselinePath}': expected a regular, non-symlink file with a single hard link (got nlink=${stat.nlink}, isSymlink=${stat.isSymbolicLink()}).`
+    );
+  }
+
+  let fileReal: string;
+  try {
+    fileReal = fs.realpathSync(baselinePath);
+  } catch (err: any) {
+    throw new BaselineValidationError(`Cannot resolve canonical path for baseline '${baselinePath}': ${err.message || err}`);
+  }
+
+  const fileRelative = path.relative(rootReal, fileReal);
+  if (fileRelative === '..' || fileRelative.startsWith('..' + path.sep) || path.isAbsolute(fileRelative)) {
+    throw new BaselineValidationError(
+      `Refusing to ${purpose} baseline: resolved path '${fileReal}' is outside the workspace root '${rootReal}'.`
+    );
   }
 }
 
@@ -354,29 +355,86 @@ export class BaselineEngine {
       findings: baselineFindings,
     };
 
-    const noFollow = process.platform === 'win32' ? 0 : (fs.constants.O_NOFOLLOW || 0);
-    const fd = fs.openSync(
-      this.baselinePath,
-      fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | noFollow,
-      0o600
-    );
+    // Write to a new file in the already-resolved parent directory, then
+    // atomically replace the destination. O_EXCL prevents temp-file reuse;
+    // rename replaces a swapped symlink/hard-link directory entry itself
+    // instead of opening and truncating the object it points to.
+    assertSafeBaselineDestination(this.baselinePath, this.workspaceRoot, 'write');
+    const parentDir = path.dirname(path.resolve(this.baselinePath));
+    let parentReal: string;
     try {
+      parentReal = fs.realpathSync(parentDir);
+    } catch (err: any) {
+      throw new BaselineValidationError(`Cannot resolve baseline parent directory: ${err.message || err}`);
+    }
+    const destination = path.join(parentReal, path.basename(this.baselinePath));
+    assertSafeBaselineDestination(destination, this.workspaceRoot, 'write');
+
+    const tempPath = path.join(
+      parentReal,
+      `.${path.basename(this.baselinePath)}.${process.pid}.${crypto.randomBytes(8).toString('hex')}.tmp`
+    );
+    const noFollow = process.platform === 'win32' ? 0 : (fs.constants.O_NOFOLLOW || 0);
+    let fd: number | null = null;
+
+    try {
+      fd = fs.openSync(
+        tempPath,
+        fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | noFollow,
+        0o600
+      );
       const openedStat = fs.fstatSync(fd);
       if (!openedStat.isFile() || openedStat.nlink > 1) {
         throw new BaselineValidationError(
-          `Opened baseline file '${this.baselinePath}' is not a regular file with a single hard link (nlink=${openedStat.nlink}).`
+          `Temporary baseline file '${tempPath}' is not a regular file with a single hard link (nlink=${openedStat.nlink}).`
         );
       }
-      fs.writeFileSync(fd, JSON.stringify(file, null, 2) + '\n', 'utf8');
-    } finally {
-      fs.closeSync(fd);
-    }
 
-    const postStat = fs.lstatSync(this.baselinePath);
-    if (postStat.isSymbolicLink() || !postStat.isFile() || postStat.nlink > 1) {
-      throw new BaselineValidationError(
-        `Post-write baseline verification failed: expected a regular non-symlink file with a single hard link.`
-      );
+      fs.writeFileSync(fd, JSON.stringify(file, null, 2) + '\n', 'utf8');
+      fs.fsyncSync(fd);
+      fs.closeSync(fd);
+      fd = null;
+
+      const tempStat = fs.lstatSync(tempPath);
+      if (tempStat.isSymbolicLink() || !tempStat.isFile() || tempStat.nlink > 1) {
+        throw new BaselineValidationError('Temporary baseline file failed post-write safety verification.');
+      }
+
+      // Re-check the canonical parent immediately before replacement. The
+      // destination is expressed through that real path, avoiding a later
+      // redirection through a replaced parent-path symlink.
+      if (fs.realpathSync(parentDir) !== parentReal) {
+        throw new BaselineValidationError('Baseline parent directory changed during write; refusing to replace the baseline.');
+      }
+      assertSafeBaselineDestination(destination, this.workspaceRoot, 'write');
+      fs.renameSync(tempPath, destination);
+
+      const postStat = fs.lstatSync(destination);
+      if (postStat.isSymbolicLink() || !postStat.isFile() || postStat.nlink > 1) {
+        throw new BaselineValidationError(
+          'Post-write baseline verification failed: expected a regular non-symlink file with a single hard link.'
+        );
+      }
+      const postReal = fs.realpathSync(destination);
+      const postRelative = path.relative(fs.realpathSync(this.workspaceRoot), postReal);
+      if (postRelative === '..' || postRelative.startsWith('..' + path.sep) || path.isAbsolute(postRelative)) {
+        throw new BaselineValidationError('Post-write baseline resolves outside the workspace root.');
+      }
+
+      // Persist the directory entry where supported. Some platforms/filesystems
+      // do not permit opening or syncing directories; the file itself is already
+      // flushed before rename.
+      try {
+        const dirFd = fs.openSync(parentReal, fs.constants.O_RDONLY);
+        try { fs.fsyncSync(dirFd); } finally { fs.closeSync(dirFd); }
+      } catch {}
+    } catch (err: any) {
+      if (fd !== null) {
+        try { fs.closeSync(fd); } catch {}
+      }
+      try { fs.unlinkSync(tempPath); } catch {}
+      if (err instanceof BaselineValidationError) throw err;
+      throw new BaselineValidationError(`Atomic baseline write failed: ${err.message || err}`);
     }
 
     return file;
