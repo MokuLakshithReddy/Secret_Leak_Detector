@@ -272,14 +272,14 @@ export interface EvaluationResult {
   };
 }
 
+/** Standard-normal 97.5th percentile: the critical value for a two-sided 95% Wilson interval. */
+export const WILSON_95_Z_SCORE = 1.959963984540054;
+
 /**
  * Wilson score interval for a binomial proportion. The interval describes
  * sampling uncertainty only; it does not correct for purposive synthetic
  * sampling or author-assigned labels.
  */
-/** Standard-normal 97.5th percentile: the critical value for a two-sided 95% Wilson interval. */
-export const WILSON_95_Z_SCORE = 1.959963984540054;
-
 export function wilsonInterval(successes: number, trials: number, z = WILSON_95_Z_SCORE): { lower: number; upper: number } {
   if (!Number.isInteger(successes) || !Number.isInteger(trials) || trials < 0 || successes < 0 || successes > trials) {
     throw new RangeError('Wilson interval requires integer counts with 0 <= successes <= trials.');

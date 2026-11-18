@@ -1,6 +1,8 @@
 # Validation Methodology — Secret Leak Detector
 
 > **Version:** 1.0.4 | **Document date:** 2026-11
+>
+> **Evidence status:** Internal validation only. The 40-case held-out corpus is author-labelled and has not received independent ground-truth review.
 
 ---
 
@@ -308,11 +310,12 @@ git clone https://github.com/MokuLakshithReddy/Secret_Leak_Detector.git
 cd Secret_Leak_Detector
 npm ci
 npm run build
-npm test                     # 771 tests across 50 sections (828 tests total including git-hook and manifest suites)
-npm run benchmark:heldout    # confusion matrix
+npm test                     # 771 core regression assertions across 50 sections
+npm run benchmark:heldout    # confusion matrix and Wilson 95% intervals
 npm run benchmark:gate       # 520-fixture regression gate
 npm run test:git-hook        # 40 git-hook integration tests (commit blocking)
 npm run test:manifest        # 17 VS Code manifest & architecture tests
+# Total recorded checks: 828 (771 core assertions + 40 Git-hook tests + 17 manifest tests)
 npm run package              # .vsix packaging
 ```
 
