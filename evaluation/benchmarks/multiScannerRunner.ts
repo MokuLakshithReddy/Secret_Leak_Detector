@@ -138,11 +138,10 @@ export function runMultiScannerBenchmark(options: { sldOnly?: boolean } = {}): S
   if (gitleaksBin) {
     try {
       const gStart = process.hrtime.bigint();
-      try {
-        execFileSync(gitleaksBin, [
-          'dir', corpusDir, '--report-format', 'json', '--report-path', gitleaksReport,
-          '--no-banner', '--exit-code', '0',
-        ], { stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024, windowsHide: true });
+      execFileSync(gitleaksBin, [
+        'dir', corpusDir, '--report-format', 'json', '--report-path', gitleaksReport,
+        '--no-banner', '--exit-code', '0',
+      ], { stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024, windowsHide: true });
       const gEnd = process.hrtime.bigint();
       gitleaksWallClockMs = Number(gEnd - gStart) / 1e6;
 
