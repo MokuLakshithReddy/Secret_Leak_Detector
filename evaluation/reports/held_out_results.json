@@ -1,6 +1,6 @@
 {
-  "schemaVersion": "1.0",
-  "description": "Held-out evaluation corpus for Secret Leak Detector. Run 'npm run benchmark:heldout' to reproduce.",
+  "schemaVersion": "1.1",
+  "description": "Reference held-out evaluation results for Secret Leak Detector. Reproduce with 'npm run benchmark:heldout'. Labels are author-assigned and have not been independently reviewed.",
   "methodology": {
     "corpusSeparation": "This corpus was created after the detector rules were finalized. No cases from this corpus were used to tune detector thresholds or patterns.",
     "labellingProcess": "Each case was labelled by the author. TP = realistic credential matching a known provider pattern. TN = high-entropy non-secret (hash, UUID, tracking pixel, etc.)",
@@ -9,7 +9,10 @@
     "os": "Windows_NT x64",
     "command": "npm run benchmark:heldout",
     "seed": "N/A — held-out corpus is deterministic (fixed strings)",
-    "reproducibilityNote": "Clone the repository, run 'npm ci && npm run build && npm run benchmark:heldout'. Results are fully deterministic."
+    "reproducibilityNote": "Clone the repository, run 'npm ci && npm run build && npm run benchmark:heldout'. Results are fully deterministic.",
+    "labelingStatus": "AUTHOR-LABELLED — NOT INDEPENDENTLY REVIEWED",
+    "samplingLimitations": "Purposive synthetic fixtures, not a random sample of production repositories. Wilson intervals below quantify binomial sampling uncertainty only and do not correct for label bias, corpus selection, or distribution shift.",
+    "independentReviewStatus": "Pending external reviewers; see evaluation/REVIEW_GUIDE.md."
   },
   "expectedResults": {
     "totalCases": 40,
@@ -17,13 +20,29 @@
     "fp": 0,
     "tn": 20,
     "fn": 0,
-    "precision": 1.0,
-    "recall": 1.0,
-    "f1": 1.0,
-    "fpr": 0.0
+    "precision": 1,
+    "recall": 1,
+    "f1": 1,
+    "fpr": 0,
+    "confidenceIntervals95": {
+      "precision": {
+        "lower": 0.8388748419471806,
+        "upper": 1
+      },
+      "recall": {
+        "lower": 0.8388748419471806,
+        "upper": 1
+      },
+      "fpr": {
+        "lower": 0,
+        "upper": 0.16112515805281938
+      }
+    },
+    "confidenceIntervalMethod": "Wilson score, two-sided 95% (z=1.959963984540054)"
   },
   "independentReproduction": {
     "instructions": "1. Clone the repository. 2. Run 'npm ci'. 3. Run 'npm run build'. 4. Run 'npm run benchmark:heldout'. 5. Compare confusion-matrix counts to expectedResults above. 6. Report any discrepancy as a GitHub Issue.",
-    "contactForDiscrepancies": "https://github.com/MokuLakshithReddy/Secret_Leak_Detector/issues"
+    "contactForDiscrepancies": "https://github.com/MokuLakshithReddy/Secret_Leak_Detector/issues",
+    "status": "Reproduction is independent of label review. Reproducing the result does not independently validate the ground-truth labels."
   }
 }
