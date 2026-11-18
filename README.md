@@ -1,11 +1,13 @@
 # 🛡️ Secret Leak Detector
 
+> **Benchmark evidence status:** Badge and table metrics are author-reported internal measurements, not independently validated accuracy claims. See [validation methodology](docs/VALIDATION.md) for sample sizes, confidence intervals, corpus provenance, and the outstanding external-review requirement.
+
 [![Visual Studio Code](https://img.shields.io/badge/VS%20Code-v1.85+-blue.svg?logo=visualstudiocode)](https://code.visualstudio.com/)
 [![CI Status](https://github.com/MokuLakshithReddy/Secret_Leak_Detector/actions/workflows/secret-leak-detector.yml/badge.svg)](https://github.com/MokuLakshithReddy/Secret_Leak_Detector/actions)
 [![Tests](https://img.shields.io/badge/tests-828%20passed%20%28771%20core%20%2B%2040%20git--hook%20%2B%2017%20manifest%29-brightgreen.svg)](https://github.com/MokuLakshithReddy/Secret_Leak_Detector/actions)
-[![Benchmark F1](https://img.shields.io/badge/benchmark%20F1-100%25-brightgreen.svg)](docs/VALIDATION.md)
+[![Internal Benchmark F1](https://img.shields.io/badge/internal%20benchmark%20F1-100%25-brightgreen.svg)](docs/VALIDATION.md)
 [![Corpus](https://img.shields.io/badge/corpus-1%2C000%20synthetic%20%2B%20100%20curated-blueviolet.svg)](docs/VALIDATION.md)
-[![Precision](https://img.shields.io/badge/precision-100%25-00e5b0.svg)]()
+[![Internal Precision](https://img.shields.io/badge/internal%20precision-100%25-00e5b0.svg)](docs/VALIDATION.md)
 [![License: Proprietary](https://img.shields.io/badge/License-Proprietary-red.svg)](LICENSE)
 
 > **Secret Leak Detector** is a dependable, context-aware credential exposure detection and remediation system for Git repositories and VS Code. It combines multi-signal pattern detection, Shannon entropy analysis, lexical & AST parsing, fail-closed Git commit protection, exposure graph analysis, and transactional remediation to prevent credentials from ever leaking to version control.
