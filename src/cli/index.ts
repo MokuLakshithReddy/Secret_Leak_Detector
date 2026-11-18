@@ -9,7 +9,7 @@ import { GitTimelineEngine } from '../core/history/gitTimeline';
 import { BaselineEngine, DEFAULT_BASELINE_FILENAME } from '../core/baseline/baselineEngine';
 import { VerificationEngine } from '../core/verification/verificationEngine';
 import { applyControlledRemediation } from '../core/remediation/remediationEngine';
-import { redactSecret } from '../core/redactor/redactor';
+import { redactSecret, initializePrivateSalt } from '../core/redactor/redactor';
 import { formatAsSarif } from '../core/sarif/sarifFormatter';
 import { SecretFinding, Risk } from '../core/types';
 import { scanStagedChangesSync } from '../git/stagedScanner';
@@ -47,6 +47,10 @@ async function main() {
   switch (command) {
     case 'scan':
       await runScan(args.slice(1), cwd);
+      break;
+
+    case 'salt':
+      runSalt(args.slice(1), cwd);
       break;
 
     case 'history':
@@ -120,6 +124,7 @@ Commands:
 
   baseline init          Generate .secretleak-baseline.json with existing findings
   baseline update        Refresh line numbers for known baseline findings (never whitelists new leaks)
+  salt init              Create a private repository fingerprint key in .sld/salt
 
   fix <file>             Controlled interactive remediation (diff preview & .env migration)
                          Options:
@@ -651,6 +656,21 @@ async function runGraph(cmdArgs: string[], cwd: string) {
   }
 }
 
+function runSalt(cmdArgs: string[], cwd: string): void {
+  const subCommand = cmdArgs[0] || 'init';
+  if (subCommand !== 'init') {
+    fail('Usage: secret-leak-detector salt init');
+  }
+  const initialized = initializePrivateSalt(cwd);
+  console.log(
+    initialized.created
+      ? `✅ Private fingerprint key created at ${initialized.path}.`
+      : `✅ Private fingerprint key is available at ${initialized.path}.`
+  );
+  console.log('The key is never printed. Keep .sld/salt out of version control and back it up in an approved secret manager.');
+  console.log('For shared baselines, configure the same key as SLD_SALT for every authorized developer and CI environment.');
+}
+
 async function runBaseline(cmdArgs: string[], cwd: string) {
   const isForce = cmdArgs.includes('--force') || cmdArgs.includes('-f');
   const acceptAll = cmdArgs.includes('--accept-all') || cmdArgs.includes('--yes') || cmdArgs.includes('-y') || isForce;
@@ -673,11 +693,9 @@ async function runBaseline(cmdArgs: string[], cwd: string) {
     if (!baselineEngine.exists()) {
       fail(`Error: Baseline file does not exist. Run 'baseline init' first.`);
     }
-    const existing = baselineEngine.loadBaseline();
-    const existingFps = new Set(existing?.findings.map((b) => b.fingerprint) || []);
-
-    const updatedFindings = findings.filter((f) => existingFps.has(f.fingerprint));
-    const newLeaks = findings.filter((f) => !existingFps.has(f.fingerprint));
+    const filtered = baselineEngine.filterAgainstBaseline(findings, { forceFile: true });
+    const updatedFindings = filtered.existingFindings;
+    const newLeaks = filtered.newFindings;
 
     if (newLeaks.length > 0) {
       console.warn(`⚠️  Warning: Found ${newLeaks.length} new secret(s) not in existing baseline. These are NOT whitelisted by 'baseline update'.`);
@@ -725,12 +743,6 @@ async function runBaseline(cmdArgs: string[], cwd: string) {
   }
 
   console.log(`\n📦 Initializing baseline for workspace: ${cwd}`);
-  const privateSaltPath = path.join(cwd, '.sld', 'salt');
-  if (!fs.existsSync(privateSaltPath) && !process.env.SLD_FINGERPRINT_SALT && !process.env.SLD_SALT) {
-    console.warn(
-      '⚠️ Notice: The default fingerprint salt is shared between installations. For repositories containing low-entropy credentials, configure a private repository salt (in .sld/salt) and share it securely with your CI environment.'
-    );
-  }
   const baseline = baselineEngine.saveBaseline(findings);
   console.log(`✅ Saved ${baseline.findings.length} findings to ${DEFAULT_BASELINE_FILENAME}.`);
   console.log('Future CI scans will only fail on newly introduced secrets!\n');
