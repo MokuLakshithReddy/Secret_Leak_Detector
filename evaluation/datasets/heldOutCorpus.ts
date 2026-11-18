@@ -1,10 +1,11 @@
 /**
  * Held-Out Evaluation Corpus for Secret Leak Detector
  *
- * This corpus is ENTIRELY SEPARATE from the generated benchmark corpus and the
- * real-world fixture corpus used during development. It was constructed AFTER
- * detector rules were finalized; no case from this file was used to tune
- * thresholds or patterns.
+ * This corpus is separate from the generated benchmark and development fixtures.
+ * It was constructed after detector rules were finalized; no case was used to tune
+ * thresholds or patterns. Labels were assigned by the project author and have NOT
+ * been independently reviewed. See evaluation/REVIEW_GUIDE.md before using these
+ * results as evidence of detector accuracy.
  *
  * Structure:
  *   - 20 True-Positive (TP) cases: realistic fake credentials in various formats
@@ -264,6 +265,29 @@ export interface EvaluationResult {
   recall: number;
   f1: number;
   fpr: number;
+  confidenceIntervals95: {
+    precision: { lower: number; upper: number };
+    recall: { lower: number; upper: number };
+    fpr: { lower: number; upper: number };
+  };
+}
+
+/**
+ * Wilson score interval for a binomial proportion. The interval describes
+ * sampling uncertainty only; it does not correct for purposive synthetic
+ * sampling or author-assigned labels.
+ */
+export function wilsonInterval(successes: number, trials: number, z = 1.959963984540054): { lower: number; upper: number } {
+  if (!Number.isInteger(successes) || !Number.isInteger(trials) || trials < 0 || successes < 0 || successes > trials) {
+    throw new RangeError('Wilson interval requires integer counts with 0 <= successes <= trials.');
+  }
+  if (trials === 0) return { lower: 0, upper: 1 };
+  const proportion = successes / trials;
+  const zSquared = z * z;
+  const denominator = 1 + zSquared / trials;
+  const center = (proportion + zSquared / (2 * trials)) / denominator;
+  const margin = z * Math.sqrt(proportion * (1 - proportion) / trials + zSquared / (4 * trials * trials)) / denominator;
+  return { lower: Math.max(0, center - margin), upper: Math.min(1, center + margin) };
 }
 
 export async function runHeldOutEvaluation(): Promise<EvaluationResult> {
@@ -305,6 +329,11 @@ export async function runHeldOutEvaluation(): Promise<EvaluationResult> {
   const recall    = tp + fn > 0 ? tp / (tp + fn) : 0;
   const f1        = precision + recall > 0 ? 2 * precision * recall / (precision + recall) : 0;
   const fpr       = tn + fp > 0 ? fp / (tn + fp) : 0;
+  const confidenceIntervals95 = {
+    precision: wilsonInterval(tp, tp + fp),
+    recall: wilsonInterval(tp, tp + fn),
+    fpr: wilsonInterval(fp, fp + tn),
+  };
 
   console.log('');
   console.log('── Confusion Matrix ─────────────────────────────────────────');
@@ -318,9 +347,15 @@ export async function runHeldOutEvaluation(): Promise<EvaluationResult> {
   console.log(`  Recall    : ${(recall * 100).toFixed(1)}%`);
   console.log(`  F1 Score  : ${(f1 * 100).toFixed(1)}%`);
   console.log(`  FP Rate   : ${(fpr * 100).toFixed(1)}%`);
+  console.log('');
+  console.log('── Wilson 95% Confidence Intervals (descriptive) ─────────────');
+  console.log(`  Precision : ${(confidenceIntervals95.precision.lower * 100).toFixed(1)}%–${(confidenceIntervals95.precision.upper * 100).toFixed(1)}%`);
+  console.log(`  Recall    : ${(confidenceIntervals95.recall.lower * 100).toFixed(1)}%–${(confidenceIntervals95.recall.upper * 100).toFixed(1)}%`);
+  console.log(`  FP Rate   : ${(confidenceIntervals95.fpr.lower * 100).toFixed(1)}%–${(confidenceIntervals95.fpr.upper * 100).toFixed(1)}%`);
+  console.log('  Note: intervals do not account for author labelling or non-random sampling.');
   console.log('══════════════════════════════════════════════════════════════');
 
-  return { tp, fp, tn, fn, precision, recall, f1, fpr };
+  return { tp, fp, tn, fn, precision, recall, f1, fpr, confidenceIntervals95 };
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
