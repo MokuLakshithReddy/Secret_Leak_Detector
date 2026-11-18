@@ -1,6 +1,8 @@
 # Validation Methodology — Secret Leak Detector
 
 > **Version:** 1.0.4 | **Document date:** 2026-11
+>
+> **Evidence status:** Internal validation only. The 40-case held-out corpus is author-labelled and has not received independent ground-truth review.
 
 ---
 
@@ -117,6 +119,8 @@ npm run benchmark:heldout
 ```
 
 ### How to read the output
+
+The benchmark also prints two-sided 95% Wilson score intervals for precision, recall, and false-positive rate. With 20/20 TP detections and 20/20 TN rejections, the nominal precision and recall intervals are approximately 83.9%–100.0%; the nominal false-positive-rate interval is 0.0%–16.1%. These wide intervals show how little 20 examples can establish. They describe binomial sampling uncertainty only and do **not** correct for synthetic purposive sampling, author-assigned labels, or distribution shift. They are not production-performance guarantees.
 
 ```
 ══════════════════════════════════════════════════════════════
@@ -274,7 +278,7 @@ tests (groups 3–5), still passing the generation and installation tests (group
 
 ---
 
-## 6. Independent Benchmark Methodology
+## 6. Reproducible Internal Benchmark Methodology (Not Independent Label Validation)
 
 ### Tool versions used for internal reporting
 
@@ -305,7 +309,10 @@ npm run test:manifest        # 17 VS Code manifest & architecture tests
 npm run package              # .vsix packaging
 ```
 
-### Held-out corpus actual results
+### Held-out corpus actual results and evidence limitations
+
+The current 40 labels were authored by the project maintainer and have not been independently adjudicated. Independent reproduction verifies that the detector produces the recorded outputs for these fixtures; it does not verify that the ground-truth labels are unbiased or representative of real repositories. The independent-review requirement remains open until external reviewers complete the protocol in `evaluation/REVIEW_GUIDE.md` and their findings are recorded.
+
 
 See `evaluation/reports/held_out_results.json`. The `expectedResults` object
 contains the confusion matrix recorded on the reference machine. An independent
@@ -326,6 +333,8 @@ proven by the above tests:
 - **macOS / Linux platform equivalence** — the benchmark results were recorded
   on Windows x64. Platform-specific path handling and shell differences have not
   been systematically tested across macOS and Linux.
+
+- **Independent label review** — the held-out labels are author-assigned. No independent evaluator has reviewed the cases or adjudicated disagreements. See `evaluation/REVIEW_GUIDE.md`.
 
 - **Multi-user developer studies** — no human-subject study has been conducted.
   The false-positive and false-negative rates reported here are measured against
