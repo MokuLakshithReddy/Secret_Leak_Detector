@@ -42,6 +42,9 @@ jobs:
           npm run test:manifest
           npm run benchmark:gate
 
+      - name: Verify npm tarball contents
+        run: npm run verify:package
+
       - name: Package Extension & NPM Tarball
         run: |
           npm run package
