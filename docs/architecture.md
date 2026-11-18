@@ -123,7 +123,7 @@ Secret_Leak_Detector/
 │   │   ├── verification/         # Rescan verification and delta comparison
 │   │   ├── baseline/             # CI baseline management (.secretleak-baseline.json)
 │   │   ├── sarif/                # OASIS SARIF v2.1.0 generator for CI/CD
-│   │   └── redactor/             # Masking and cryptographic SHA-256 fingerprinting
+│   │   └── redactor/             # Masking and private-key HMAC-SHA-256 fingerprinting
 │   ├── cli/                      # Standalone CLI entrypoint
 │   ├── diagnostics/              # VS Code diagnostics and QuickFix providers
 │   ├── sidebar/                  # VS Code Activity Bar Tree views
