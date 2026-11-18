@@ -53,6 +53,52 @@ export function getLanguageReplacement(filePath: string, varName: string): strin
   }
 }
 
+/**
+ * Returns true only when the source explicitly loads .env at runtime.
+ * Moving a literal into .env without a loader silently breaks applications,
+ * so unknown runtimes intentionally do not receive the automatic quick fix.
+ */
+export function supportsDotEnvMigration(source: string, filePath: string): boolean {
+  const ext = path.extname(filePath).toLowerCase();
+  switch (ext) {
+    case '.js':
+    case '.jsx':
+    case '.ts':
+    case '.tsx':
+    case '.mjs':
+    case '.cjs': {
+      const directLoader = /(?:import\s*['"]dotenv\/config['"]|require\s*\(\s*['"]dotenv\/config['"]\s*\)|require\s*\(\s*['"]dotenv['"]\s*\)\s*\.\s*config\s*\()/m.test(source);
+      const dotenvBinding = /(?:import\s+[^;\n]+\s+from\s+['"]dotenv['"]|(?:const|let|var)\s+dotenv\s*=\s*require\s*\(\s*['"]dotenv['"]\s*\))/m.test(source);
+      return directLoader || (dotenvBinding && /\bdotenv\s*\.\s*config\s*\(/m.test(source));
+    }
+    case '.py': {
+      const importsOs = /^\s*import\s+os(?:\s|$)/m.test(source);
+      const importsLoader = /(?:^\s*from\s+dotenv\s+import\s+[^\n]*\bload_dotenv\b|^\s*import\s+dotenv\s*$)/m.test(source);
+      const callsLoader = /(?:\bload_dotenv|\bdotenv\s*\.\s*load_dotenv)\s*\(/m.test(source);
+      return importsOs && importsLoader && callsLoader;
+    }
+    case '.go': {
+      const importBlock = source.match(/import\s*\(([\s\S]*?)\)/m)?.[1] || '';
+      const importsOs = /(?:^|\s)"os"/m.test(importBlock) || /^\s*import\s+"os"\s*$/m.test(source);
+      const importsGodotenv = /(?:^|\s)(?:[A-Za-z_][A-Za-z0-9_]*\s+)?"github\.com\/joho\/godotenv"/m.test(importBlock) ||
+        /^\s*import\s+(?:[A-Za-z_][A-Za-z0-9_]*\s+)?"github\.com\/joho\/godotenv"\s*$/m.test(source);
+      return importsOs && importsGodotenv && /godotenv\s*\.\s*Load\s*\(/m.test(source);
+    }
+    case '.rb':
+      return /(?:require\s*['"]dotenv\/(?:load|rails)['"]|Dotenv\s*\.\s*load\s*\()/m.test(source);
+    case '.php':
+      return /Dotenv::create(?:Immutable|Mutable)\s*\([^;]*\)\s*->\s*(?:load|safeLoad)\s*\(/m.test(source);
+    case '.rs':
+      return /(?:dotenv|dotenvy)::dotenv\s*\(/m.test(source);
+    case '.sh':
+    case '.bash':
+    case '.zsh':
+      return /(?:^|\n)\s*(?:source|\.)\s+['"]?\.env(?:['"])?(?:\s|$)/m.test(source);
+    default:
+      return false;
+  }
+}
+
 export function buildRemediationPlan(
   rule: RuleDefinition,
   rawSecret: string,
@@ -116,6 +162,30 @@ export interface ApplyRemediationResult {
   degradedSecurity?: boolean;
   warning?: string;
 }
+
+/**
+ * Reject workspace files that redirect writes through symlinks, hard links, or
+ * paths outside the selected workspace. Remediation must never write secrets
+ * to an arbitrary filesystem target.
+ */
+function assertSafeWorkspaceFile(
+  filePath: string,
+  workspaceRoot: string,
+  purpose: string,
+  fsModule: typeof fs
+): void {
+  const stat = fsModule.lstatSync(filePath);
+  if (stat.isSymbolicLink() || !stat.isFile() || stat.nlink > 1) {
+    throw new Error('Refusing to modify ' + purpose + ': expected a regular, non-symlink file with a single hard link.');
+  }
+  const rootReal = fsModule.realpathSync(workspaceRoot);
+  const fileReal = fsModule.realpathSync(filePath);
+  const relative = path.relative(rootReal, fileReal);
+  if (relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) {
+    throw new Error('Refusing to modify ' + purpose + ': resolved path is outside the workspace.');
+  }
+}
+
 
 /**
  * Resolves a unique environment variable name, avoiding collisions
@@ -447,6 +517,72 @@ export function enforceEnvFilePermissions(
   }
 }
 
+/**
+ * Replace only the exact source span that produced the finding. A repeated
+ * credential elsewhere in the file must not be rewritten as a side effect.
+ * Findings from the direct scanner point at the secret characters; findings
+ * produced by deobfuscation point at the complete source expression.
+ */
+export function replaceFindingSource(
+  content: string,
+  finding: Pick<SecretFinding, 'line' | 'column' | 'length' | 'rawSecret' | 'sourceExpression'>,
+  replacementCode: string
+): string {
+  if (!Number.isInteger(finding.line) || finding.line < 1 ||
+      !Number.isInteger(finding.column) || finding.column < 1 ||
+      !Number.isInteger(finding.length) || finding.length < 1) {
+    throw new Error('Cannot safely remediate a finding with invalid source coordinates.');
+  }
+
+  let lineStart = 0;
+  for (let line = 1; line < finding.line; line++) {
+    const newline = content.indexOf('\n', lineStart);
+    if (newline === -1) {
+      throw new Error('Cannot safely remediate: finding line is outside the current source file.');
+    }
+    lineStart = newline + 1;
+  }
+
+  const sourceStart = lineStart + finding.column - 1;
+  if (sourceStart > content.length) {
+    throw new Error('Cannot safely remediate: finding column is outside the current source line.');
+  }
+
+  if (finding.sourceExpression !== undefined) {
+    const sourceEnd = sourceStart + finding.length;
+    const actualExpression = content.slice(sourceStart, sourceEnd);
+    if (actualExpression !== finding.sourceExpression) {
+      throw new Error('Cannot safely remediate: the detected source expression has changed. Rescan before retrying.');
+    }
+
+    const leadingWhitespace = actualExpression.match(/^\s*/)?.[0] || '';
+    const trailingWhitespace = actualExpression.match(/\s*$/)?.[0] || '';
+    if (leadingWhitespace.length + trailingWhitespace.length >= actualExpression.length) {
+      throw new Error('Cannot safely remediate: the detected source expression is empty or ambiguous.');
+    }
+
+    return content.slice(0, sourceStart) + leadingWhitespace + replacementCode +
+      trailingWhitespace + content.slice(sourceEnd);
+  }
+
+  const secretEnd = sourceStart + finding.rawSecret.length;
+  if (content.slice(sourceStart, secretEnd) !== finding.rawSecret) {
+    throw new Error('Cannot safely remediate: the detected credential has moved or changed. Rescan before retrying.');
+  }
+
+  let replaceStart = sourceStart;
+  let replaceEnd = secretEnd;
+  const quoteBefore = content[replaceStart - 1];
+  const quoteAfter = content[replaceEnd];
+  if ((quoteBefore === '"' || quoteBefore === "'" || quoteBefore === '`') &&
+      quoteAfter === quoteBefore) {
+    replaceStart--;
+    replaceEnd++;
+  }
+
+  return content.slice(0, replaceStart) + replacementCode + content.slice(replaceEnd);
+}
+
 export function applyControlledRemediation(
   finding: SecretFinding,
   workspaceRoot: string,
@@ -476,7 +612,16 @@ export function applyControlledRemediation(
       };
     }
 
+    assertSafeWorkspaceFile(targetFile, workspaceRoot, 'source file', fsModule);
     originalFileContent = fsModule.readFileSync(targetFile, 'utf8');
+    if (!supportsDotEnvMigration(originalFileContent, targetFile)) {
+      return {
+        success: false,
+        message: 'Automatic .env migration is unavailable: no supported .env runtime loader was detected in this file. Configure the environment loader first, then retry.',
+        envPath: '',
+        modifiedFile: targetFile,
+      };
+    }
     const secretToSearch = finding.sourceExpression || finding.rawSecret;
     if (!originalFileContent.includes(secretToSearch) && !originalFileContent.includes(finding.rawSecret)) {
       return {
@@ -490,17 +635,21 @@ export function applyControlledRemediation(
     // 1. Read existing .env if present and determine unique variable name
     let envContent = '';
     if (fsModule.existsSync(envPath)) {
+      assertSafeWorkspaceFile(envPath, workspaceRoot, '.env file', fsModule);
       originalEnvContent = fsModule.readFileSync(envPath, 'utf8');
       envContent = originalEnvContent;
     } else {
+      // wx is exclusive: if another process creates a file or symlink after the
+      // existence check, this write fails instead of following or truncating it.
+      fsModule.writeFileSync(envPath, '', { flag: 'wx', mode: 0o600, encoding: 'utf8' });
       envWasNewlyCreated = true;
-      try {
-        fsModule.writeFileSync(envPath, '', { mode: 0o600, encoding: 'utf8' });
-      } catch {}
     }
+    // Revalidate after creation as well, before chmod/ACL operations or secret writes.
+    assertSafeWorkspaceFile(envPath, workspaceRoot, '.env file', fsModule);
 
     // Snapshot .gitignore state before mutation
     if (fsModule.existsSync(gitignorePath)) {
+      assertSafeWorkspaceFile(gitignorePath, workspaceRoot, '.gitignore file', fsModule);
       originalGitignoreContent = fsModule.readFileSync(gitignorePath, 'utf8');
     } else {
       gitignoreWasNewlyCreated = true;
@@ -509,27 +658,26 @@ export function applyControlledRemediation(
     const suggestedName = finding.remediation?.envVarName || 'API_KEY';
     const { varName, isReused } = resolveUniqueEnvVarName(envContent, suggestedName, finding.rawSecret);
     const replacementCode = getLanguageReplacement(targetFile, varName);
+    // Validate the exact source span before mutating .env or any configuration file.
+    const newContent = replaceFindingSource(originalFileContent, finding, replacementCode);
     const escapedValue = escapeEnvValue(finding.rawSecret);
     const envLine = `${varName}="${escapedValue}"\n`;
 
     // 2. Ensure .gitignore protects .env BEFORE writing credentials to disk
     ensureGitignoreProtectsEnv(workspaceRoot);
 
-    // 3. Write to .env and enforce 0600 mode
+    // 3. Enforce owner-only protection BEFORE writing credential material.
+    const envProtection = enforceEnvFilePermissions(envPath, fsModule, targetPlatform, cpModule);
+    if (!envProtection.enforced) {
+      throw new Error(`Could not enforce private .env permissions (${envProtection.details || 'unsupported filesystem'}). No credential was written.`);
+    }
     if (!isReused) {
       const prefix = envContent.endsWith('\n') || envContent.length === 0 ? '' : '\n';
       fsModule.appendFileSync(envPath, `${prefix}${envLine}`, 'utf8');
     }
-    const envProtection = enforceEnvFilePermissions(envPath, fsModule, targetPlatform, cpModule);
-    let degradedSecurity = false;
-    let warning: string | undefined;
-    let message = `Successfully migrated ${finding.type} to .env (${varName}) and replaced in ${finding.file}.`;
-
-    if (!envProtection.enforced) {
-      degradedSecurity = true;
-      warning = `DEGRADED FILE SECURITY: Environment file permissions could not be enforced on '${envPath}' (${envProtection.details || 'unsupported filesystem'}). The environment file may be readable by other local users.`;
-      message = `[DEGRADED SECURITY] Migrated ${finding.type} to .env (${varName}) and replaced in ${finding.file}, but file permissions could not be enforced (${envProtection.details || 'unsupported filesystem'}).`;
-    }
+    const degradedSecurity = false;
+    const warning: string | undefined = undefined;
+    const message = `Successfully migrated ${finding.type} to .env (${varName}) and replaced in ${finding.file}.`;
 
     // 4. Update .env.example
     const envExamplePath = path.join(workspaceRoot, '.env.example');
@@ -538,6 +686,7 @@ export function applyControlledRemediation(
     if (!envExampleExists) {
       envExampleWasNewlyCreated = true;
     } else {
+      assertSafeWorkspaceFile(envExamplePath, workspaceRoot, '.env.example file', fsModule);
       originalEnvExampleContent = fsModule.readFileSync(envExamplePath, 'utf8');
     }
     if (!envExampleExists || !fsModule.readFileSync(envExamplePath, 'utf8').includes(varName)) {
@@ -546,24 +695,7 @@ export function applyControlledRemediation(
       fsModule.appendFileSync(envExamplePath, `${exPrefix}${exampleLine}`, 'utf8');
     }
 
-    // 5. Replace secret literal in source file, stripping enclosing quotes so replacementCode is evaluated
-    let newContent = originalFileContent;
-    const targetExpr = finding.sourceExpression || finding.rawSecret;
-    const doubleQuoted = `"${targetExpr}"`;
-    const singleQuoted = `'${targetExpr}'`;
-    const backtickQuoted = `\`${targetExpr}\``;
-
-    if (newContent.includes(doubleQuoted)) {
-      newContent = newContent.replace(new RegExp(escapeRegExp(doubleQuoted), 'g'), replacementCode);
-    } else if (newContent.includes(singleQuoted)) {
-      newContent = newContent.replace(new RegExp(escapeRegExp(singleQuoted), 'g'), replacementCode);
-    } else if (newContent.includes(backtickQuoted)) {
-      newContent = newContent.replace(new RegExp(escapeRegExp(backtickQuoted), 'g'), replacementCode);
-    } else if (newContent.includes(targetExpr)) {
-      newContent = newContent.replace(new RegExp(escapeRegExp(targetExpr), 'g'), replacementCode);
-    } else {
-      newContent = newContent.replace(new RegExp(escapeRegExp(finding.rawSecret), 'g'), replacementCode);
-    }
+    // 5. Write the prevalidated source replacement atomically as part of the rollback transaction.
 
     fsModule.writeFileSync(targetFile, newContent, 'utf8');
 
