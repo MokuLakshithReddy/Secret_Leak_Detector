@@ -204,6 +204,20 @@ function main() {
       throw new Error('Pre-commit hook was not removed by installed CLI hook uninstall.');
     }
     console.log('Installed npm tarball pre-commit hook uninstallation passed.');
+
+    // 4. SBOM verification smoke test
+    const sbomTempPath = path.join(tempRoot, 'sbom.test.json');
+    execFileSync(process.execPath, [path.join(process.cwd(), 'scripts', 'generate-sbom.js'), '--output', sbomTempPath], {
+      cwd: tempRoot,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    execFileSync(process.execPath, [path.join(process.cwd(), 'scripts', 'generate-sbom.js'), '--verify', sbomTempPath], {
+      cwd: tempRoot,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    console.log('Release SBOM generation and cryptographic verification smoke test passed.');
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }

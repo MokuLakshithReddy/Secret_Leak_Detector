@@ -1,6 +1,13 @@
 export type Risk = 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW';
 export type Status = 'BLOCKED' | 'RESOLVED' | 'ACTIVE' | 'BASELINE';
 
+export type ScanState = 'CLEAN' | 'FINDINGS' | 'INCOMPLETE' | 'ERROR';
+
+export interface SkippedFile {
+  file: string;
+  reason: string;
+}
+
 export type SignalType =
   | 'KNOWN_PATTERN_MATCH'
   | 'HIGH_ENTROPY'
@@ -160,12 +167,14 @@ export interface SecretFinding {
 }
 
 export interface ScanResult {
+  scanState: ScanState;
   findings: SecretFinding[];
   filesScanned: number;
   durationMs: number;
   timestamp: string;
   isClean: boolean;
   blocked: boolean;
+  skippedFiles?: SkippedFile[];
   riskSummary: {
     critical: number;
     high: number;

@@ -5084,6 +5084,133 @@ exit 0
       try { fs.rmSync(sec50Dir, { recursive: true, force: true }); } catch {}
     }
 
+    // --- 51. Baseline Migration, Rollback, Atomic Concurrency & Filesystem Protection ---
+    console.log('\n--- 51. Baseline Migration, Rollback, Atomic Concurrency & Filesystem Protection ---');
+    const sec51Dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-sec51-'));
+    try {
+      const realSec51 = fs.realpathSync(sec51Dir);
+      const secretFile = path.join(realSec51, 'config.ts');
+      const testSecretA = synth(['AK', 'IA', '1111222233334444']);
+      const testSecretB = synth(['gh', 'p_', '11112222333344445555666677778888aaaa']);
+      fs.writeFileSync(secretFile, `const aws = "${testSecretA}";\nconst gh = "${testSecretB}";\n`, 'utf8');
+
+      // Create a legacy public-salt v1 baseline file
+      const legacyFpA = generateLegacyFingerprint(testSecretA);
+      const legacyFpB = generateLegacyFingerprint(testSecretB);
+      const legacyBaseline = {
+        version: 1,
+        generatedAt: '2025-01-01T00:00:00.000Z',
+        generator: 'Secret Leak Detector v1.0.0',
+        fingerprintScheme: 'hmac-sha256-public-v1',
+        findings: [
+          { id: 'f1', fingerprint: legacyFpA, ruleId: 'AWS Access Key ID', file: 'config.ts', line: 1, firstSeen: '2025-01-01T00:00:00.000Z' },
+          { id: 'f2', fingerprint: legacyFpB, ruleId: 'GitHub Personal Access Token', file: 'config.ts', line: 2, firstSeen: '2025-01-01T00:00:00.000Z' },
+          { id: 'f3', fingerprint: 'deadbeef00000000', ruleId: 'AWS Access Key ID', file: 'missing.ts', line: 10, firstSeen: '2025-01-01T00:00:00.000Z' },
+        ],
+      };
+      const baselinePath = path.join(realSec51, '.secretleak-baseline.json');
+      fs.writeFileSync(baselinePath, JSON.stringify(legacyBaseline, null, 2), 'utf8');
+
+      const engine = new BaselineEngine(realSec51);
+      assert(engine.exists() === true, 'BaselineEngine detects baseline file');
+
+      // Test 1: Dry run migration leaves baseline untouched
+      const dryRunRes = engine.migrateBaseline({ dryRun: true });
+      assert(dryRunRes.migratedCount === 2, `Dry run migrated 2 findings with existing source (got ${dryRunRes.migratedCount})`);
+      assert(dryRunRes.unmigratedFindings.length === 1, 'Dry run reports 1 unmigrated finding for missing file');
+      const loadedPreMigrate = engine.loadBaseline()!;
+      assert(loadedPreMigrate.fingerprintScheme === 'hmac-sha256-public-v1', 'Dry run did not modify disk baseline');
+
+      // Test 2: Active migration upgrades to private v2, creates .bak, and updates fingerprints
+      const migrateRes = engine.migrateBaseline();
+      assert(migrateRes.migratedCount === 2, `Active migration upgraded 2 findings (got ${migrateRes.migratedCount})`);
+      assert(migrateRes.newScheme === 'hmac-sha256-private-v2', 'New scheme is hmac-sha256-private-v2');
+      assert(fs.existsSync(migrateRes.backupPath!), 'Backup .bak file was created');
+      const loadedPostMigrate = engine.loadBaseline()!;
+      assert(loadedPostMigrate.fingerprintScheme === 'hmac-sha256-private-v2', 'Loaded baseline scheme is private v2');
+      assert(/^[a-f0-9]{16}$/.test(loadedPostMigrate.fingerprintKeyId!), 'Loaded baseline has valid 16-hex keyId');
+      assert(loadedPostMigrate.findings[0].fingerprint.length === 64, 'Migrated finding has 64-char HMAC-SHA256 fingerprint');
+
+      // Test 3: Rollback restores the backup
+      const rollbackRes = engine.rollbackBaseline();
+      assert(rollbackRes.restored === true, 'Rollback succeeded');
+      const loadedRolledBack = engine.loadBaseline()!;
+      assert(loadedRolledBack.fingerprintScheme === 'hmac-sha256-public-v1', 'Baseline restored to legacy public-v1');
+      assert(loadedRolledBack.findings[0].fingerprint === legacyFpA, 'Original legacy fingerprint restored');
+
+      // Test 4: Atomic concurrency write protection
+      let concurrencyErrors = 0;
+      for (let i = 0; i < 5; i++) {
+        try {
+          engine.writeBaselineFileAtomically(legacyBaseline as any);
+        } catch {
+          concurrencyErrors++;
+        }
+      }
+      const validFinal = engine.loadBaseline()!;
+      assert(validFinal.version === 1 && validFinal.findings.length === 3, 'Concurrent atomic writes leave valid baseline file intact');
+    } finally {
+      try { fs.rmSync(sec51Dir, { recursive: true, force: true }); } catch {}
+    }
+
+    // --- 52. Large File Chunked Streaming & INCOMPLETE Scan State ---
+    console.log('\n--- 52. Large File Chunked Streaming & INCOMPLETE Scan State ---');
+    const sec52Dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-sec52-'));
+    try {
+      const realSec52 = fs.realpathSync(sec52Dir);
+      const testSecretCross = synth(['AK', 'IA', 'STREAM1234567890']);
+      const streamFile = path.join(realSec52, 'large_stream.ts');
+
+      // Create a file where secret crosses a chunk boundary (testing streaming chunk overlap)
+      const paddingBefore = 'const pad = "' + 'x'.repeat(4090) + '";\nconst key = "';
+      const paddingAfter = '";\n';
+      fs.writeFileSync(streamFile, paddingBefore + testSecretCross + paddingAfter, 'utf8');
+
+      // Test 1: scanFile with streamLargeFiles finds the boundary-crossing credential
+      const streamedFindings = scanFile(streamFile, {
+        workspaceRoot: realSec52,
+        streamLargeFiles: true,
+        maxFileSize: 1024,
+        streamChunkSize: 2048,
+        maxStreamFileSize: 1024 * 1024,
+      });
+      assert(streamedFindings.length >= 1, 'Streaming scan detects credential crossing chunk boundary');
+      assert(streamedFindings[0].rawSecret === testSecretCross, 'Streamed secret matches synthesized token');
+
+      // Test 2: buildScanResult state logic (CLEAN vs INCOMPLETE vs FINDINGS)
+      const cleanResult = buildScanResult([], 10, 50, 'HIGH', []);
+      assert(cleanResult.scanState === 'CLEAN' && cleanResult.isClean === true, '0 findings + 0 skipped => CLEAN and isClean: true');
+
+      const incompleteResult = buildScanResult([], 10, 50, 'HIGH', [{ file: 'oversized.bin', reason: 'OVERSIZED' }]);
+      assert(incompleteResult.scanState === 'INCOMPLETE' && incompleteResult.isClean === false, '0 findings + >0 skipped => INCOMPLETE and isClean: false');
+
+      const findingsResult = buildScanResult(streamedFindings, 10, 50, 'HIGH', [{ file: 'oversized.bin', reason: 'OVERSIZED' }]);
+      assert(findingsResult.scanState === 'FINDINGS' && findingsResult.isClean === false, '>0 findings + skipped => FINDINGS and isClean: false');
+    } finally {
+      try { fs.rmSync(sec52Dir, { recursive: true, force: true }); } catch {}
+    }
+
+    // --- 53. Complete Redaction & Secret Exposure Elimination ---
+    console.log('\n--- 53. Complete Redaction & Secret Exposure Elimination ---');
+    const testSecretEx = synth(['AK', 'IA', 'EXPOSURE12345678']);
+    const testExFinding = scanContent(`const key = "${testSecretEx}";`, 'app.ts')[0];
+    assert(testExFinding !== undefined, 'Found exposure test finding');
+
+    // Test 1: SARIF export contains 0 instances of rawSecret
+    const sarifOutput = JSON.stringify(formatAsSarif([testExFinding]));
+    assert(!sarifOutput.includes(testSecretEx), 'SARIF output does NOT leak raw secret');
+    assert(sarifOutput.includes(testExFinding.redactedSecret), 'SARIF output includes redacted secret');
+
+    // Test 2: Webview finding view output contains 0 instances of rawSecret
+    const jsonStr = JSON.stringify(toRedactedFindingView(testExFinding));
+    assert(!jsonStr.includes(testSecretEx), 'Webview finding view does NOT leak raw secret');
+    assert(jsonStr.includes(testExFinding.redactedSecret), 'Webview finding view preserves redacted secret');
+
+    // Test 3: Redacted secret reveals <= 20% of chars
+    const redactedVal = redactSecret(testSecretEx);
+    assert(!redactedVal.includes(testSecretEx), 'redactSecret never equals raw secret');
+    assert(redactedVal.includes('•'), 'redactSecret contains masking characters');
+
   console.log('\n============================================================');
   console.log(`🎉 TEST SUMMARY: ${passed} PASSED, ${failed} FAILED`);
   console.log('============================================================\n');

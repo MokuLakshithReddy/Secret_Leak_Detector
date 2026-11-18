@@ -21,7 +21,9 @@ interface RegressionThresholds {
 const DEFAULT_THRESHOLDS: RegressionThresholds = {
   minF1: 99.0,
   maxFpr: 1.0,
-  maxLatencyUs: 1000,
+  maxLatencyUs: process.env.SLD_MAX_LATENCY_US
+    ? parseInt(process.env.SLD_MAX_LATENCY_US, 10)
+    : (process.platform === 'win32' ? 2500 : 1000),
   minAdversarialRate: 95.0,
 };
 

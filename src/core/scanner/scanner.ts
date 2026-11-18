@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
-import { SecretFinding, ScanResult, RuleDefinition, Risk } from '../types';
+import { SecretFinding, ScanResult, RuleDefinition, Risk, SkippedFile, ScanState } from '../types';
 import { DEFAULT_FAIL_ON, shouldBlock } from '../policy';
 import { CORE_RULES } from '../detectors/rules';
 import { analyzeFileContext, analyzeLexicalContext } from '../context/contextAnalyzer';
@@ -21,11 +21,15 @@ export interface ScannerOptions {
   ignoreSkipped?: boolean;
   failOnSkipped?: boolean;
   maxFileSize?: number;
+  streamLargeFiles?: boolean;
+  streamChunkSize?: number;
+  maxStreamFileSize?: number;
+  maxFiles?: number;
   cachedSourceFile?: any;
   onSourceFileParsed?: (sourceFile: any) => void;
 }
 
-function getFileIdPart(relativePath: string): string {
+export function getFileIdPart(relativePath: string): string {
   return crypto.createHash('sha256').update(relativePath.replace(/\\/g, '/')).digest('hex').slice(0, 8);
 }
 
@@ -495,6 +499,71 @@ export function scanContent(
   return deduplicateFindings(findings);
 }
 
+export function scanFileStream(
+  filePath: string,
+  options: ScannerOptions = {},
+  fileSize: number,
+  chunkSize: number = 10 * 1024 * 1024,
+  overlapBytes: number = 4096
+): SecretFinding[] {
+  const findings: SecretFinding[] = [];
+  const fd = fs.openSync(filePath, fs.constants.O_RDONLY);
+  try {
+    let fileOffset = 0;
+    let currentLineOffset = 0;
+    let prevReadStart = 0;
+    let isFirstChunk = true;
+
+    while (fileOffset < fileSize) {
+      const readStart = isFirstChunk ? 0 : Math.max(0, fileOffset - overlapBytes);
+      const readLength = Math.min(chunkSize + (isFirstChunk ? 0 : overlapBytes), fileSize - readStart);
+      const buffer = Buffer.alloc(readLength);
+      const bytesRead = fs.readSync(fd, buffer, 0, readLength, readStart);
+      if (bytesRead <= 0) break;
+
+      const chunkBuf = bytesRead < readLength ? buffer.subarray(0, bytesRead) : buffer;
+      const decoded = decodeTextBuffer(chunkBuf);
+      if (decoded === null) {
+        options.onSkippedFile?.(filePath, 'Dense binary content with no extractable text');
+        return [];
+      }
+
+      // If not first chunk, count newlines between prevReadStart and readStart
+      if (!isFirstChunk && readStart > prevReadStart) {
+        // Read the intermediate region to count newlines exactly
+        const intermediateLen = readStart - prevReadStart;
+        const interBuf = Buffer.alloc(intermediateLen);
+        fs.readSync(fd, interBuf, 0, intermediateLen, prevReadStart);
+        for (let i = 0; i < intermediateLen; i++) {
+          if (interBuf[i] === 10) currentLineOffset++;
+        }
+      }
+
+      const chunkOptions: ScannerOptions = {
+        ...options,
+        cachedSourceFile: null,
+      };
+      const chunkFindings = scanContent(decoded, filePath, chunkOptions);
+
+      for (const cf of chunkFindings) {
+        findings.push({
+          ...cf,
+          line: cf.line + currentLineOffset,
+        });
+      }
+
+      prevReadStart = readStart;
+      fileOffset = readStart + bytesRead;
+      isFirstChunk = false;
+      if (bytesRead < readLength) break;
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+
+  return deduplicateFindings(findings);
+}
+
 export function scanFile(filePath: string, options: ScannerOptions = {}): SecretFinding[] {
   try {
     if (!fs.existsSync(filePath)) {
@@ -507,6 +576,9 @@ export function scanFile(filePath: string, options: ScannerOptions = {}): Secret
     }
     const effectiveLimit = options.maxFileSize ?? (50 * 1024 * 1024);
     if (stat.size > effectiveLimit) {
+      if (options.streamLargeFiles && stat.size <= (options.maxStreamFileSize ?? (1024 * 1024 * 1024))) {
+        return scanFileStream(filePath, options, stat.size, options.streamChunkSize);
+      }
       const maxMb = Math.round(effectiveLimit / (1024 * 1024));
       options.onSkippedFile?.(filePath, `File exceeds ${maxMb}MB limit (${(stat.size / 1024 / 1024).toFixed(1)}MB)`);
       return [];
@@ -556,7 +628,8 @@ export function buildScanResult(
   findings: SecretFinding[],
   filesScanned: number,
   durationMs: number,
-  failOn: Risk = DEFAULT_FAIL_ON
+  failOn: Risk = DEFAULT_FAIL_ON,
+  skippedFiles: SkippedFile[] = []
 ): ScanResult {
   const riskSummary = {
     critical: findings.filter((f) => f.risk === 'CRITICAL').length,
@@ -566,14 +639,26 @@ export function buildScanResult(
   };
 
   const blocked = shouldBlock(findings, failOn);
+  const isClean = findings.length === 0 && skippedFiles.length === 0;
+
+  let scanState: ScanState;
+  if (findings.length > 0) {
+    scanState = 'FINDINGS';
+  } else if (skippedFiles.length > 0) {
+    scanState = 'INCOMPLETE';
+  } else {
+    scanState = 'CLEAN';
+  }
 
   return {
+    scanState,
     findings,
     filesScanned,
     durationMs,
     timestamp: new Date().toISOString(),
-    isClean: findings.length === 0,
+    isClean,
     blocked,
     riskSummary,
+    skippedFiles: skippedFiles.length > 0 ? skippedFiles : undefined,
   };
 }

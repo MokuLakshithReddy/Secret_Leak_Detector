@@ -69,13 +69,13 @@ export class FindingsTreeProvider implements vscode.TreeDataProvider<TreeItem>, 
       const risk = element.contextValue as Risk;
       const matching = this.findings.filter((f) => f.risk === risk);
 
-      const redact = vscode.workspace.getConfiguration('secretLeakDetector').get<boolean>('redactSecrets', true);
       const items = matching.map((f) => {
         const item = new TreeItem(
           `${f.type}`,
           vscode.TreeItemCollapsibleState.None
         );
-        const secretDisplay = redact ? f.redactedSecret : f.rawSecret;
+        // Secrets must always remain redacted in UI tree items and tooltips to prevent accidental screen/log leakage
+        const secretDisplay = f.redactedSecret;
         const fixCode = typeof f.remediation?.replacementCode === 'string'
           ? f.remediation.replacementCode
           : typeof f.remediation?.envVarName === 'string'
