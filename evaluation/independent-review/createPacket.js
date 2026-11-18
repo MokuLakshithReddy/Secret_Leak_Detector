@@ -108,12 +108,12 @@ const worksheetPath = path.join(outputDirectory, `review-worksheet-${packetId}.c
 
 try {
   fs.mkdirSync(outputDirectory, { recursive: true, mode: 0o700 });
-  fs.writeFileSync(packetPath, JSON.stringify(packet, null, 2) + '\\n', { encoding: 'utf8', mode: 0o600 });
+  fs.writeFileSync(packetPath, JSON.stringify(packet, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
 
   const worksheet = [
     ['packetId', 'caseId', 'classification', 'rationale'].map(csvCell).join(','),
     ...cases.map((entry) => [packetId, entry.caseId, '', ''].map(csvCell).join(',')),
-  ].join('\\n') + '\\n';
+  ].join('\n') + '\n';
   fs.writeFileSync(worksheetPath, worksheet, { encoding: 'utf8', mode: 0o600 });
 } catch (error) {
   fail(error && error.message ? error.message : String(error));
