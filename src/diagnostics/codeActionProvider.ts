@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { DiagnosticProvider } from './diagnosticProvider';
 import { SecretFinding } from '../core/types';
-import { applyControlledRemediation } from '../core/remediation/remediationEngine';
+import { applyControlledRemediation, supportsDotEnvMigration } from '../core/remediation/remediationEngine';
 
 export class SecretCodeActionProvider implements vscode.CodeActionProvider {
   public static readonly providedCodeActionKinds = [vscode.CodeActionKind.QuickFix];
@@ -47,7 +47,8 @@ export class SecretCodeActionProvider implements vscode.CodeActionProvider {
       // QuickFix 1: Move to .env (only for saved workspace files on disk)
       const hasWorkspaceFolder = !!vscode.workspace.getWorkspaceFolder(document.uri);
       const isRealFile = !document.isUntitled && document.uri.scheme === 'file';
-      if (hasWorkspaceFolder && isRealFile) {
+      const hasEnvLoader = supportsDotEnvMigration(document.getText(), document.uri.fsPath);
+      if (hasWorkspaceFolder && isRealFile && hasEnvLoader) {
         const moveToEnvAction = this.createMoveToEnvAction(document, diagnostic.range, finding);
         actions.push(moveToEnvAction);
       }

@@ -11,7 +11,7 @@ import { DETECTOR_RULES } from '../src/core/detectors/rules';
 import { calculateRiskAssessment } from '../src/core/risk/riskEngine';
 import { GitTimelineEngine } from '../src/core/history/gitTimeline';
 import { GitService } from '../src/git/gitService';
-import { applyControlledRemediation, resolveUniqueEnvVarName, escapeEnvValue, enforceEnvFilePermissions, getCurrentSecurityPrincipal, isPrincipalAuthorized } from '../src/core/remediation/remediationEngine';
+import { applyControlledRemediation, resolveUniqueEnvVarName, escapeEnvValue, enforceEnvFilePermissions, getCurrentSecurityPrincipal, isPrincipalAuthorized, supportsDotEnvMigration, replaceFindingSource } from '../src/core/remediation/remediationEngine';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as cp from 'child_process';
@@ -72,6 +72,83 @@ for (const testCase of scanResultThresholdCases) {
   );
 }
 assert(buildScanResult([], 0, 0, 'LOW').blocked === false, 'An empty scan never blocks at any threshold');
+
+
+
+console.log('\n--- Safe .env Remediation Eligibility ---');
+assert(
+  supportsDotEnvMigration("import 'dotenv/config';\nconst token = 'placeholder';", 'app.ts'),
+  'Node quick fix requires an explicit dotenv/config loader'
+);
+assert(
+  supportsDotEnvMigration("import os\nfrom dotenv import load_dotenv\nload_dotenv()", 'app.py'),
+  'Python quick fix requires both os and dotenv imports'
+);
+assert(
+  !supportsDotEnvMigration("from dotenv import load_dotenv\nload_dotenv()", 'app.py'),
+  'Python quick fix is withheld when os is not imported'
+);
+assert(
+  supportsDotEnvMigration('import ("os"\n"github.com/joho/godotenv")\ngodotenv.Load()', 'main.go'),
+  'Go quick fix requires both os and godotenv imports'
+);
+assert(
+  !supportsDotEnvMigration('godotenv.Load()', 'main.go'),
+  'Go quick fix is withheld when required imports are absent'
+);
+assert(
+  !supportsDotEnvMigration("dotenv.config();\nconst token = 'placeholder';", 'app.ts'),
+  'Node quick fix is withheld for an unbound dotenv.config call'
+);
+assert(
+  !supportsDotEnvMigration("const token = 'placeholder';", 'app.ts'),
+  'Node quick fix is withheld when no .env loader is detected'
+);
+assert(
+  !supportsDotEnvMigration("const token = 'placeholder';", 'config.yaml'),
+  'Unknown configuration runtimes do not receive automatic .env migration'
+);
+
+console.log('\n--- Exact-Span Remediation Safety ---');
+const repeatedCredential = 'repeated_credential_value_123456';
+const repeatedSource = "import 'dotenv/config';\n" +
+  'const first = "' + repeatedCredential + '";\n' +
+  'const second = "' + repeatedCredential + '";\n';
+const secondLine = 'const second = "' + repeatedCredential + '";';
+const repeatedColumn = secondLine.indexOf(repeatedCredential) + 1;
+const exactReplacement = replaceFindingSource(repeatedSource, {
+  line: 3,
+  column: repeatedColumn,
+  length: repeatedCredential.length,
+  rawSecret: repeatedCredential,
+}, 'process.env.SECRET');
+assert(exactReplacement.includes('const first = "' + repeatedCredential + '";'), 'Exact-span remediation leaves identical credentials at other locations untouched');
+assert(exactReplacement.includes('const second = process.env.SECRET;'), 'Exact-span remediation replaces only the finding location');
+
+const splitExpression = '"ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz"';
+const splitSource = "import 'dotenv/config';\nconst token = " + splitExpression + ';\n';
+const splitColumn = splitSource.split('\n')[1].indexOf(splitExpression) + 1;
+const splitReplacement = replaceFindingSource(splitSource, {
+  line: 2,
+  column: splitColumn,
+  length: splitExpression.length,
+  rawSecret: 'ghp_1234567890abcdefghijklmnopqrstuvwxyz',
+  sourceExpression: splitExpression,
+}, 'process.env.GITHUB_TOKEN');
+assert(splitReplacement.includes('const token = process.env.GITHUB_TOKEN;'), 'Deobfuscated finding replaces its exact original expression');
+
+let staleSourceRejected = false;
+try {
+  replaceFindingSource(repeatedSource, {
+    line: 3,
+    column: repeatedColumn,
+    length: repeatedCredential.length,
+    rawSecret: 'different_credential_value_123',
+  }, 'process.env.SECRET');
+} catch {
+  staleSourceRejected = true;
+}
+assert(staleSourceRejected, 'Exact-span remediation fails closed when the source no longer matches the finding');
 
 console.log('============================================================');
 console.log('🧪 RUNNING COMPREHENSIVE SECURITY ENGINEERING TEST SUITE');
@@ -543,29 +620,36 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
     const w = path.join(remScratchRoot, 'ws-' + Date.now() + '-' + Math.random().toString(36).slice(2));
     fs.rmSync(w, { recursive: true, force: true });
     fs.mkdirSync(w, { recursive: true });
-    fs.writeFileSync(path.join(w, 'config.ts'), `const key = "${remSecret}";\n`);
+    fs.writeFileSync(path.join(w, 'config.ts'), `import 'dotenv/config';\nconst key = "${remSecret}";\n`);
     fs.writeFileSync(path.join(w, '.env'), 'OTHER="x"\n');
     fs.writeFileSync(path.join(w, '.gitignore'), 'node_modules\n');
     fs.writeFileSync(path.join(w, '.env.example'), 'OTHER=example\n');
     return w;
   };
 
-  const finding = (w: string): any => ({
-    type: 'AWS Access Key ID',
-    provider: 'Amazon Web Services',
-    file: 'config.ts',
-    fullPath: path.join(w, 'config.ts'),
-    rawSecret: remSecret,
-    remediation: {
-      envVarName: 'AWS_ACCESS_KEY_ID',
-      replacementCode: 'process.env.AWS_ACCESS_KEY_ID',
-      steps: [],
-      envFileSnippet: '',
-      envExampleSnippet: '',
-      gitHistoryPurgeCommand: '',
-      diffPreview: '',
-    },
-  });
+  const finding = (w: string): any => {
+    const source = fs.readFileSync(path.join(w, 'config.ts'), 'utf8');
+    const sourceLine = source.split(/\r?\n/)[1] || '';
+    return {
+      type: 'AWS Access Key ID',
+      provider: 'Amazon Web Services',
+      file: 'config.ts',
+      fullPath: path.join(w, 'config.ts'),
+      line: 2,
+      column: sourceLine.indexOf(remSecret) + 1,
+      length: remSecret.length,
+      rawSecret: remSecret,
+      remediation: {
+        envVarName: 'AWS_ACCESS_KEY_ID',
+        replacementCode: 'process.env.AWS_ACCESS_KEY_ID',
+        steps: [],
+        envFileSnippet: '',
+        envExampleSnippet: '',
+        gitHistoryPurgeCommand: '',
+        diffPreview: '',
+      },
+    };
+  };
 
   const assertOriginalPreserved = (w: string, msg: string) => {
     const content = fs.readFileSync(path.join(w, 'config.ts'), 'utf8');
@@ -2036,7 +2120,7 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
       // 3. applyControlledRemediation handles findings with sourceExpression
       const remDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-rem-src-expr-'));
       const remFile = path.join(remDir, 'test.js');
-      fs.writeFileSync(remFile, 'const token = "part1_" + "part2_abcdef1234567890";\n', 'utf8');
+      fs.writeFileSync(remFile, `import 'dotenv/config';\nconst token = "part1_" + "part2_abcdef1234567890";\n`, 'utf8');
       const fakeFinding: any = {
         id: 'finding_expr_1',
         type: 'Generic API Key',
@@ -2046,8 +2130,9 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
         redactedSecret: 'part••••••••••••',
         file: 'test.js',
         fullPath: remFile,
-        line: 1,
-        column: 15,
+        line: 2,
+        column: (fs.readFileSync(remFile, 'utf8').split(/\r?\n/)[1] || '').indexOf('"part1_" + "part2_abcdef1234567890"') + 1,
+        length: '"part1_" + "part2_abcdef1234567890"'.length,
         remediation: { envVarName: 'TEST_API_KEY' },
       };
       const remRes = applyControlledRemediation(fakeFinding, remDir);
@@ -3623,15 +3708,19 @@ exit 0
       // 3. Remediation communicates degraded security state when Windows ACLs are unsupported
       const remEnv = path.join(shallowRepoDir, '.env');
       fs.writeFileSync(remEnv, 'VAR="val"\n', 'utf8');
+      const degradedLine = 'const t = "token_degraded_val_123";';
       const degradedFinding: any = {
         id: 'f-degraded',
         fullPath: path.join(shallowRepoDir, 'source.ts'),
         file: 'source.ts',
+        line: 2,
+        column: degradedLine.indexOf('token_degraded_val_123') + 1,
+        length: 'token_degraded_val_123'.length,
         rawSecret: 'token_degraded_val_123',
         type: 'Test Token',
         remediation: { envVarName: 'TEST_TOKEN' },
       };
-      fs.writeFileSync(path.join(shallowRepoDir, 'source.ts'), 'const t = "token_degraded_val_123";\n', 'utf8');
+      fs.writeFileSync(path.join(shallowRepoDir, 'source.ts'), "import 'dotenv/config';\nconst t = \"token_degraded_val_123\";\n", 'utf8');
 
       const unsupportedAclCp = {
         execFileSync: () => {
@@ -3649,11 +3738,36 @@ exit 0
         'win32',
         unsupportedAclCp as any
       );
-      assert(remResDegraded.success === true, 'applyControlledRemediation proceeds with file modification');
-      assert(remResDegraded.degradedSecurity === true, 'applyControlledRemediation marks degradedSecurity: true');
-      assert(remResDegraded.envProtection?.enforced === false, 'applyControlledRemediation records envProtection.enforced: false');
-      assert(remResDegraded.warning !== undefined && remResDegraded.warning.includes('DEGRADED FILE SECURITY'), 'applyControlledRemediation issues prominent security warning');
-      assert(remResDegraded.message.includes('[DEGRADED SECURITY]'), 'applyControlledRemediation message communicates degraded state');
+      assert(remResDegraded.success === false, 'applyControlledRemediation refuses to write when private .env permissions cannot be enforced');
+      assert(/Could not enforce private \.env permissions/.test(remResDegraded.message), 'Permission failure explains why remediation was aborted');
+      assert(fs.readFileSync(path.join(shallowRepoDir, 'source.ts'), 'utf8').includes('token_degraded_val_123'), 'Source file remains unchanged when .env permissions cannot be enforced');
+      assert(!fs.readFileSync(remEnv, 'utf8').includes('token_degraded_val_123'), 'Credential is never written to an unprotected .env file');
+      // A pre-existing .env symlink must not redirect credential writes outside the workspace.
+      if (process.platform !== 'win32') {
+        const symlinkWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-rem-symlink-'));
+        const symlinkSource = path.join(symlinkWorkspace, 'source.ts');
+        const symlinkEnv = path.join(symlinkWorkspace, '.env');
+        const outsideEnv = path.join(os.tmpdir(), 'sld-outside-env-' + process.pid + '-' + Date.now());
+        const symlinkSecret = 'symlink_secret_value_123456';
+        fs.writeFileSync(symlinkSource, "import 'dotenv/config';\nconst token = \"" + symlinkSecret + "\";\n", 'utf8');
+        fs.writeFileSync(path.join(symlinkWorkspace, '.gitignore'), '.env\n', 'utf8');
+        fs.writeFileSync(outsideEnv, 'OUTSIDE="untouched"\n', 'utf8');
+        fs.symlinkSync(outsideEnv, symlinkEnv);
+        const symlinkFinding: any = {
+          fullPath: symlinkSource,
+          file: 'source.ts',
+          rawSecret: symlinkSecret,
+          type: 'Test Token',
+          remediation: { envVarName: 'TEST_TOKEN' },
+        };
+        const symlinkResult = applyControlledRemediation(symlinkFinding, symlinkWorkspace);
+        assert(symlinkResult.success === false, 'Remediation rejects a symlinked .env file');
+        assert(fs.readFileSync(outsideEnv, 'utf8') === 'OUTSIDE="untouched"\n', 'A symlink target outside the workspace is never modified');
+        assert(fs.readFileSync(symlinkSource, 'utf8').includes(symlinkSecret), 'Source file remains unchanged when .env is a symlink');
+        fs.rmSync(symlinkWorkspace, { recursive: true, force: true });
+        fs.rmSync(outsideEnv, { force: true });
+      }
+
 
       // 4. Windows ACL Identity Check: Strict Principal & SID Matching
       const mypcPrincipal = {
