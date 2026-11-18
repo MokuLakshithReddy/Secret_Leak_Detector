@@ -23,7 +23,7 @@ The document makes four concrete, independently verifiable claims:
 |-------|----------|
 | SLD detects realistic fake credentials | `demo/` — block-and-remediate fixture repo |
 | SLD ignores high-entropy non-secrets (low FP rate) | `evaluation/datasets/heldOutCorpus.ts` |
-| Core detector logic is covered by 806 automated regression assertions | `test/runAllTests.ts` |
+| Core detector logic has automated regression coverage | `test/runAllTests.ts` |
 | Pre-commit hook *actually* blocks commits | `test/integration/gitHookScenarios.test.ts` |
 
 ---
@@ -182,8 +182,7 @@ with the output of `npm run benchmark:heldout` and your Node.js + OS version.
 
 ### Overview
 
-`test/runAllTests.ts` contains **806 core regression assertions** across 50 sections, as reported by the latest recorded CI run. The separate Git-hook suite reports 40 tests and the manifest integration suite reports 17 tests (863 automated tests total). The test suite is the
-primary regression guard run on every CI push/PR.
+`test/runAllTests.ts` contains the core scanner/security regression suite, organized into 50 sections. Git-hook integration tests and VS Code manifest/architecture tests run as separate commands. The exact number of passing assertions is emitted by the current test run and can increase as coverage is extended; this document intentionally avoids a copied count that can become stale. The suites are the primary regression guards run on every CI push/PR.
 
 ### Run
 
@@ -340,9 +339,7 @@ proven by the above tests:
   Extension Host, WebviewPanel rendering, or diagnostic squiggly line display.
   These require a real VS Code instance.
 
-- **macOS / Linux platform equivalence** — the benchmark results were recorded
-  on Windows x64. Platform-specific path handling and shell differences have not
-  been systematically tested across macOS and Linux.
+- **Benchmark portability** — the headline comparative benchmark figures are historical author-run measurements from one reference environment. The regular test suite also runs on Windows and macOS in CI, but passing cross-platform tests does not establish that benchmark timings or all environment-specific behaviors are identical across operating systems.
 
 - **Independent label review** — the held-out labels are author-assigned. No independent evaluator has reviewed the cases or adjudicated disagreements. See `evaluation/REVIEW_GUIDE.md`.
 
