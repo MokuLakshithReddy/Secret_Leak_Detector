@@ -4,6 +4,9 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/publish.yml
 
 permissions:
   contents: read
@@ -60,7 +63,7 @@ jobs:
           retention-days: 1
 
   publish:
-    name: Publish Release Artifacts
+    name: Publish Configured Registries
     needs: build-and-verify
     runs-on: ubuntu-latest
     environment: release
@@ -77,20 +80,100 @@ jobs:
         with:
           name: release-artifacts
 
-      - name: Publish to Open VSX Registry
-        if: ${{ env.OVSX_TOKEN != '' }}
+      # Determine token availability without putting secret values in job outputs.
+      # Step-level env values cannot safely be used in the same step's if expression,
+      # so publish steps consume only these non-secret boolean outputs.
+      - name: Detect configured registry tokens
+        id: registry_tokens
+        shell: bash
         env:
           OVSX_TOKEN: ${{ secrets.OVSX_TOKEN }}
-        run: npx ovsx publish *.vsix -p "$OVSX_TOKEN"
+          VSCE_TOKEN: ${{ secrets.VSCE_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$OVSX_TOKEN" ]]; then echo "ovsx=true" >> "$GITHUB_OUTPUT"; else echo "ovsx=false" >> "$GITHUB_OUTPUT"; fi
+          if [[ -n "$VSCE_TOKEN" ]]; then echo "vsce=true" >> "$GITHUB_OUTPUT"; else echo "vsce=false" >> "$GITHUB_OUTPUT"; fi
+          if [[ -n "$NPM_TOKEN" ]]; then echo "npm=true" >> "$GITHUB_OUTPUT"; else echo "npm=false" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Publish to Open VSX Registry
+        id: publish_open_vsx
+        if: steps.registry_tokens.outputs.ovsx == 'true'
+        env:
+          OVSX_TOKEN: ${{ secrets.OVSX_TOKEN }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          artifacts=( ./*.vsix )
+          if [[ ${#artifacts[@]} -ne 1 ]]; then
+            echo "::error::Expected exactly one VSIX artifact; found ${#artifacts[@]}."
+            exit 1
+          fi
+          npx ovsx publish "${artifacts[0]}" -p "$OVSX_TOKEN"
 
       - name: Publish to Visual Studio Marketplace
-        if: ${{ env.VSCE_TOKEN != '' }}
+        id: publish_vs_marketplace
+        if: steps.registry_tokens.outputs.vsce == 'true'
         env:
           VSCE_TOKEN: ${{ secrets.VSCE_TOKEN }}
-        run: npx vsce publish --packagePath *.vsix -p "$VSCE_TOKEN"
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          artifacts=( ./*.vsix )
+          if [[ ${#artifacts[@]} -ne 1 ]]; then
+            echo "::error::Expected exactly one VSIX artifact; found ${#artifacts[@]}."
+            exit 1
+          fi
+          npx vsce publish --packagePath "${artifacts[0]}" -p "$VSCE_TOKEN"
 
       - name: Publish to NPM Registry
-        if: ${{ env.NODE_AUTH_TOKEN != '' }}
+        id: publish_npm
+        if: steps.registry_tokens.outputs.npm == 'true'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish $(ls *.tgz) --access public
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          artifacts=( ./*.tgz )
+          if [[ ${#artifacts[@]} -ne 1 ]]; then
+            echo "::error::Expected exactly one npm tarball; found ${#artifacts[@]}."
+            exit 1
+          fi
+          npm publish "${artifacts[0]}" --access public
+
+      - name: Summarize registry publication
+        if: always()
+        shell: bash
+        env:
+          OVSX_CONFIGURED: ${{ steps.registry_tokens.outputs.ovsx }}
+          VSCE_CONFIGURED: ${{ steps.registry_tokens.outputs.vsce }}
+          NPM_CONFIGURED: ${{ steps.registry_tokens.outputs.npm }}
+          OVSX_OUTCOME: ${{ steps.publish_open_vsx.outcome }}
+          VSCE_OUTCOME: ${{ steps.publish_vs_marketplace.outcome }}
+          NPM_OUTCOME: ${{ steps.publish_npm.outcome }}
+        run: |
+          set -euo pipefail
+          status() {
+            local configured="$1"
+            local outcome="$2"
+            if [[ "$configured" != "true" ]]; then
+              printf 'Skipped (token not configured)'
+            elif [[ "$outcome" == "success" ]]; then
+              printf 'Published'
+            elif [[ "$outcome" == "failure" ]]; then
+              printf 'Failed'
+            elif [[ "$outcome" == "skipped" ]]; then
+              printf 'Not run'
+            else
+              printf 'Unknown'
+            fi
+          }
+          {
+            echo "## Registry publication status"
+            echo
+            echo "| Registry | Status |"
+            echo "|---|---|"
+            echo "| Open VSX | $(status "$OVSX_CONFIGURED" "$OVSX_OUTCOME") |"
+            echo "| Visual Studio Marketplace | $(status "$VSCE_CONFIGURED" "$VSCE_OUTCOME") |"
+            echo "| npm | $(status "$NPM_CONFIGURED" "$NPM_OUTCOME") |"
+          } >> "$GITHUB_STEP_SUMMARY"
