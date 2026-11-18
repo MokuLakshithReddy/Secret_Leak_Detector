@@ -32,5 +32,10 @@ demo/tmp-fixture-repo/
 .sld/
 .sld/salt
 
+# Generated release artifacts & SBOM
+*.tgz
+sbom.cyclonedx.json
+*.cyclonedx.json
+
 # VS Code extension host test cache
 .vscode-test/

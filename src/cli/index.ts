@@ -109,6 +109,9 @@ Commands:
                            --fail-on <tier>   Exit code 1 on this tier and above: LOW, MEDIUM, HIGH, CRITICAL
                                               (default: HIGH — see src/core/policy.ts)
                            --exclude <globs>  Comma-separated patterns to exclude from scan
+                           --max-file-size <s> Maximum file size to scan (e.g. 50MB, 10MB)
+                           --max-files <n>    Maximum number of files to inspect
+                           --stream-large-files Enable chunked streaming scan for large payloads
                            --ignore-skipped   Warn instead of failing when large/unreadable files are skipped
                            --allow-skipped    Alias for --ignore-skipped (relaxed mode for staged scan)
                            --strict           Fail closed if any file cannot be inspected
@@ -124,6 +127,8 @@ Commands:
 
   baseline init          Generate .secretleak-baseline.json with existing findings
   baseline update        Refresh line numbers for known baseline findings (never whitelists new leaks)
+  baseline migrate       Upgrade baseline to hmac-sha256-private-v2 scheme using private repository salt
+  baseline rollback      Restore baseline from the most recent .bak backup file
   salt init              Create a private repository fingerprint key in .sld/salt
 
   fix <file>             Controlled interactive remediation (diff preview & .env migration)
@@ -224,10 +229,46 @@ async function runScan(cmdArgs: string[], cwd: string) {
     ? cmdArgs[excludeIdx + 1].split(',').map((s) => s.trim()).filter(Boolean)
     : [];
 
+  const maxFileSizeIdx = cmdArgs.indexOf('--max-file-size');
+  let maxFileSize: number | undefined;
+  if (maxFileSizeIdx !== -1 && cmdArgs[maxFileSizeIdx + 1]) {
+    const rawVal = cmdArgs[maxFileSizeIdx + 1].toLowerCase();
+    if (rawVal.endsWith('mb')) {
+      maxFileSize = parseFloat(rawVal) * 1024 * 1024;
+    } else if (rawVal.endsWith('kb')) {
+      maxFileSize = parseFloat(rawVal) * 1024;
+    } else {
+      maxFileSize = parseInt(rawVal, 10);
+    }
+    if (isNaN(maxFileSize) || maxFileSize <= 0) {
+      fail(`Error: Invalid --max-file-size '${cmdArgs[maxFileSizeIdx + 1]}'`);
+    }
+  }
+
+  const maxFilesIdx = cmdArgs.indexOf('--max-files');
+  let maxFiles: number | undefined;
+  if (maxFilesIdx !== -1 && cmdArgs[maxFilesIdx + 1]) {
+    maxFiles = parseInt(cmdArgs[maxFilesIdx + 1], 10);
+    if (isNaN(maxFiles) || maxFiles <= 0) {
+      fail(`Error: Invalid --max-files '${cmdArgs[maxFilesIdx + 1]}'`);
+    }
+  }
+
+  const streamLargeFiles =
+    cmdArgs.includes('--stream-large-files') ||
+    process.env.SLD_STREAM_LARGE_FILES === '1' ||
+    process.env.SLD_STREAM_LARGE_FILES === 'true';
+
   let targetPath: string | undefined;
   for (let i = 0; i < cmdArgs.length; i++) {
     const a = cmdArgs[i];
-    if (a === '--baseline' || a === '--fail-on' || a === '--exclude') {
+    if (
+      a === '--baseline' ||
+      a === '--fail-on' ||
+      a === '--exclude' ||
+      a === '--max-file-size' ||
+      a === '--max-files'
+    ) {
       i++;
       continue;
     }
@@ -352,11 +393,25 @@ async function runScan(cmdArgs: string[], cwd: string) {
       console.log(`ℹ️  Excluded ${excludedFiles.length} file(s) matching patterns: ${distinctPatterns.join(', ')}`);
     }
 
-    for (const file of filesToScan) {
+    let candidateFiles = filesToScan;
+    if (typeof maxFiles === 'number' && candidateFiles.length > maxFiles) {
+      const omitted = candidateFiles.slice(maxFiles);
+      for (const om of omitted) {
+        skippedFiles.push({
+          file: path.relative(cwd, om).replace(/\\/g, '/'),
+          reason: `SKIPPED (exceeded --max-files limit of ${maxFiles})`,
+        });
+      }
+      candidateFiles = candidateFiles.slice(0, maxFiles);
+    }
+
+    for (const file of candidateFiles) {
       findings.push(
         ...scanFile(file, {
           workspaceRoot: cwd,
           disallowInlineIgnore,
+          maxFileSize,
+          streamLargeFiles,
           onSkippedFile: (skippedPath: string, reason: string) => {
             skippedFiles.push({ file: skippedPath, reason });
           },
@@ -414,9 +469,8 @@ async function runScan(cmdArgs: string[], cwd: string) {
 
   if (isJson) {
     const safeFindings: any[] = findings.map((f) => toSafeJsonFinding(f));
-    const scanResult: any = buildScanResult(safeFindings as SecretFinding[], filesScanned, durationMs, failOn);
+    const scanResult: any = buildScanResult(safeFindings as SecretFinding[], filesScanned, durationMs, failOn, skippedFiles);
     if (baselineStats) scanResult.baselineStats = baselineStats;
-    if (skippedFiles.length > 0) scanResult.skippedFiles = skippedFiles;
     console.log(JSON.stringify(scanResult, null, 2));
     processExitCheck(findings, failOn);
     return;
@@ -674,12 +728,59 @@ function runSalt(cmdArgs: string[], cwd: string): void {
 async function runBaseline(cmdArgs: string[], cwd: string) {
   const isForce = cmdArgs.includes('--force') || cmdArgs.includes('-f');
   const acceptAll = cmdArgs.includes('--accept-all') || cmdArgs.includes('--yes') || cmdArgs.includes('-y') || isForce;
-  const subCommand = cmdArgs.find((a) => a === 'init' || a === 'update') || 'init';
-  if (subCommand !== 'init' && subCommand !== 'update') {
-    fail('Usage: secret-leak-detector baseline [init|update] [--force] [--accept-all]');
+  const subCommand = cmdArgs.find((a) => a === 'init' || a === 'update' || a === 'migrate' || a === 'rollback') || 'init';
+  if (subCommand !== 'init' && subCommand !== 'update' && subCommand !== 'migrate' && subCommand !== 'rollback') {
+    fail('Usage: secret-leak-detector baseline [init|update|migrate|rollback] [--force] [--accept-all] [--salt <key>] [--dry-run] [--no-backup]');
   }
 
   const baselineEngine = new BaselineEngine(cwd);
+
+  if (subCommand === 'migrate') {
+    if (!baselineEngine.exists()) {
+      fail(`Error: Baseline file '${DEFAULT_BASELINE_FILENAME}' does not exist. Nothing to migrate.`);
+    }
+    const isDryRun = cmdArgs.includes('--dry-run');
+    const saltIdx = cmdArgs.indexOf('--salt');
+    const customSalt = saltIdx !== -1 ? cmdArgs[saltIdx + 1] : undefined;
+    const noBackup = cmdArgs.includes('--no-backup');
+
+    try {
+      const res = baselineEngine.migrateBaseline({
+        customSalt,
+        dryRun: isDryRun,
+        createBackup: !noBackup,
+      });
+      console.log(`\n============================================================`);
+      console.log(`📦 BASELINE MIGRATION: ${res.previousScheme} ➔ ${res.newScheme}`);
+      console.log(`============================================================`);
+      console.log(`Status:            ${isDryRun ? 'SIMULATED (DRY RUN)' : 'COMPLETED ✅'}`);
+      console.log(`Key ID:            ${res.keyId}`);
+      console.log(`Migrated Findings: ${res.migratedCount} / ${res.totalFindings}`);
+      if (res.unmigratedFindings.length > 0) {
+        console.warn(`⚠️  Warning: ${res.unmigratedFindings.length} finding(s) could not be matched to secrets in workspace:`);
+        for (const uf of res.unmigratedFindings) {
+          console.warn(`   • ${uf.file}:${uf.line} [${uf.ruleId}] ${uf.fingerprint.substring(0, 16)}...`);
+        }
+      }
+      if (res.backupPath && !isDryRun) {
+        console.log(`Backup Created:    ${res.backupPath}`);
+      }
+      console.log('============================================================\n');
+      return;
+    } catch (err: any) {
+      fail(`Error: Baseline migration failed: ${err.message || err}`);
+    }
+  }
+
+  if (subCommand === 'rollback') {
+    try {
+      const res = baselineEngine.rollbackBaseline();
+      console.log(`✅ Baseline successfully restored from '${res.backupPath}'.\n`);
+      return;
+    } catch (err: any) {
+      fail(`Error: Baseline rollback failed: ${err.message || err}`);
+    }
+  }
 
   const files: string[] = [];
   collectFiles(cwd, files, cwd);

@@ -3,9 +3,20 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import { SecretFinding, BaselineFile, BaselineFinding } from '../types';
 import { getPackageVersion } from '../version';
-import { generateLegacyFingerprint, getFingerprintKeyId } from '../redactor/redactor';
+import { generateLegacyFingerprint, getFingerprintKeyId, generateFingerprint } from '../redactor/redactor';
+import { scanFile } from '../scanner/scanner';
 
 export const DEFAULT_BASELINE_FILENAME = '.secretleak-baseline.json';
+
+export interface BaselineMigrationResult {
+  migratedCount: number;
+  totalFindings: number;
+  unmigratedFindings: BaselineFinding[];
+  previousScheme: string;
+  newScheme: string;
+  backupPath?: string;
+  keyId: string;
+}
 
 /**
  * Normalise a repository-relative path so a baseline generated on one platform
@@ -332,47 +343,25 @@ export class BaselineEngine {
     return null;
   }
 
-  public saveBaseline(findings: SecretFinding[]): BaselineFile {
-    assertSafeBaselineDestination(this.baselinePath, this.workspaceRoot, 'write');
-
-    const baselineFindings: BaselineFinding[] = findings.map((f) => ({
-      id: f.id,
-      fingerprint: f.fingerprint,
-      ruleId: f.type,
-      file: normalizeBaselinePath(f.file),
-      line: f.line,
-      firstSeen: f.detectedAt,
-    }));
-
-    const pkgVersion = getPackageVersion();
-
-    const file: BaselineFile = {
-      version: 1,
-      generatedAt: new Date().toISOString(),
-      generator: `Secret Leak Detector v${pkgVersion}`,
-      fingerprintScheme: 'hmac-sha256-private-v2',
-      fingerprintKeyId: getFingerprintKeyId(this.workspaceRoot),
-      findings: baselineFindings,
-    };
-
-    // Write to a new file in the already-resolved parent directory, then
-    // atomically replace the destination. O_EXCL prevents temp-file reuse;
-    // rename replaces a swapped symlink/hard-link directory entry itself
-    // instead of opening and truncating the object it points to.
-    assertSafeBaselineDestination(this.baselinePath, this.workspaceRoot, 'write');
-    const parentDir = path.dirname(path.resolve(this.baselinePath));
+  /**
+   * Safely and atomically writes a baseline file to disk, validating that the target and parent
+   * are not redirected via symlinks or hard links, writing to a temp file, fsyncing, and renaming.
+   */
+  public writeBaselineFileAtomically(file: BaselineFile, targetPath: string = this.baselinePath): BaselineFile {
+    assertSafeBaselineDestination(targetPath, this.workspaceRoot, 'write');
+    const parentDir = path.dirname(path.resolve(targetPath));
     let parentReal: string;
     try {
       parentReal = fs.realpathSync(parentDir);
     } catch (err: any) {
       throw new BaselineValidationError(`Cannot resolve baseline parent directory: ${err.message || err}`);
     }
-    const destination = path.join(parentReal, path.basename(this.baselinePath));
+    const destination = path.join(parentReal, path.basename(targetPath));
     assertSafeBaselineDestination(destination, this.workspaceRoot, 'write');
 
     const tempPath = path.join(
       parentReal,
-      `.${path.basename(this.baselinePath)}.${process.pid}.${crypto.randomBytes(8).toString('hex')}.tmp`
+      `.${path.basename(targetPath)}.${process.pid}.${crypto.randomBytes(8).toString('hex')}.tmp`
     );
     const noFollow = process.platform === 'win32' ? 0 : (fs.constants.O_NOFOLLOW || 0);
     let fd: number | null = null;
@@ -400,9 +389,7 @@ export class BaselineEngine {
         throw new BaselineValidationError('Temporary baseline file failed post-write safety verification.');
       }
 
-      // Re-check the canonical parent immediately before replacement. The
-      // destination is expressed through that real path, avoiding a later
-      // redirection through a replaced parent-path symlink.
+      // Re-check the canonical parent immediately before replacement.
       if (fs.realpathSync(parentDir) !== parentReal) {
         throw new BaselineValidationError('Baseline parent directory changed during write; refusing to replace the baseline.');
       }
@@ -421,9 +408,6 @@ export class BaselineEngine {
         throw new BaselineValidationError('Post-write baseline resolves outside the workspace root.');
       }
 
-      // Persist the directory entry where supported. Some platforms/filesystems
-      // do not permit opening or syncing directories; the file itself is already
-      // flushed before rename.
       try {
         const dirFd = fs.openSync(parentReal, fs.constants.O_RDONLY);
         try { fs.fsyncSync(dirFd); } finally { fs.closeSync(dirFd); }
@@ -438,6 +422,177 @@ export class BaselineEngine {
     }
 
     return file;
+  }
+
+  public saveBaseline(findings: SecretFinding[]): BaselineFile {
+    assertSafeBaselineDestination(this.baselinePath, this.workspaceRoot, 'write');
+
+    const baselineFindings: BaselineFinding[] = findings.map((f) => ({
+      id: f.id,
+      fingerprint: f.fingerprint,
+      ruleId: f.type,
+      file: normalizeBaselinePath(f.file),
+      line: f.line,
+      firstSeen: f.detectedAt,
+    }));
+
+    const pkgVersion = getPackageVersion();
+
+    const file: BaselineFile = {
+      version: 1,
+      generatedAt: new Date().toISOString(),
+      generator: `Secret Leak Detector v${pkgVersion}`,
+      fingerprintScheme: 'hmac-sha256-private-v2',
+      fingerprintKeyId: getFingerprintKeyId(this.workspaceRoot),
+      findings: baselineFindings,
+    };
+
+    return this.writeBaselineFileAtomically(file);
+  }
+
+  /**
+   * Upgrades a baseline file to the modern hmac-sha256-private-v2 fingerprint scheme.
+   * Scans referenced files in workspaceRoot to locate original credentials and recompute
+   * fingerprints using the private repository salt. Unmigratable entries (where source files
+   * or secrets no longer exist) are preserved and reported.
+   */
+  public migrateBaseline(options?: {
+    customSalt?: string;
+    dryRun?: boolean;
+    createBackup?: boolean;
+  }): BaselineMigrationResult {
+    const baseline = this.loadBaseline();
+    if (!baseline) {
+      throw new BaselineValidationError(`Cannot migrate baseline: file '${this.baselinePath}' does not exist.`);
+    }
+
+    const previousScheme = baseline.fingerprintScheme || 'hmac-sha256-public-v1';
+    const targetKeyId = options?.customSalt
+      ? crypto.createHash('sha256').update(options.customSalt.trim()).digest('hex').substring(0, 16)
+      : getFingerprintKeyId(this.workspaceRoot);
+
+    const fileScanCache = new Map<string, SecretFinding[]>();
+    const unmigratedFindings: BaselineFinding[] = [];
+    let migratedCount = 0;
+
+    const updatedFindings: BaselineFinding[] = [];
+
+    for (const f of baseline.findings) {
+      if (
+        previousScheme === 'hmac-sha256-private-v2' &&
+        baseline.fingerprintKeyId === targetKeyId &&
+        /^[a-f0-9]{64}$/.test(f.fingerprint)
+      ) {
+        migratedCount++;
+        updatedFindings.push({ ...f });
+        continue;
+      }
+
+      const normRelFile = normalizeBaselinePath(f.file);
+      const fullPath = path.resolve(this.workspaceRoot, normRelFile);
+
+      let scannedFindings: SecretFinding[] | undefined = fileScanCache.get(fullPath);
+      if (!scannedFindings) {
+        if (fs.existsSync(fullPath)) {
+          try {
+            scannedFindings = scanFile(fullPath, { workspaceRoot: this.workspaceRoot });
+          } catch {
+            scannedFindings = [];
+          }
+        } else {
+          scannedFindings = [];
+        }
+        fileScanCache.set(fullPath, scannedFindings);
+      }
+
+      let match = scannedFindings.find((sf) => {
+        if (sf.rawSecret) {
+          const legCandidates = [
+            generateLegacyFingerprint(sf.rawSecret),
+            generateLegacyFingerprint(sf.rawSecret.replace(/\r?\n/g, '\r\n'), false),
+            generateLegacyFingerprint(sf.rawSecret.replace(/\r?\n/g, '\n'), false),
+          ];
+          if (legCandidates.includes(f.fingerprint)) return true;
+        }
+        const matchesRule = sf.type === f.ruleId || sf.id.includes(f.ruleId);
+        return matchesRule && Math.abs(sf.line - f.line) <= 5;
+      });
+
+      if (match && match.rawSecret) {
+        const newFingerprint = options?.customSalt
+          ? generateFingerprint(match.rawSecret, options.customSalt, this.workspaceRoot)
+          : match.fingerprint;
+
+        updatedFindings.push({
+          ...f,
+          fingerprint: newFingerprint,
+          line: match.line,
+        });
+        migratedCount++;
+      } else {
+        unmigratedFindings.push(f);
+      }
+    }
+
+    const backupPath = this.baselinePath + '.bak';
+    if (!options?.dryRun && options?.createBackup !== false) {
+      this.writeBaselineFileAtomically(baseline, backupPath);
+    }
+
+    const migratedFile: BaselineFile = {
+      version: 1,
+      generatedAt: new Date().toISOString(),
+      generator: `Secret Leak Detector v${getPackageVersion()}`,
+      fingerprintScheme: 'hmac-sha256-private-v2',
+      fingerprintKeyId: targetKeyId,
+      findings: updatedFindings,
+    };
+
+    if (!options?.dryRun) {
+      this.writeBaselineFileAtomically(migratedFile);
+    }
+
+    return {
+      migratedCount,
+      totalFindings: baseline.findings.length,
+      unmigratedFindings,
+      previousScheme,
+      newScheme: 'hmac-sha256-private-v2',
+      backupPath: options?.createBackup !== false ? backupPath : undefined,
+      keyId: targetKeyId,
+    };
+  }
+
+  /**
+   * Restores a baseline file from its .bak backup file, verifying backup safety and
+   * replacing the active baseline atomically.
+   */
+  public rollbackBaseline(): { restored: boolean; backupPath: string } {
+    const backupPath = this.baselinePath + '.bak';
+    if (!fs.existsSync(backupPath)) {
+      throw new BaselineValidationError(`Cannot rollback baseline: backup file '${backupPath}' does not exist.`);
+    }
+
+    assertSafeBaselineDestination(backupPath, this.workspaceRoot, 'read');
+
+    let backupData: string;
+    try {
+      backupData = fs.readFileSync(backupPath, 'utf8');
+    } catch (err: any) {
+      throw new BaselineValidationError(`Could not read baseline backup at '${backupPath}': ${err.message || err}`);
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(backupData);
+    } catch (err: any) {
+      throw new BaselineValidationError(`Malformed JSON in baseline backup '${backupPath}': ${err.message || err}`);
+    }
+
+    const validFile = validateBaselineSchema(parsed);
+    this.writeBaselineFileAtomically(validFile);
+
+    return { restored: true, backupPath };
   }
 
   public filterAgainstBaseline(

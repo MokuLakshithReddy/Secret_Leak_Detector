@@ -14,6 +14,7 @@ permissions:
 jobs:
   build-and-verify:
     name: Build & Verify (Clean Environment)
+    timeout-minutes: 30
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
@@ -53,6 +54,11 @@ jobs:
           npm run package
           npm pack
 
+      - name: Generate and Verify SBOM
+        run: |
+          npm run sbom
+          npm run verify:sbom
+
       - name: Upload Release Artifacts
         uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
         with:
@@ -60,10 +66,12 @@ jobs:
           path: |
             *.vsix
             *.tgz
+            sbom.cyclonedx.json
           retention-days: 1
 
   publish:
     name: Publish Configured Registries
+    timeout-minutes: 30
     needs: build-and-verify
     runs-on: ubuntu-latest
     environment: release
