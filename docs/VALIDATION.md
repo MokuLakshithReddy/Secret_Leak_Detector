@@ -23,7 +23,7 @@ The document makes four concrete, independently verifiable claims:
 |-------|----------|
 | SLD detects realistic fake credentials | `demo/` — block-and-remediate fixture repo |
 | SLD ignores high-entropy non-secrets (low FP rate) | `evaluation/datasets/heldOutCorpus.ts` |
-| Core detector logic is covered by 771 automated regression assertions | `test/runAllTests.ts` |
+| Core detector logic is covered by 806 automated regression assertions | `test/runAllTests.ts` |
 | Pre-commit hook *actually* blocks commits | `test/integration/gitHookScenarios.test.ts` |
 
 ---
@@ -182,7 +182,7 @@ with the output of `npm run benchmark:heldout` and your Node.js + OS version.
 
 ### Overview
 
-`test/runAllTests.ts` contains **771 core regression assertions** across 50 sections, as reported by the latest recorded CI run. The separate Git-hook suite reports 40 tests and the manifest integration suite reports 17 tests. The test suite is the
+`test/runAllTests.ts` contains **806 core regression assertions** across 50 sections, as reported by the latest recorded CI run. The separate Git-hook suite reports 40 tests and the manifest integration suite reports 17 tests (863 automated tests total). The test suite is the
 primary regression guard run on every CI push/PR.
 
 ### Run

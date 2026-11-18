@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as crypto from 'crypto';
 import { DiagnosticProvider } from './diagnostics/diagnosticProvider';
 import { SecretCodeActionProvider } from './diagnostics/codeActionProvider';
 import { FindingsTreeProvider, OverviewTreeProvider } from './sidebar/findingsTreeProvider';
@@ -75,6 +76,23 @@ export function activate(context: vscode.ExtensionContext) {
   }
   applyConfiguration();
 
+function getFileSha256(filePath: string): string | null {
+  try {
+    return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+  } catch {
+    return null;
+  }
+}
+
+async function getFileSha256Async(filePath: string): Promise<string | null> {
+  try {
+    const buf = await fs.promises.readFile(filePath);
+    return crypto.createHash('sha256').update(buf).digest('hex');
+  } catch {
+    return null;
+  }
+}
+
   // Stable CLI management under globalStorageUri (survives extension version upgrades)
   let activeCliPath = path.join(context.extensionPath, 'dist', 'cli.js');
   try {
@@ -84,8 +102,18 @@ export function activate(context: vscode.ExtensionContext) {
     }
     const stableCli = path.join(globalStorage, 'cli.js');
     if (fs.existsSync(activeCliPath)) {
-      if (!fs.existsSync(stableCli) || fs.statSync(activeCliPath).size !== fs.statSync(stableCli).size) {
-        fs.copyFileSync(activeCliPath, stableCli);
+      let needsCopy = true;
+      if (fs.existsSync(stableCli)) {
+        const srcHash = getFileSha256(activeCliPath);
+        const destHash = getFileSha256(stableCli);
+        if (srcHash && destHash && srcHash === destHash) {
+          needsCopy = false;
+        }
+      }
+      if (needsCopy) {
+        const tmpCli = path.join(globalStorage, `cli.${process.pid}.${Date.now()}.tmp`);
+        fs.copyFileSync(activeCliPath, tmpCli);
+        fs.renameSync(tmpCli, stableCli);
       }
       activeCliPath = stableCli;
     }
@@ -101,9 +129,9 @@ export function activate(context: vscode.ExtensionContext) {
       if (fs.existsSync(astParserSrc)) {
         let needsCopy = true;
         if (fs.existsSync(stableAstParser)) {
-          const srcStat = await fs.promises.stat(astParserSrc);
-          const destStat = await fs.promises.stat(stableAstParser);
-          if (srcStat.size === destStat.size && srcStat.mtimeMs <= destStat.mtimeMs) {
+          const srcHash = await getFileSha256Async(astParserSrc);
+          const destHash = await getFileSha256Async(stableAstParser);
+          if (srcHash && destHash && srcHash === destHash) {
             needsCopy = false;
           }
         }
@@ -111,7 +139,9 @@ export function activate(context: vscode.ExtensionContext) {
           if (!fs.existsSync(globalStorage)) {
             await fs.promises.mkdir(globalStorage, { recursive: true });
           }
-          await fs.promises.copyFile(astParserSrc, stableAstParser);
+          const tmpParser = path.join(globalStorage, `ast-parser.${process.pid}.${Date.now()}.tmp`);
+          await fs.promises.copyFile(astParserSrc, tmpParser);
+          await fs.promises.rename(tmpParser, stableAstParser);
         }
       }
     } catch {}
@@ -257,7 +287,10 @@ export function activate(context: vscode.ExtensionContext) {
           const excludeGlobs = getConfig().get<string[]>('excludeGlobs', []);
           const excludePattern = excludeGlobs.length > 0 ? `{${excludeGlobs.join(',')}}` : undefined;
 
-          const MAX_SCAN_FILES = 1000;
+          const configuredMaxFiles = getConfig().get<number>('maxWorkspaceFiles');
+          const MAX_SCAN_FILES = (typeof configuredMaxFiles === 'number' && configuredMaxFiles > 0)
+            ? configuredMaxFiles
+            : 5000;
           const files = await vscode.workspace.findFiles('**/*', excludePattern, MAX_SCAN_FILES);
           const batchMap = new Map<string, SecretFinding[]>();
           let allFindings: SecretFinding[] = [];

@@ -126,6 +126,81 @@ function main() {
       throw new Error(`Installed CLI reported version ${installedVersion}; expected ${sourceVersion}.`);
     }
     console.log(`Installed npm tarball smoke test passed (CLI ${installedVersion}).`);
+
+    // Extended smoke test: verify real scanner execution on clean & credential fixtures
+    const smokeDir = path.join(tempRoot, 'smoke-fixture');
+    fs.mkdirSync(smokeDir, { recursive: true });
+
+    // 1. Clean file scan should exit 0
+    const cleanFilePath = path.join(smokeDir, 'clean.js');
+    fs.writeFileSync(cleanFilePath, 'const value = 42;\nmodule.exports = { value };\n', 'utf8');
+    const cleanScanOutput = execFileSync(process.execPath, [installedCli, 'scan', cleanFilePath], {
+      cwd: smokeDir,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    if (/CRITICAL|HIGH|MEDIUM|LOW/i.test(cleanScanOutput) && cleanScanOutput.includes('Found')) {
+      throw new Error(`Clean scan unexpectedly reported secret findings: ${cleanScanOutput}`);
+    }
+    console.log('Installed npm tarball scan smoke test passed on clean file (exit 0).');
+
+    // 2. Secret file scan should detect credential and redact the secret in output
+    const rawSecret = 'AKIA' + '4Z7K9B2D8F1M3P5Q';
+    const secretFilePath = path.join(smokeDir, 'secret.js');
+    fs.writeFileSync(secretFilePath, `const awsAccessKey = "${rawSecret}";\n`, 'utf8');
+    let secretScanBlocked = false;
+    let secretScanOutput = '';
+    try {
+      secretScanOutput = execFileSync(process.execPath, [installedCli, 'scan', secretFilePath], {
+        cwd: smokeDir,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch (scanError) {
+      secretScanBlocked = true;
+      secretScanOutput = (scanError.stdout || '') + (scanError.stderr || '');
+    }
+    if (!secretScanBlocked && !secretScanOutput.includes('CRITICAL')) {
+      throw new Error(`Secret scan did not detect the credential fixture: ${secretScanOutput}`);
+    }
+    if (secretScanOutput.includes(rawSecret)) {
+      throw new Error('Secret scan output leaked the raw unredacted secret value!');
+    }
+    console.log('Installed npm tarball scan smoke test passed on secret fixture (detected & redacted).');
+
+    // 3. Git hook installation & uninstallation smoke test
+    const gitRepoDir = path.join(tempRoot, 'smoke-git-repo');
+    fs.mkdirSync(gitRepoDir, { recursive: true });
+    execFileSync('git', ['init', '-q'], { cwd: gitRepoDir, stdio: 'ignore' });
+    execFileSync('git', ['config', 'user.email', 'smoke@test.local'], { cwd: gitRepoDir, stdio: 'ignore' });
+    execFileSync('git', ['config', 'user.name', 'Smoke Test'], { cwd: gitRepoDir, stdio: 'ignore' });
+
+    // Install pre-commit hook
+    execFileSync(process.execPath, [installedCli, 'hook', 'install'], {
+      cwd: gitRepoDir,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const hookPath = path.join(gitRepoDir, '.git', 'hooks', 'pre-commit');
+    if (!fs.existsSync(hookPath)) {
+      throw new Error('Pre-commit hook was not created by installed CLI hook install.');
+    }
+    const hookContent = fs.readFileSync(hookPath, 'utf8');
+    if (!hookContent.includes('SLD_HOOK_MARKER') && !hookContent.includes('secret-leak-detector')) {
+      throw new Error('Pre-commit hook content is missing expected marker.');
+    }
+    console.log('Installed npm tarball pre-commit hook installation passed.');
+
+    // Uninstall pre-commit hook
+    execFileSync(process.execPath, [installedCli, 'hook', 'uninstall'], {
+      cwd: gitRepoDir,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    if (fs.existsSync(hookPath)) {
+      throw new Error('Pre-commit hook was not removed by installed CLI hook uninstall.');
+    }
+    console.log('Installed npm tarball pre-commit hook uninstallation passed.');
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }

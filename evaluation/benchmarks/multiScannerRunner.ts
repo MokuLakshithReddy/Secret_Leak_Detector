@@ -9,6 +9,29 @@ import * as path from 'path';
 import { execSync } from 'child_process';
 import { generateCorpus, CorpusItem } from '../datasets/corpusGenerator';
 import { scanContent } from '../../src/core/scanner/scanner';
+import { getPackageVersion } from '../../src/core/version';
+
+function resolveComparatorBinary(toolName: string, candidateRelativePaths: string[]): string | null {
+  const isWin = process.platform === 'win32';
+  for (const rel of candidateRelativePaths) {
+    const directPath = path.resolve(process.cwd(), rel);
+    if (fs.existsSync(directPath)) return directPath;
+    if (isWin && !rel.endsWith('.exe')) {
+      const winPath = path.resolve(process.cwd(), `${rel}.exe`);
+      if (fs.existsSync(winPath)) return winPath;
+    }
+  }
+
+  // Check system PATH
+  try {
+    const whichCmd = isWin ? 'where' : 'which';
+    const out = execSync(`${whichCmd} ${toolName}`, { stdio: ['pipe', 'pipe', 'ignore'], encoding: 'utf8' }).trim();
+    const candidate = out.split(/\r?\n/)[0]?.trim();
+    if (candidate && fs.existsSync(candidate)) return candidate;
+  } catch {}
+
+  return null;
+}
 
 export interface ScannerMetrics {
   name: string;
@@ -83,9 +106,15 @@ export function runMultiScannerBenchmark(options: { sldOnly?: boolean } = {}): S
   }
   const sldEnd = process.hrtime.bigint();
   const sldWallClockMs = Number(sldEnd - sldStart) / 1e6;
-  results.push(evaluateScanner('Secret Leak Detector (Ours)', '1.0.3', corpus, sldDetectedFiles, sldWallClockMs));
+  const pkgVersion = getPackageVersion();
+  results.push(evaluateScanner('Secret Leak Detector (Ours)', pkgVersion, corpus, sldDetectedFiles, sldWallClockMs));
 
-  if (options.sldOnly) {
+  const allowMissing = !!(
+    process.env.SLD_ALLOW_MISSING_COMPARATORS ||
+    process.argv.includes('--allow-missing')
+  );
+
+  if (options.sldOnly || process.argv.includes('--sld-only')) {
     try {
       fs.rmSync(corpusDir, { recursive: true, force: true });
     } catch {}
@@ -97,12 +126,16 @@ export function runMultiScannerBenchmark(options: { sldOnly?: boolean } = {}): S
   // 2. RUN GITLEAKS
   // ---------------------------------------------------------------------------
   console.log('\n[2/4] Running Gitleaks...');
-  const gitleaksBin = path.join(rootDir, 'tools', 'bin', 'gitleaks.exe');
+  const gitleaksBin = resolveComparatorBinary('gitleaks', [
+    path.join('tools', 'bin', 'gitleaks.exe'),
+    path.join('tools', 'bin', 'gitleaks'),
+    path.join('tools', 'gitleaks'),
+  ]);
   const gitleaksReport = path.join(reportsDir, 'gitleaks_raw.json');
   const gitleaksDetectedFiles = new Set<string>();
   let gitleaksWallClockMs = 0;
 
-  if (fs.existsSync(gitleaksBin)) {
+  if (gitleaksBin) {
     try {
       const gStart = process.hrtime.bigint();
       try {
@@ -128,20 +161,31 @@ export function runMultiScannerBenchmark(options: { sldOnly?: boolean } = {}): S
     } catch (err) {
       console.warn('Gitleaks execution encountered error:', err);
     }
+    results.push(evaluateScanner('Gitleaks', 'v8.30.1', corpus, gitleaksDetectedFiles, gitleaksWallClockMs));
   } else {
-    console.warn('Gitleaks binary not found at:', gitleaksBin);
+    if (allowMissing) {
+      console.warn('⚠️  Gitleaks binary not found on PATH or in tools/. Skipping Gitleaks evaluation.');
+    } else {
+      try { fs.rmSync(corpusDir, { recursive: true, force: true }); } catch {}
+      throw new Error(
+        "Missing required comparator binary: 'gitleaks' not found on system PATH or in tools/bin/. Either install Gitleaks, pass --allow-missing, or pass --sld-only to evaluate Secret Leak Detector alone."
+      );
+    }
   }
-  results.push(evaluateScanner('Gitleaks', 'v8.30.1', corpus, gitleaksDetectedFiles, gitleaksWallClockMs));
 
   // ---------------------------------------------------------------------------
   // 3. RUN TRUFFLEHOG
   // ---------------------------------------------------------------------------
   console.log('\n[3/4] Running TruffleHog...');
-  const trufflehogBin = path.join(rootDir, 'tools', 'bin', 'trufflehog.exe');
+  const trufflehogBin = resolveComparatorBinary('trufflehog', [
+    path.join('tools', 'bin', 'trufflehog.exe'),
+    path.join('tools', 'bin', 'trufflehog'),
+    path.join('tools', 'trufflehog'),
+  ]);
   const trufflehogDetectedFiles = new Set<string>();
   let trufflehogWallClockMs = 0;
 
-  if (fs.existsSync(trufflehogBin)) {
+  if (trufflehogBin) {
     try {
       const tStart = process.hrtime.bigint();
       let output = '';
@@ -173,20 +217,32 @@ export function runMultiScannerBenchmark(options: { sldOnly?: boolean } = {}): S
     } catch (err) {
       console.warn('TruffleHog execution error:', err);
     }
+    results.push(evaluateScanner('TruffleHog', 'v3.99.2', corpus, trufflehogDetectedFiles, trufflehogWallClockMs));
   } else {
-    console.warn('TruffleHog binary not found at:', trufflehogBin);
+    if (allowMissing) {
+      console.warn('⚠️  TruffleHog binary not found on PATH or in tools/. Skipping TruffleHog evaluation.');
+    } else {
+      try { fs.rmSync(corpusDir, { recursive: true, force: true }); } catch {}
+      throw new Error(
+        "Missing required comparator binary: 'trufflehog' not found on system PATH or in tools/bin/. Either install TruffleHog, pass --allow-missing, or pass --sld-only to evaluate Secret Leak Detector alone."
+      );
+    }
   }
-  results.push(evaluateScanner('TruffleHog', 'v3.99.2', corpus, trufflehogDetectedFiles, trufflehogWallClockMs));
 
   // ---------------------------------------------------------------------------
   // 4. RUN DETECT-SECRETS
   // ---------------------------------------------------------------------------
   console.log('\n[4/4] Running detect-secrets...');
-  const detectSecretsBin = path.join(rootDir, 'tools', 'python', 'Scripts', 'detect-secrets.exe');
+  const detectSecretsBin = resolveComparatorBinary('detect-secrets', [
+    path.join('tools', 'python', 'Scripts', 'detect-secrets.exe'),
+    path.join('tools', 'python', 'Scripts', 'detect-secrets'),
+    path.join('tools', 'bin', 'detect-secrets'),
+    path.join('tools', 'detect-secrets'),
+  ]);
   const detectSecretsDetectedFiles = new Set<string>();
   let detectSecretsWallClockMs = 0;
 
-  if (fs.existsSync(detectSecretsBin)) {
+  if (detectSecretsBin) {
     try {
       const dStart = process.hrtime.bigint();
       let output = '';
@@ -215,10 +271,17 @@ export function runMultiScannerBenchmark(options: { sldOnly?: boolean } = {}): S
     } catch (err) {
       console.warn('detect-secrets execution error:', err);
     }
+    results.push(evaluateScanner('detect-secrets', 'v1.5.0', corpus, detectSecretsDetectedFiles, detectSecretsWallClockMs));
   } else {
-    console.warn('detect-secrets binary not found at:', detectSecretsBin);
+    if (allowMissing) {
+      console.warn('⚠️  detect-secrets binary not found on PATH or in tools/. Skipping detect-secrets evaluation.');
+    } else {
+      try { fs.rmSync(corpusDir, { recursive: true, force: true }); } catch {}
+      throw new Error(
+        "Missing required comparator binary: 'detect-secrets' not found on system PATH or in tools/. Either install detect-secrets, pass --allow-missing, or pass --sld-only to evaluate Secret Leak Detector alone."
+      );
+    }
   }
-  results.push(evaluateScanner('detect-secrets', 'v1.5.0', corpus, detectSecretsDetectedFiles, detectSecretsWallClockMs));
 
   // ---------------------------------------------------------------------------
   // CLEANUP CORPUS

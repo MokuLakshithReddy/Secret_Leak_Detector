@@ -93,6 +93,10 @@ the current code and fixtures; it does not independently validate the labels.
 
 ## 4. Large-Scale Payload Benchmark (1MB → 10MB → 100MB → 1GB)
 
+> **Scope & Production Distinction Notice:**
+> This benchmark evaluates the core scanning engine's (`scanContent()`) processing line rate, throughput scaling, and RSS memory stability when streaming continuous multi-megabyte and multi-gigabyte data in 10 MB chunks.
+> In contrast, the production CLI and pre-commit hook invoke `scanFile()`, which purposefully enforces a **50 MB single-file ceiling** (`options.maxFileSize`) to reject accidental staging of massive binaries, database dumps, or build artifacts before reading them into memory. Thus, this benchmark verifies engine chunk-streaming line-processing capacity, not that the production CLI scans single 1 GB disk files in a single synchronous `scanFile()` pass.
+
 Executed via `npm run benchmark:scale` (`evaluation/benchmarks/payloadScaleBenchmark.ts`) to evaluate throughput scaling, line rate stability, and confirm process RSS memory across massive payloads:
 
 | Payload Size | Wall-Clock Time | Throughput | Line Processing Rate | Process Heap | Process RSS | Accuracy |
@@ -117,7 +121,7 @@ We resolved these issues with three systems optimizations:
 
 ---
 
-## 4. Engineering Analysis of Why Tools Differ
+## 5. Engineering Analysis of Why Tools Differ
 
 ### 1. High False Positive Rate in detect-secrets (50.0% FPR)
 `detect-secrets` relies heavily on raw Shannon entropy thresholds without syntactic context. When presented with high-entropy non-secrets—such as UUID v4 strings, 40-character Git commit SHAs, SRI integrity hashes, and bundled Webpack chunks—it flags them indiscriminately, generating significant alert fatigue.
@@ -141,7 +145,7 @@ Secret Leak Detector achieves zero false positives and 100% recall on the contro
 
 ---
 
-## 5. CI Benchmark Regression Enforcement
+## 6. CI Benchmark Regression Enforcement
 
 To guarantee that code improvements never degrade detection or performance, our CI pipeline runs `npm run benchmark:gate`:
 - **Minimum F1 Score:** $\ge 99.0\%$
@@ -154,7 +158,7 @@ $$CI = \frac{\hat{p} + \frac{z^2}{2n} \pm z \sqrt{\frac{\hat{p}(1-\hat{p})}{n} +
 
 ---
 
-## 4. Large-Repository Performance Profiling (1,000 Synthetic Files)
+## 7. Large-Repository Performance Profiling (1,000 Synthetic Files)
 
 A dedicated microbenchmark (`evaluation/benchmarks/largeRepoBenchmark.ts`) profiles the scanner across 1,000 files:
 
@@ -170,7 +174,7 @@ A dedicated microbenchmark (`evaluation/benchmarks/largeRepoBenchmark.ts`) profi
 
 ---
 
-## 5. Analysis of Engineering Results
+## 8. Analysis of Engineering Results
 
 ### 1. Zero False-Positive Rate via Multi-Signal Gating & Structural Validators
 Traditional scanners rely almost entirely on regular expressions, triggering alerts on documentation placeholders such as `AKIAIOSFODNN7EXAMPLE` or dummy `postgres://user:password@localhost/db` strings. Secret Leak Detector combines:

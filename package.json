@@ -197,6 +197,12 @@
           "default": true,
           "description": "Disallow inline comments (// sld-ignore) from suppressing secret findings in Git commits and scans (matches CI guardrail)."
         },
+        "secretLeakDetector.maxWorkspaceFiles": {
+          "type": "integer",
+          "default": 5000,
+          "minimum": 100,
+          "description": "Maximum number of files to inspect during a full workspace scan (default 5000). Set higher for large repositories."
+        },
         "secretLeakDetector.failOn": {
           "type": "string",
           "enum": [

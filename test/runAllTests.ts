@@ -420,6 +420,85 @@ const checkWithNew = baselineEngine.filterAgainstBaseline([testFinding, newFindi
 assert(checkWithNew.newFindings.length === 1, 'Newly introduced credential detected as new finding');
 assert(checkWithNew.newFindings[0].provider === 'GitHub', 'New finding correctly identifies new secret');
 
+// --- Baseline Symlink, Hard-Link & Boundary Write Protections ---
+const baselineSecurityRoot = path.join(__dirname, '..', 'scratch', 'test_baseline_security');
+fs.rmSync(baselineSecurityRoot, { recursive: true, force: true });
+fs.mkdirSync(baselineSecurityRoot, { recursive: true });
+
+// 1. Outside workspace root rejection
+const outsideBaselineFile = path.join(__dirname, '..', 'scratch', 'outside_baseline.json');
+fs.writeFileSync(outsideBaselineFile, '{}');
+const outsideEngine = new BaselineEngine(baselineSecurityRoot, outsideBaselineFile);
+let outsideRejected = false;
+try {
+  outsideEngine.saveBaseline([]);
+} catch (err: any) {
+  outsideRejected = /outside the workspace root/i.test(err.message);
+}
+assert(outsideRejected, 'BaselineEngine.saveBaseline rejects writing to a file outside the workspace root');
+
+let outsideReadRejected = false;
+try {
+  outsideEngine.loadBaseline();
+} catch (err: any) {
+  outsideReadRejected = /outside the workspace/i.test(err.message);
+}
+assert(outsideReadRejected, 'BaselineEngine.loadBaseline rejects reading a file outside the workspace root');
+fs.rmSync(outsideBaselineFile, { force: true });
+
+// 2. Symlink redirection rejection
+if (process.platform !== 'win32') {
+  const symlinkTarget = path.join(baselineSecurityRoot, 'sensitive-target.txt');
+  fs.writeFileSync(symlinkTarget, 'target-content-must-not-be-overwritten');
+  const symlinkBaseline = path.join(baselineSecurityRoot, 'symlink-baseline.json');
+  fs.symlinkSync(symlinkTarget, symlinkBaseline);
+
+  const symlinkEngine = new BaselineEngine(baselineSecurityRoot, 'symlink-baseline.json');
+  let symlinkWriteRejected = false;
+  try {
+    symlinkEngine.saveBaseline([]);
+  } catch (err: any) {
+    symlinkWriteRejected = /expected a regular, non-symlink file/i.test(err.message);
+  }
+  assert(symlinkWriteRejected, 'BaselineEngine.saveBaseline rejects writing to a symlinked baseline path');
+  assert(fs.readFileSync(symlinkTarget, 'utf8') === 'target-content-must-not-be-overwritten', 'Symlink target content preserved on rejected write');
+
+  let symlinkReadRejected = false;
+  try {
+    symlinkEngine.loadBaseline();
+  } catch (err: any) {
+    symlinkReadRejected = /expected a regular, non-symlink file/i.test(err.message);
+  }
+  assert(symlinkReadRejected, 'BaselineEngine.loadBaseline rejects reading from a symlinked baseline path');
+}
+
+// 3. Hard-link rejection
+const hardlinkSource = path.join(baselineSecurityRoot, 'source-file.json');
+fs.writeFileSync(hardlinkSource, '{}');
+const hardlinkBaseline = path.join(baselineSecurityRoot, 'hardlink-baseline.json');
+try {
+  fs.linkSync(hardlinkSource, hardlinkBaseline);
+  const hardlinkEngine = new BaselineEngine(baselineSecurityRoot, 'hardlink-baseline.json');
+  let hardlinkWriteRejected = false;
+  try {
+    hardlinkEngine.saveBaseline([]);
+  } catch (err: any) {
+    hardlinkWriteRejected = /single hard link/i.test(err.message);
+  }
+  assert(hardlinkWriteRejected, 'BaselineEngine.saveBaseline rejects writing to a hard-linked baseline file');
+
+  let hardlinkReadRejected = false;
+  try {
+    hardlinkEngine.loadBaseline();
+  } catch (err: any) {
+    hardlinkReadRejected = /single hard link/i.test(err.message);
+  }
+  assert(hardlinkReadRejected, 'BaselineEngine.loadBaseline rejects reading from a hard-linked baseline file');
+} catch (linkErr) {
+  // If filesystem doesn't support hardlinks (some virtual FS), skip gracefully
+}
+fs.rmSync(baselineSecurityRoot, { recursive: true, force: true });
+
 // Clean up test baseline
 try {
   fs.rmSync(tmpDir, { recursive: true, force: true });

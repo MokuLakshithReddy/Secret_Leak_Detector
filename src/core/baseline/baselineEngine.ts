@@ -90,6 +90,80 @@ export function validateBaselineSchema(parsed: unknown): BaselineFile {
   return parsed as BaselineFile;
 }
 
+/**
+ * Verifies that the baseline destination file and its parent hierarchy are safe:
+ * not a symlink, not a hard link redirect (nlink <= 1), and resolve inside the workspace root.
+ */
+export function assertSafeBaselineDestination(
+  baselinePath: string,
+  workspaceRoot: string,
+  purpose: 'read' | 'write' = 'write'
+): void {
+  let rootReal: string;
+  try {
+    rootReal = fs.existsSync(workspaceRoot) ? fs.realpathSync(workspaceRoot) : path.resolve(workspaceRoot);
+  } catch (err: any) {
+    throw new BaselineValidationError(`Cannot resolve workspace root for baseline: ${err.message || err}`);
+  }
+
+  if (fs.existsSync(baselinePath)) {
+    let stat: fs.Stats;
+    try {
+      stat = fs.lstatSync(baselinePath);
+    } catch (err: any) {
+      throw new BaselineValidationError(`Cannot stat baseline file '${baselinePath}': ${err.message || err}`);
+    }
+
+    if (stat.isSymbolicLink() || !stat.isFile() || stat.nlink > 1) {
+      throw new BaselineValidationError(
+        `Refusing to ${purpose} baseline '${baselinePath}': expected a regular, non-symlink file with a single hard link (got nlink=${stat.nlink}, isSymlink=${stat.isSymbolicLink()}).`
+      );
+    }
+
+    let fileReal: string;
+    try {
+      fileReal = fs.realpathSync(baselinePath);
+    } catch (err: any) {
+      throw new BaselineValidationError(`Cannot resolve canonical path for baseline '${baselinePath}': ${err.message || err}`);
+    }
+
+    const relative = path.relative(rootReal, fileReal);
+    if (relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) {
+      throw new BaselineValidationError(
+        `Refusing to ${purpose} baseline: resolved path '${fileReal}' is outside the workspace root '${rootReal}'.`
+      );
+    }
+  } else if (purpose === 'write') {
+    const parentDir = path.dirname(baselinePath);
+    if (!fs.existsSync(parentDir)) {
+      throw new BaselineValidationError(`Cannot write baseline: parent directory '${parentDir}' does not exist.`);
+    }
+    let parentStat: fs.Stats;
+    try {
+      parentStat = fs.lstatSync(parentDir);
+    } catch (err: any) {
+      throw new BaselineValidationError(`Cannot stat parent directory '${parentDir}': ${err.message || err}`);
+    }
+    if (parentStat.isSymbolicLink() || !parentStat.isDirectory()) {
+      throw new BaselineValidationError(
+        `Refusing to write baseline: parent directory '${parentDir}' must be a regular directory, not a symlink.`
+      );
+    }
+    let parentReal: string;
+    try {
+      parentReal = fs.realpathSync(parentDir);
+    } catch (err: any) {
+      throw new BaselineValidationError(`Cannot resolve canonical path for parent directory '${parentDir}': ${err.message || err}`);
+    }
+    const parentRel = path.relative(rootReal, parentReal);
+    if (parentRel === '..' || parentRel.startsWith('..' + path.sep) || path.isAbsolute(parentRel)) {
+      throw new BaselineValidationError(
+        `Refusing to write baseline: parent directory '${parentReal}' is outside the workspace root '${rootReal}'.`
+      );
+    }
+  }
+}
+
 export class BaselineEngine {
   private workspaceRoot: string;
   private baselinePath: string;
@@ -116,6 +190,8 @@ export class BaselineEngine {
    */
   public loadBaseline(): BaselineFile | null {
     if (!this.exists()) return null;
+
+    assertSafeBaselineDestination(this.baselinePath, this.workspaceRoot, 'read');
 
     let data: string;
     try {
@@ -256,6 +332,8 @@ export class BaselineEngine {
   }
 
   public saveBaseline(findings: SecretFinding[]): BaselineFile {
+    assertSafeBaselineDestination(this.baselinePath, this.workspaceRoot, 'write');
+
     const baselineFindings: BaselineFinding[] = findings.map((f) => ({
       id: f.id,
       fingerprint: f.fingerprint,
@@ -276,7 +354,31 @@ export class BaselineEngine {
       findings: baselineFindings,
     };
 
-    fs.writeFileSync(this.baselinePath, JSON.stringify(file, null, 2), 'utf8');
+    const noFollow = process.platform === 'win32' ? 0 : (fs.constants.O_NOFOLLOW || 0);
+    const fd = fs.openSync(
+      this.baselinePath,
+      fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | noFollow,
+      0o600
+    );
+    try {
+      const openedStat = fs.fstatSync(fd);
+      if (!openedStat.isFile() || openedStat.nlink > 1) {
+        throw new BaselineValidationError(
+          `Opened baseline file '${this.baselinePath}' is not a regular file with a single hard link (nlink=${openedStat.nlink}).`
+        );
+      }
+      fs.writeFileSync(fd, JSON.stringify(file, null, 2) + '\n', 'utf8');
+    } finally {
+      fs.closeSync(fd);
+    }
+
+    const postStat = fs.lstatSync(this.baselinePath);
+    if (postStat.isSymbolicLink() || !postStat.isFile() || postStat.nlink > 1) {
+      throw new BaselineValidationError(
+        `Post-write baseline verification failed: expected a regular non-symlink file with a single hard link.`
+      );
+    }
+
     return file;
   }
 
