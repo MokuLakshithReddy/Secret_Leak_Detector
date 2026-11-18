@@ -1,12 +1,11 @@
 /**
- * Large-Scale In-Memory Throughput Benchmark
+ * Cumulative In-Memory Chunk Throughput Benchmark
  * Evaluates Secret Leak Detector throughput, memory footprint,
- * and linear scaling characteristics across 1MB, 10MB, 100MB, and 1GB cumulative stream inputs.
+ * and linear scaling across cumulative in-memory payloads processed sequentially in chunks up to 10MB.
  *
  * NOTE: Production CLI scanFile() reads files synchronously and enforces a 50MB
  * single-file ceiling (options.maxFileSize) to prevent out-of-memory issues on non-code
- * archives. This benchmark demonstrates core engine throughput over a continuous stream of
- * code in 10MB chunks via scanContent(), not scanning a single 1GB disk file via scanFile().
+ * archives. This benchmark generates each chunk in memory and calls scanContent() once per chunk. The 100MB and 1GB values are aggregate totals, not a single disk file, a stream API, or a production CLI scan.
  */
 
 import { scanContent } from '../../src/core/scanner/scanner';
@@ -65,14 +64,14 @@ function generateCodeChunk(chunkSizeBytes: number, chunkIndex: number, injectSec
 
 export function runPayloadScaleBenchmark(): ScaleTierResult[] {
   console.log('=================================================================================');
-  console.log('🚀 RUNNING LARGE-SCALE PERFORMANCE BENCHMARK (1MB → 10MB → 100MB → 1GB)');
+  console.log('🚀 RUNNING CUMULATIVE IN-MEMORY CHUNK BENCHMARK (1MB → 10MB → 100MB → 1GB)');
   console.log('=================================================================================\n');
 
   const tiers = [
     { label: '1 MB', bytes: 1 * 1024 * 1024, injectCount: 1 },
     { label: '10 MB', bytes: 10 * 1024 * 1024, injectCount: 1 },
-    { label: '100 MB (10MB Chunks)', bytes: 100 * 1024 * 1024, injectCount: 10 },
-    { label: '1 GB (10MB Chunks)', bytes: 1024 * 1024 * 1024, injectCount: 100 },
+    { label: '100 MB (10MB In-Memory Chunks)', bytes: 100 * 1024 * 1024, injectCount: 10 },
+    { label: '1 GB (10MB In-Memory Chunks)', bytes: 1024 * 1024 * 1024, injectCount: 100 },
   ];
 
   const results: ScaleTierResult[] = [];
@@ -81,9 +80,9 @@ export function runPayloadScaleBenchmark(): ScaleTierResult[] {
     if (global.gc) global.gc();
 
     console.log(`[Testing ${tier.label}] Generating & Scanning payload...`);
-    const isStreamed = tier.bytes >= 50 * 1024 * 1024;
-    const chunkSize = isStreamed ? 10 * 1024 * 1024 : tier.bytes;
-    const numChunks = isStreamed ? Math.round(tier.bytes / chunkSize) : 1;
+    const isChunked = tier.bytes >= 50 * 1024 * 1024;
+    const chunkSize = isChunked ? 10 * 1024 * 1024 : tier.bytes;
+    const numChunks = isChunked ? Math.round(tier.bytes / chunkSize) : 1;
 
     let totalDetected = 0;
     let totalLines = 0;
