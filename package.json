@@ -229,6 +229,7 @@
     "demo": "node esbuild.js --demo && node dist/demo-cli.js",
     "package": "vsce package --no-git-tag-version --no-dependencies",
     "benchmark:heldout": "npx ts-node --project tsconfig.json evaluation/datasets/heldOutCorpus.ts",
+    "review:packet": "node evaluation/independent-review/createPacket.js",
     "test:git-hook": "npx ts-node --project tsconfig.json test/integration/gitHookScenarios.test.ts",
     "vscode:uninstall": "node ./dist/uninstall.js",
     "test:vscode": "node esbuild.js --vscode-test && npx ts-node --project tsconfig.json test/vscode-integration/runTest.ts",
