@@ -53,10 +53,18 @@ function parseNpmIntegrity(integrity) {
 
 function formatLicense(licenseStr) {
   if (!licenseStr || typeof licenseStr !== 'string') return undefined;
-  if (licenseStr.includes(' ') || licenseStr.startsWith('SEE LICENSE') || !/^[A-Za-z0-9_.-]+$/.test(licenseStr)) {
-    return [{ license: { name: licenseStr } }];
+  const trimmed = licenseStr.trim();
+  if (trimmed.startsWith('SEE LICENSE') || trimmed.startsWith('SEE-LICENSE')) {
+    return [{ license: { name: trimmed } }];
   }
-  return [{ license: { id: licenseStr } }];
+  // Check for compound SPDX license expressions (e.g., '(MIT OR GPL-3.0-or-later)', '(MIT AND Zlib)', 'Apache-2.0 WITH LLVM-exception')
+  if (/\b(OR|AND|WITH)\b/.test(trimmed) || (/^\(.*\)$/.test(trimmed) && trimmed.includes(' '))) {
+    return [{ expression: trimmed }];
+  }
+  if (/^[A-Za-z0-9_.-]+$/.test(trimmed)) {
+    return [{ license: { id: trimmed } }];
+  }
+  return [{ license: { name: trimmed } }];
 }
 
 function computeFileSha256(filePath) {
@@ -248,27 +256,36 @@ async function verifySbom(sbomPath) {
           }
         }
       }
+      if (comp.licenses) {
+        for (const lic of comp.licenses) {
+          if (lic.expression) {
+            if (typeof lic.expression !== 'string' || lic.expression.trim().length === 0) {
+              throw new Error(`Component '${comp.name}' has invalid empty license expression.`);
+            }
+          } else if (lic.license) {
+            if (!lic.license.id && !lic.license.name) {
+              throw new Error(`Component '${comp.name}' has license entry with neither id nor name.`);
+            }
+          } else {
+            throw new Error(`Component '${comp.name}' has invalid license choice (neither expression nor license).`);
+          }
+        }
+      }
     }
   }
 
-  // 3. Official CycloneDX 1.5 JSON Strict Schema Validation
-  try {
-    const cdx = require('@cyclonedx/cyclonedx-library');
-    const validator = new cdx.Validation.JsonStrictValidator(cdx.Spec.Version.v1dot5);
-    const errors = await validator.validate(rawText);
-    if (errors && errors.length > 0) {
-      throw new Error(
-        `CycloneDX 1.5 schema validation failed with ${errors.length} error(s):\n` +
-          errors.map((e) => `  - ${e.instancePath || '/'}: ${e.message} (schema: ${e.schemaPath})`).join('\n')
-      );
-    }
-    console.log(`✅ CycloneDX 1.5 JSON strict schema validation passed.`);
-  } catch (err) {
-    if (err.message && err.message.includes('schema validation failed')) {
-      throw err;
-    }
-    console.warn(`⚠️  Warning: @cyclonedx/cyclonedx-library validator check skipped: ${err.message || err}`);
+  // 3. Official CycloneDX 1.5 JSON Strict Schema Validation (Fail-Closed)
+  // Must strictly enforce schema compliance; any failure to load or execute validator is fatal.
+  const cdx = require('@cyclonedx/cyclonedx-library');
+  const validator = new cdx.Validation.JsonStrictValidator(cdx.Spec.Version.v1dot5);
+  const errors = await validator.validate(rawText);
+  if (errors && errors.length > 0) {
+    throw new Error(
+      `CycloneDX 1.5 schema validation failed with ${errors.length} error(s):\n` +
+        errors.map((e) => `  - ${e.instancePath || '/'}: ${e.message} (schema: ${e.schemaPath})`).join('\n')
+    );
   }
+  console.log(`✅ CycloneDX 1.5 JSON strict schema validation passed.`);
 
   console.log(`✅ SBOM verification passed: all runtime file hashes match disk artifacts, PURLs conform to standard, and hashes are valid hexadecimal.`);
 }
