@@ -5382,27 +5382,18 @@ exit 0
         if (modCallCount === 2) {
           // Mutate in place with same byte size but new mtime/content
           fs.writeFileSync(concurrentModFile, Buffer.alloc(10000, 'b\n'));
+          fs.utimesSync(concurrentModFile, new Date(Date.now() + 10000), new Date(Date.now() + 10000));
         }
         return originalReadSync.apply(nodeFs, arguments as any);
       };
       try {
-        nodeFs.readSync = function (fd: number, buffer: any, offset: number, length: number, position: number) {
-          modCallCount++;
-          if (modCallCount === 2) {
-            // Mutate in place with same byte size but new mtime/content
-            fs.writeFileSync(concurrentModFile, Buffer.alloc(10000, 'b\n'));
-            fs.utimesSync(concurrentModFile, new Date(Date.now() + 10000), new Date(Date.now() + 10000));
-          }
-          return originalReadSync.apply(nodeFs, arguments as any);
-        };
-        try {
-          scanFileStream(concurrentModFile, { onSkippedFile: modCollector }, 10000, 2048);
-        } catch (err: any) {
-          if (err instanceof StreamScanIncompleteError) modThrew = true;
-        }
-      } finally {
-        nodeFs.readSync = originalReadSync;
+        scanFileStream(concurrentModFile, { onSkippedFile: modCollector }, 10000, 2048);
+      } catch (err: any) {
+        if (err instanceof StreamScanIncompleteError) modThrew = true;
       }
+    } finally {
+      nodeFs.readSync = originalReadSync;
+    }
       assert(modThrew === true, 'scanFileStream throws StreamScanIncompleteError on concurrent in-place modification');
       assert(modReason.includes('File modified concurrently'), `onSkippedFile informed of in-place concurrent modification (got: ${modReason})`);
 
