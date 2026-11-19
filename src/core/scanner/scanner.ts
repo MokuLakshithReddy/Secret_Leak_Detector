@@ -499,6 +499,13 @@ export function scanContent(
   return deduplicateFindings(findings);
 }
 
+export class StreamScanIncompleteError extends Error {
+  constructor(public readonly filePath: string, public readonly reason: string) {
+    super(`Stream scan incomplete on '${filePath}': ${reason}`);
+    this.name = 'StreamScanIncompleteError';
+  }
+}
+
 export function scanFileStream(
   filePath: string,
   options: ScannerOptions = {},
@@ -511,14 +518,32 @@ export function scanFileStream(
   try {
     let fileOffset = 0;
     let currentLineOffset = 0;
+    let currentColOffset = 0;
     let prevReadStart = 0;
     let isFirstChunk = true;
 
+    const effectiveOverlap = Math.min(overlapBytes, Math.max(64, Math.floor(chunkSize / 2)));
     while (fileOffset < fileSize) {
-      const readStart = isFirstChunk ? 0 : Math.max(0, fileOffset - overlapBytes);
-      const readLength = Math.min(chunkSize + (isFirstChunk ? 0 : overlapBytes), fileSize - readStart);
+      // Check for concurrent file truncation or modification
+      const currentStat = fs.fstatSync(fd);
+      if (currentStat.size !== fileSize) {
+        const reason = `File modified or truncated concurrently during stream scan (expected ${fileSize} bytes, found ${currentStat.size} bytes)`;
+        options.onSkippedFile?.(filePath, reason);
+        throw new StreamScanIncompleteError(filePath, reason);
+      }
+
+      const readStart = isFirstChunk ? 0 : Math.max(0, fileOffset - effectiveOverlap);
+      const readLength = Math.min(chunkSize + (isFirstChunk ? 0 : effectiveOverlap), fileSize - readStart);
       const buffer = Buffer.alloc(readLength);
       const bytesRead = fs.readSync(fd, buffer, 0, readLength, readStart);
+
+      // Detect short read before EOF
+      if (bytesRead < readLength && (readStart + bytesRead) < fileSize) {
+        const reason = `Unexpected short read during stream scan (${bytesRead} of ${readLength} bytes at offset ${readStart}; total size ${fileSize})`;
+        options.onSkippedFile?.(filePath, reason);
+        throw new StreamScanIncompleteError(filePath, reason);
+      }
+
       if (bytesRead <= 0) break;
 
       const chunkBuf = bytesRead < readLength ? buffer.subarray(0, bytesRead) : buffer;
@@ -528,14 +553,25 @@ export function scanFileStream(
         return [];
       }
 
-      // If not first chunk, count newlines between prevReadStart and readStart
+      // If not first chunk, count newlines and columns between prevReadStart and readStart
       if (!isFirstChunk && readStart > prevReadStart) {
-        // Read the intermediate region to count newlines exactly
         const intermediateLen = readStart - prevReadStart;
         const interBuf = Buffer.alloc(intermediateLen);
-        fs.readSync(fd, interBuf, 0, intermediateLen, prevReadStart);
-        for (let i = 0; i < intermediateLen; i++) {
-          if (interBuf[i] === 10) currentLineOffset++;
+        const interRead = fs.readSync(fd, interBuf, 0, intermediateLen, prevReadStart);
+        if (interRead < intermediateLen) {
+          const reason = `Short read in intermediate chunk verification region (${interRead} of ${intermediateLen} bytes)`;
+          options.onSkippedFile?.(filePath, reason);
+          throw new StreamScanIncompleteError(filePath, reason);
+        }
+        const intermediateStr = decodeTextBuffer(interBuf) ?? interBuf.toString('utf8');
+        for (let i = 0; i < intermediateStr.length; i++) {
+          const ch = intermediateStr.charCodeAt(i);
+          if (ch === 10) {
+            currentLineOffset++;
+            currentColOffset = 0;
+          } else if (ch !== 13) {
+            currentColOffset++;
+          }
         }
       }
 
@@ -546,9 +582,12 @@ export function scanFileStream(
       const chunkFindings = scanContent(decoded, filePath, chunkOptions);
 
       for (const cf of chunkFindings) {
+        const adjustedLine = cf.line + currentLineOffset;
+        const adjustedCol = (cf.line === 1 && !isFirstChunk) ? cf.column + currentColOffset : cf.column;
         findings.push({
           ...cf,
-          line: cf.line + currentLineOffset,
+          line: adjustedLine,
+          column: adjustedCol,
         });
       }
 
@@ -591,7 +630,11 @@ export function scanFile(filePath: string, options: ScannerOptions = {}): Secret
     }
     return scanContent(decoded, filePath, options);
   } catch (err: any) {
-    options.onSkippedFile?.(filePath, err.message || 'File read error');
+    if (err instanceof StreamScanIncompleteError) {
+      // Already reported through options.onSkippedFile in scanFileStream
+    } else {
+      options.onSkippedFile?.(filePath, err.message || 'File read error');
+    }
     return [];
   }
 }
