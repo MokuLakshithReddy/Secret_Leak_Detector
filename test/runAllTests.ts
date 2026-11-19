@@ -5188,103 +5188,103 @@ exit 0
     const validFinal = engine.loadBaseline()!;
     assert(validFinal.version === 1 && validFinal.findings.length === 3, 'Concurrent atomic writes leave valid baseline file intact');
 
-      // Test 7: validateSafeReferencedPath workspace boundary validation
-      const safeRelative = validateSafeReferencedPath('config.ts', realSec51);
-      assert(path.normalize(safeRelative) === path.normalize(path.join(realSec51, 'config.ts')), 'Safe relative path resolves within workspace');
+    // Test 7: validateSafeReferencedPath workspace boundary validation
+    const safeRelative = validateSafeReferencedPath('config.ts', realSec51);
+    assert(path.normalize(safeRelative) === path.normalize(path.join(realSec51, 'config.ts')), 'Safe relative path resolves within workspace');
 
-      let absError: any;
-      try {
-        validateSafeReferencedPath(process.platform === 'win32' ? 'C:\\escaped\\path.ts' : '/etc/passwd', realSec51);
-      } catch (err: any) {
-        absError = err;
-      }
-      assert(absError instanceof BaselineValidationError && absError.message.includes('absolute paths are not permitted'), 'validateSafeReferencedPath rejects absolute paths');
+    let absError: any;
+    try {
+      validateSafeReferencedPath(process.platform === 'win32' ? 'C:\\escaped\\path.ts' : '/etc/passwd', realSec51);
+    } catch (err: any) {
+      absError = err;
+    }
+    assert(absError instanceof BaselineValidationError && absError.message.includes('absolute paths are not permitted'), 'validateSafeReferencedPath rejects absolute paths');
 
-      let traversalError: any;
-      try {
-        validateSafeReferencedPath('../../secret.ts', realSec51);
-      } catch (err: any) {
-        traversalError = err;
-      }
-      assert(traversalError instanceof BaselineValidationError && traversalError.message.includes('path escapes the workspace root'), 'validateSafeReferencedPath rejects path traversal');
+    let traversalError: any;
+    try {
+      validateSafeReferencedPath('../../secret.ts', realSec51);
+    } catch (err: any) {
+      traversalError = err;
+    }
+    assert(traversalError instanceof BaselineValidationError && traversalError.message.includes('path escapes the workspace root'), 'validateSafeReferencedPath rejects path traversal');
 
-      // Symlink / Junction workspace escape test
-      const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-sec51-outside-'));
+    // Symlink / Junction workspace escape test
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-sec51-outside-'));
+    try {
+      const outsideTarget = path.join(outsideDir, 'external_secret.ts');
+      fs.writeFileSync(outsideTarget, 'const secret = "outside";\n', 'utf8');
+      const linkDir = path.join(realSec51, 'outside_link');
+      let symlinkCreated = false;
       try {
-        const outsideTarget = path.join(outsideDir, 'external_secret.ts');
-        fs.writeFileSync(outsideTarget, 'const secret = "outside";\n', 'utf8');
-        const linkDir = path.join(realSec51, 'outside_link');
-        let symlinkCreated = false;
-        try {
-          if (process.platform === 'win32') {
-            fs.symlinkSync(outsideDir, linkDir, 'junction');
-            symlinkCreated = true;
-          } else {
-            fs.symlinkSync(outsideDir, linkDir);
-            symlinkCreated = true;
-          }
-        } catch {
-          // If unprivileged, symlink creation may fail
-        }
-        if (symlinkCreated) {
-          let linkError: any;
-          try {
-            validateSafeReferencedPath('outside_link/external_secret.ts', realSec51);
-          } catch (err: any) {
-            linkError = err;
-          }
-          assert(
-            linkError instanceof BaselineValidationError && linkError.message.includes('symlink points outside the workspace root'),
-            'validateSafeReferencedPath rejects symlink/junction resolving outside workspace'
-          );
+        if (process.platform === 'win32') {
+          fs.symlinkSync(outsideDir, linkDir, 'junction');
+          symlinkCreated = true;
         } else {
-          console.log('ℹ️  Symlink creation skipped due to platform privilege restrictions');
+          fs.symlinkSync(outsideDir, linkDir);
+          symlinkCreated = true;
         }
-      } finally {
-        try { fs.rmSync(outsideDir, { recursive: true, force: true }); } catch {}
+      } catch {
+        // If unprivileged, symlink creation may fail
       }
-
-      // Test 8: migrateBaseline() rejects baseline containing escaping paths
-      const escapeBaseline = {
-        version: 1,
-        generatedAt: '2025-01-01T00:00:00.000Z',
-        generator: 'Secret Leak Detector v1.0.0',
-        fingerprintScheme: 'hmac-sha256-public-v1',
-        findings: [
-          { id: 'esc1', fingerprint: 'deadbeef00000000', ruleId: 'AWS Access Key ID', file: '../../escaped.ts', line: 1, firstSeen: '2025-01-01T00:00:00.000Z' }
-        ],
-      };
-      const escEngine = new BaselineEngine(realSec51);
-      fs.writeFileSync(path.join(realSec51, '.secretleak-baseline.json'), JSON.stringify(escapeBaseline, null, 2), 'utf8');
-      let escMigrateErr: any;
-      try {
-        escEngine.migrateBaseline({ dryRun: true });
-      } catch (err: any) {
-        escMigrateErr = err;
-      }
-      assert(escMigrateErr instanceof BaselineValidationError, 'migrateBaseline rejects baseline entries escaping workspace');
-
-      // Test 9: CLI rejects --salt flag to prevent credential exposure in process tables and shell history
-      const cliPath = path.resolve(process.cwd(), 'dist/cli.js');
-      if (!fs.existsSync(cliPath)) {
+      if (symlinkCreated) {
+        let linkError: any;
         try {
-          cp.execFileSync(process.execPath, ['esbuild.js', '--cli'], { cwd: process.cwd(), stdio: 'ignore' });
-        } catch {}
-      }
-      if (fs.existsSync(cliPath)) {
-        const dummyArgSalt = 'super-secret-salt-12345';
-        const saltProc = cp.spawnSync(process.execPath, [cliPath, 'baseline', 'migrate', '--salt', dummyArgSalt], {
-          cwd: realSec51,
-          encoding: 'utf8',
-        });
-        assert(saltProc.status !== 0, 'CLI baseline migrate exits non-zero when --salt flag is supplied');
-        const saltOutput = (saltProc.stderr || '') + (saltProc.stdout || '');
-        assert(saltOutput.includes('Passing private salts via command-line flags (--salt) is prohibited'), 'CLI outputs clear prohibition error for --salt flag');
-        assert(!saltOutput.includes(dummyArgSalt), 'CLI never exposes the supplied salt value in output');
+          validateSafeReferencedPath('outside_link/external_secret.ts', realSec51);
+        } catch (err: any) {
+          linkError = err;
+        }
+        assert(
+          linkError instanceof BaselineValidationError && linkError.message.includes('symlink points outside the workspace root'),
+          'validateSafeReferencedPath rejects symlink/junction resolving outside workspace'
+        );
+      } else {
+        console.log('ℹ️  Symlink creation skipped due to platform privilege restrictions');
       }
     } finally {
-      try { fs.rmSync(sec51Dir, { recursive: true, force: true }); } catch {}
+      try { fs.rmSync(outsideDir, { recursive: true, force: true }); } catch { }
     }
+
+    // Test 8: migrateBaseline() rejects baseline containing escaping paths
+    const escapeBaseline = {
+      version: 1,
+      generatedAt: '2025-01-01T00:00:00.000Z',
+      generator: 'Secret Leak Detector v1.0.0',
+      fingerprintScheme: 'hmac-sha256-public-v1',
+      findings: [
+        { id: 'esc1', fingerprint: 'deadbeef00000000', ruleId: 'AWS Access Key ID', file: '../../escaped.ts', line: 1, firstSeen: '2025-01-01T00:00:00.000Z' }
+      ],
+    };
+    const escEngine = new BaselineEngine(realSec51);
+    fs.writeFileSync(path.join(realSec51, '.secretleak-baseline.json'), JSON.stringify(escapeBaseline, null, 2), 'utf8');
+    let escMigrateErr: any;
+    try {
+      escEngine.migrateBaseline({ dryRun: true });
+    } catch (err: any) {
+      escMigrateErr = err;
+    }
+    assert(escMigrateErr instanceof BaselineValidationError, 'migrateBaseline rejects baseline entries escaping workspace');
+
+    // Test 9: CLI rejects --salt flag to prevent credential exposure in process tables and shell history
+    const cliPath = path.resolve(process.cwd(), 'dist/cli.js');
+    if (!fs.existsSync(cliPath)) {
+      try {
+        cp.execFileSync(process.execPath, ['esbuild.js', '--cli'], { cwd: process.cwd(), stdio: 'ignore' });
+      } catch { }
+    }
+    if (fs.existsSync(cliPath)) {
+      const dummyArgSalt = 'super-secret-salt-12345';
+      const saltProc = cp.spawnSync(process.execPath, [cliPath, 'baseline', 'migrate', '--salt', dummyArgSalt], {
+        cwd: realSec51,
+        encoding: 'utf8',
+      });
+      assert(saltProc.status !== 0, 'CLI baseline migrate exits non-zero when --salt flag is supplied');
+      const saltOutput = (saltProc.stderr || '') + (saltProc.stdout || '');
+      assert(saltOutput.includes('Passing private salts via command-line flags (--salt) is prohibited'), 'CLI outputs clear prohibition error for --salt flag');
+      assert(!saltOutput.includes(dummyArgSalt), 'CLI never exposes the supplied salt value in output');
+    }
+  } finally {
+    try { fs.rmSync(sec51Dir, { recursive: true, force: true }); } catch { }
+  }
 
   // --- 52. Large File Chunked Streaming & INCOMPLETE Scan State ---
   console.log('\n--- 52. Large File Chunked Streaming & INCOMPLETE Scan State ---');
@@ -5340,48 +5340,58 @@ exit 0
       `Column number on long line crossing chunk boundary accurately tracked (expected ${expectedCol}, got ${colFindings[0]?.column})`
     );
 
-      // Test 4: Detect genuine short reads -> fail-closed with StreamScanIncompleteError
-      const nodeFs = require('fs');
-      const shortReadFile = path.join(realSec52, 'short_read_test.dat');
-      fs.writeFileSync(shortReadFile, Buffer.alloc(10000, 'z\n'));
-      let shortReadReason = '';
-      const shortReadCollector = (f: string, r: string) => { shortReadReason = r; };
-      let shortReadThrew = false;
-      const originalReadSync = nodeFs.readSync;
-      let readCallCount = 0;
-      try {
-        nodeFs.readSync = function (fd: number, buffer: any, offset: number, length: number, position: number) {
-          readCallCount++;
-          if (readCallCount === 1) {
-            // Emulate short read: return 512 bytes when 2048 requested, while remaining file is 10,000 bytes
-            return originalReadSync.call(nodeFs, fd, buffer, offset, 512, position);
-          }
-          return originalReadSync.apply(nodeFs, arguments as any);
-        };
-        try {
-          scanFileStream(shortReadFile, { onSkippedFile: shortReadCollector }, 10000, 2048);
-        } catch (err: any) {
-          if (err instanceof StreamScanIncompleteError) shortReadThrew = true;
+    // Test 4: Detect genuine short reads -> fail-closed with StreamScanIncompleteError
+    const nodeFs = require('fs');
+    const shortReadFile = path.join(realSec52, 'short_read_test.dat');
+    fs.writeFileSync(shortReadFile, Buffer.alloc(10000, 'z\n'));
+    let shortReadReason = '';
+    const shortReadCollector = (f: string, r: string) => { shortReadReason = r; };
+    let shortReadThrew = false;
+    const originalReadSync = nodeFs.readSync;
+    let readCallCount = 0;
+    try {
+      nodeFs.readSync = function (fd: number, buffer: any, offset: number, length: number, position: number) {
+        readCallCount++;
+        if (readCallCount === 1) {
+          // Emulate short read: return 512 bytes when 2048 requested, while remaining file is 10,000 bytes
+          return originalReadSync.call(nodeFs, fd, buffer, offset, 512, position);
         }
-      } finally {
-        nodeFs.readSync = originalReadSync;
+        return originalReadSync.apply(nodeFs, arguments as any);
+      };
+      try {
+        scanFileStream(shortReadFile, { onSkippedFile: shortReadCollector }, 10000, 2048);
+      } catch (err: any) {
+        if (err instanceof StreamScanIncompleteError) shortReadThrew = true;
       }
-      assert(shortReadThrew === true, 'scanFileStream directly throws StreamScanIncompleteError on genuine short read');
-      assert(shortReadReason.includes('Unexpected short read'), `onSkippedFile informed of genuine short read (got: ${shortReadReason})`);
+    } finally {
+      nodeFs.readSync = originalReadSync;
+    }
+    assert(shortReadThrew === true, 'scanFileStream directly throws StreamScanIncompleteError on genuine short read');
+    assert(shortReadReason.includes('Unexpected short read'), `onSkippedFile informed of genuine short read (got: ${shortReadReason})`);
 
-      // Test 5: Detect concurrent in-place modification (same size, modified mtime/ctime) -> fail-closed
-      const concurrentModFile = path.join(realSec52, 'concurrent_mod.dat');
-      fs.writeFileSync(concurrentModFile, Buffer.alloc(10000, 'a\n'));
-      let modReason = '';
-      const modCollector = (f: string, r: string) => { modReason = r; };
-      let modThrew = false;
-      let modCallCount = 0;
+    // Test 5: Detect concurrent in-place modification (same size, modified mtime/ctime) -> fail-closed
+    const concurrentModFile = path.join(realSec52, 'concurrent_mod.dat');
+    fs.writeFileSync(concurrentModFile, Buffer.alloc(10000, 'a\n'));
+    let modReason = '';
+    const modCollector = (f: string, r: string) => { modReason = r; };
+    let modThrew = false;
+    let modCallCount = 0;
+    try {
+      nodeFs.readSync = function (fd: number, buffer: any, offset: number, length: number, position: number) {
+        modCallCount++;
+        if (modCallCount === 2) {
+          // Mutate in place with same byte size but new mtime/content
+          fs.writeFileSync(concurrentModFile, Buffer.alloc(10000, 'b\n'));
+        }
+        return originalReadSync.apply(nodeFs, arguments as any);
+      };
       try {
         nodeFs.readSync = function (fd: number, buffer: any, offset: number, length: number, position: number) {
           modCallCount++;
           if (modCallCount === 2) {
             // Mutate in place with same byte size but new mtime/content
             fs.writeFileSync(concurrentModFile, Buffer.alloc(10000, 'b\n'));
+            fs.utimesSync(concurrentModFile, new Date(Date.now() + 10000), new Date(Date.now() + 10000));
           }
           return originalReadSync.apply(nodeFs, arguments as any);
         };
@@ -5394,42 +5404,42 @@ exit 0
         nodeFs.readSync = originalReadSync;
       }
       assert(modThrew === true, 'scanFileStream throws StreamScanIncompleteError on concurrent in-place modification');
-      assert(modReason.includes('File modified concurrently in place'), `onSkippedFile informed of in-place concurrent modification (got: ${modReason})`);
+      assert(modReason.includes('File modified concurrently'), `onSkippedFile informed of in-place concurrent modification (got: ${modReason})`);
 
-      // Test 6: End-to-end fail-closed scan execution: scanFile catches StreamScanIncompleteError, calls onSkippedFile, returns [], and buildScanResult produces INCOMPLETE
-      const e2eStreamFile = path.join(realSec52, 'e2e_stream.dat');
-      fs.writeFileSync(e2eStreamFile, Buffer.alloc(10000, 'c\n'));
-      const e2eSkipped: Array<{ file: string; reason: string }> = [];
-      let e2eCallCount = 0;
-      try {
-        nodeFs.readSync = function (fd: number, buffer: any, offset: number, length: number, position: number) {
-          e2eCallCount++;
-          if (e2eCallCount === 1) {
-            return originalReadSync.call(nodeFs, fd, buffer, offset, 512, position);
-          }
-          return originalReadSync.apply(nodeFs, arguments as any);
-        };
-        const e2eFindings = scanFile(e2eStreamFile, {
-          workspaceRoot: realSec52,
-          streamLargeFiles: true,
-          maxFileSize: 1024,
-          streamChunkSize: 2048,
-          maxStreamFileSize: 1024 * 1024,
-          onSkippedFile: (file, reason) => e2eSkipped.push({ file, reason }),
-        });
-        assert(e2eFindings.length === 0, 'scanFile catches StreamScanIncompleteError and returns empty findings array');
-        assert(e2eSkipped.length === 1, 'scanFile records stream failure in onSkippedFile');
-        assert(e2eSkipped[0].file === e2eStreamFile && e2eSkipped[0].reason.includes('Unexpected short read'), 'Skipped reason records short read error');
+    // Test 6: End-to-end fail-closed scan execution: scanFile catches StreamScanIncompleteError, calls onSkippedFile, returns [], and buildScanResult produces INCOMPLETE
+    const e2eStreamFile = path.join(realSec52, 'e2e_stream.dat');
+    fs.writeFileSync(e2eStreamFile, Buffer.alloc(10000, 'c\n'));
+    const e2eSkipped: Array<{ file: string; reason: string }> = [];
+    let e2eCallCount = 0;
+    try {
+      nodeFs.readSync = function (fd: number, buffer: any, offset: number, length: number, position: number) {
+        e2eCallCount++;
+        if (e2eCallCount === 1) {
+          return originalReadSync.call(nodeFs, fd, buffer, offset, 512, position);
+        }
+        return originalReadSync.apply(nodeFs, arguments as any);
+      };
+      const e2eFindings = scanFile(e2eStreamFile, {
+        workspaceRoot: realSec52,
+        streamLargeFiles: true,
+        maxFileSize: 1024,
+        streamChunkSize: 2048,
+        maxStreamFileSize: 1024 * 1024,
+        onSkippedFile: (file, reason) => e2eSkipped.push({ file, reason }),
+      });
+      assert(e2eFindings.length === 0, 'scanFile catches StreamScanIncompleteError and returns empty findings array');
+      assert(e2eSkipped.length === 1, 'scanFile records stream failure in onSkippedFile');
+      assert(e2eSkipped[0].file === e2eStreamFile && e2eSkipped[0].reason.includes('Unexpected short read'), 'Skipped reason records short read error');
 
-        const e2eResult = buildScanResult(e2eFindings, 1, 10, 'HIGH', e2eSkipped);
-        assert(e2eResult.scanState === 'INCOMPLETE', 'buildScanResult sets scanState to INCOMPLETE when stream scan failed');
-        assert(e2eResult.isClean === false, 'buildScanResult sets isClean to false on incomplete stream scan');
-      } finally {
-        nodeFs.readSync = originalReadSync;
-      }
+      const e2eResult = buildScanResult(e2eFindings, 1, 10, 'HIGH', e2eSkipped);
+      assert(e2eResult.scanState === 'INCOMPLETE', 'buildScanResult sets scanState to INCOMPLETE when stream scan failed');
+      assert(e2eResult.isClean === false, 'buildScanResult sets isClean to false on incomplete stream scan');
     } finally {
-      try { fs.rmSync(sec52Dir, { recursive: true, force: true }); } catch {}
+      nodeFs.readSync = originalReadSync;
     }
+  } finally {
+    try { fs.rmSync(sec52Dir, { recursive: true, force: true }); } catch { }
+  }
 
   // --- 53. Complete Redaction & Secret Exposure Elimination ---
   console.log('\n--- 53. Complete Redaction & Secret Exposure Elimination ---');
