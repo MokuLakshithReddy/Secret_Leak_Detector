@@ -386,7 +386,7 @@ export function scanContent(
           rawSource: b64Match[0],
         });
       }
-    } catch {}
+    } catch { }
   }
 
   for (const candidate of candidates) {
@@ -516,6 +516,11 @@ export function scanFileStream(
   const findings: SecretFinding[] = [];
   const fd = fs.openSync(filePath, fs.constants.O_RDONLY);
   try {
+    const initialStat = fs.fstatSync(fd);
+    const initialMtime = initialStat.mtimeMs;
+    const initialCtime = initialStat.ctimeMs;
+    const initialIno = initialStat.ino;
+
     let fileOffset = 0;
     let currentLineOffset = 0;
     let currentColOffset = 0;
@@ -524,10 +529,15 @@ export function scanFileStream(
 
     const effectiveOverlap = Math.min(overlapBytes, Math.max(64, Math.floor(chunkSize / 2)));
     while (fileOffset < fileSize) {
-      // Check for concurrent file truncation or modification
+      // Check for concurrent file truncation, size change, or in-place modification
       const currentStat = fs.fstatSync(fd);
       if (currentStat.size !== fileSize) {
         const reason = `File modified or truncated concurrently during stream scan (expected ${fileSize} bytes, found ${currentStat.size} bytes)`;
+        options.onSkippedFile?.(filePath, reason);
+        throw new StreamScanIncompleteError(filePath, reason);
+      }
+      if (currentStat.mtimeMs !== initialMtime || currentStat.ctimeMs !== initialCtime || currentStat.ino !== initialIno) {
+        const reason = `File modified concurrently in place during stream scan`;
         options.onSkippedFile?.(filePath, reason);
         throw new StreamScanIncompleteError(filePath, reason);
       }
@@ -595,6 +605,27 @@ export function scanFileStream(
       fileOffset = readStart + bytesRead;
       isFirstChunk = false;
       if (bytesRead < readLength) break;
+    }
+
+    // Post-scan stability check: ensure file was not mutated during processing
+    const finalStat = fs.fstatSync(fd);
+    if (finalStat.size !== fileSize || finalStat.mtimeMs !== initialMtime || finalStat.ctimeMs !== initialCtime || finalStat.ino !== initialIno) {
+      const reason = `File modified concurrently during stream scan`;
+      options.onSkippedFile?.(filePath, reason);
+      throw new StreamScanIncompleteError(filePath, reason);
+    }
+
+    try {
+      const pathStat = fs.statSync(filePath);
+      if (pathStat.ino !== initialIno || pathStat.size !== fileSize || pathStat.mtimeMs !== initialMtime) {
+        const reason = `File replaced or modified concurrently on disk during stream scan`;
+        options.onSkippedFile?.(filePath, reason);
+        throw new StreamScanIncompleteError(filePath, reason);
+      }
+    } catch (err: any) {
+      const reason = `File removed or unlinked concurrently during stream scan: ${err.message || err}`;
+      options.onSkippedFile?.(filePath, reason);
+      throw new StreamScanIncompleteError(filePath, reason);
     }
   } finally {
     fs.closeSync(fd);
