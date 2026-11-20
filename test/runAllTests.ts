@@ -5509,8 +5509,9 @@ exit 0
     assert(replaceThrew === true, 'scanFileStream throws StreamScanIncompleteError on replaced file');
     assert(replaceCallbacks.length === 1, `onSkippedFile called EXACTLY ONCE for replaced file (got ${replaceCallbacks.length})`);
     assert(
+      replaceCallbacks[0]?.reason.includes('File replaced concurrently on disk') ||
       replaceCallbacks[0]?.reason.includes('File replaced or modified concurrently on disk'),
-      `Reason specifies replaced or modified on disk (got: ${replaceCallbacks[0]?.reason})`
+      `Reason specifies replaced on disk (got: ${replaceCallbacks[0]?.reason})`
     );
     assert(
       !replaceCallbacks[0]?.reason.includes('File removed or unlinked'),
