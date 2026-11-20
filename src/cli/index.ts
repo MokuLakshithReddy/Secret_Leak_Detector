@@ -120,10 +120,12 @@ Commands:
                          Options:
                            --max <n>          Number of commits to inspect (default: 100)
 
-  trace [secret]         Trace a credential's commit provenance, duration, and blast radius
-                         (Pass secret via stdin or SLD_SECRET to avoid process table exposure)
-  timeline [secret]      Display ASCII exposure timeline across commit history
-  graph [secret]         Export formal Git DAG Exposure Graph (nodes, edges, reachability)
+  trace [- | secret]     Trace a credential's commit provenance, duration, and blast radius
+                         (Pass secret via stdin [printf '%s' "$S" | ... -] or SLD_SECRET)
+  timeline [- | secret]  Display ASCII exposure timeline across commit history
+                         (Pass secret via stdin [printf '%s' "$S" | ... -] or SLD_SECRET)
+  graph [- | secret]     Export formal Git DAG Exposure Graph (nodes, edges, reachability)
+                         (Pass secret via stdin [printf '%s' "$S" | ... -] or SLD_SECRET)
 
   baseline init          Generate .secretleak-baseline.json with existing findings
   baseline update        Refresh line numbers for known baseline findings (never whitelists new leaks)
@@ -573,18 +575,50 @@ async function runHistory(cmdArgs: string[], cwd: string) {
   process.exit(1);
 }
 
+/** Maximum bytes permitted from stdin for secret input (64KB) to prevent memory exhaustion DoS */
+const MAX_STDIN_SECRET_BYTES = 64 * 1024;
+
+function printCommandHelp(commandName: string): void {
+  console.log(`\nUsage: printf '%s' "$SECRET" | secret-leak-detector ${commandName} -`);
+  console.log(`   Or: SLD_SECRET="$SECRET" secret-leak-detector ${commandName}`);
+  console.log(`   Or: secret-leak-detector ${commandName} <secret-string> [options]\n`);
+  console.log(`Options:`);
+  if (commandName === 'graph') {
+    console.log(`  --json               Output formal Git DAG exposure graph as JSON`);
+  }
+  console.log(`  -h, --help           Display this usage help\n`);
+  console.log(`Security Guidance:`);
+  console.log(`  • Primary & recommended: Pipe via stdin: printf '%s' "$SECRET" | secret-leak-detector ${commandName} -`);
+  console.log(`    Piping avoids process table ('ps aux', Task Manager) and shell history leaks.`);
+  console.log(`    Using 'printf' instead of 'echo' prevents unwanted newline injection and backslash escaping.`);
+  console.log(`  • Environment variable (SLD_SECRET) avoids shell history, but is visible in /proc/<pid>/environ.`);
+  console.log(`    Inject it transiently using a secrets manager (e.g., Vault, 1Password CLI 'op run', Doppler).`);
+  console.log(`  • Direct command-line secret arguments expose credentials to all local users via process listings.`);
+  console.log(`    Set SLD_REJECT_CLI_SECRETS=1 or SLD_STRICT=true to enforce strict rejection of direct arguments.\n`);
+}
+
 async function resolveSecretInput(cmdArgs: string[], commandName: string): Promise<string> {
-  if (process.env.SLD_SECRET) {
-    return process.env.SLD_SECRET.trim();
+  if (cmdArgs.includes('-h') || cmdArgs.includes('--help')) {
+    printCommandHelp(commandName);
+    process.exit(0);
   }
 
-  const explicitArg = cmdArgs.find((a) => !a.startsWith('--'));
+  // An explicit secret arg is either '-' (stdin indicator) or any non-option argument
+  const explicitArg = cmdArgs.find((a) => a === '-' || !a.startsWith('-'));
 
-  if (explicitArg === '-' || (!explicitArg && !process.stdin.isTTY)) {
+  // 1. Explicit stdin indicator '-' takes precedence
+  if (explicitArg === '-') {
     return new Promise((resolve) => {
       let data = '';
+      let totalBytes = 0;
       process.stdin.setEncoding('utf8');
       process.stdin.on('data', (chunk) => {
+        const chunkLen = typeof chunk === 'string' ? Buffer.byteLength(chunk, 'utf8') : (chunk as Buffer).length;
+        totalBytes += chunkLen;
+        if (totalBytes > MAX_STDIN_SECRET_BYTES) {
+          process.stdin.pause();
+          fail('Error: Stdin secret input exceeds maximum permitted size (64KB).');
+        }
         data += chunk;
       });
       process.stdin.on('end', () => {
@@ -600,16 +634,33 @@ async function resolveSecretInput(cmdArgs: string[], commandName: string): Promi
     });
   }
 
+  // 2. SLD_SECRET environment variable
+  if (process.env.SLD_SECRET) {
+    const val = process.env.SLD_SECRET.trim();
+    if (val) {
+      return val;
+    }
+  }
+
+  // 3. Direct CLI argument with security policy check
   if (explicitArg) {
+    if (process.env.SLD_REJECT_CLI_SECRETS === '1' || process.env.SLD_STRICT === 'true') {
+      fail(
+        `Error: Direct command-line secret arguments are disallowed by strict security policy. Pipe via stdin instead: printf '%s' "$SECRET" | secret-leak-detector ${commandName} -`
+      );
+    }
     console.error(
       `⚠️  Security Warning: Passing secrets via CLI arguments exposes them in shell history and 'ps' listings.`
     );
-    console.error(`   Recommended: Pipe via stdin ('echo "$SECRET" | secret-leak-detector ${commandName} -') or use SLD_SECRET env var.\n`);
+    console.error(
+      `   Recommended: Pipe via stdin (printf '%s' "$SECRET" | secret-leak-detector ${commandName} -) or use SLD_SECRET env var.\n`
+    );
     return explicitArg;
   }
 
-  console.error(`Usage: secret-leak-detector ${commandName} <secret-string | ->`);
-  console.error(`       Or set SLD_SECRET environment variable.`);
+  console.error(`Usage: printf '%s' "$SECRET" | secret-leak-detector ${commandName} -`);
+  console.error(`   Or: SLD_SECRET="$SECRET" secret-leak-detector ${commandName}`);
+  console.error(`   Or: secret-leak-detector ${commandName} <secret-string> (⚠️ exposes secret in process table/shell history)`);
   process.exit(2);
 }
 

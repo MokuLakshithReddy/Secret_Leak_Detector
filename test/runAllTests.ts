@@ -5578,6 +5578,87 @@ exit 0
   assert(!redactedVal.includes(testSecretEx), 'redactSecret never equals raw secret');
   assert(redactedVal.includes('•'), 'redactSecret contains masking characters');
 
+  // --- 54. CLI Secret Input Resolution, Stdin Protection & Strict Rejection Policy ---
+  console.log('\n--- 54. CLI Secret Input Resolution, Stdin Protection & Strict Rejection Policy ---');
+  const cliBin = path.join(process.cwd(), 'dist', 'cli.js');
+
+  // Test 1: Dedicated help flag exits with 0 for trace, timeline, and graph without running Git trace
+  const traceHelp = cp.spawnSync(process.execPath, [cliBin, 'trace', '--help'], { encoding: 'utf8' });
+  assert(traceHelp.status === 0, `trace --help exits with 0 (got ${traceHelp.status})`);
+  assert(traceHelp.stdout.includes("printf '%s' \"$SECRET\" | secret-leak-detector trace -"), 'trace --help prints printf stdin usage');
+  assert(traceHelp.stdout.includes('Security Guidance:'), 'trace --help includes security guidance section');
+
+  const timelineHelp = cp.spawnSync(process.execPath, [cliBin, 'timeline', '-h'], { encoding: 'utf8' });
+  assert(timelineHelp.status === 0, `timeline -h exits with 0 (got ${timelineHelp.status})`);
+  assert(timelineHelp.stdout.includes("printf '%s' \"$SECRET\" | secret-leak-detector timeline -"), 'timeline -h prints printf stdin usage');
+
+  const graphHelp = cp.spawnSync(process.execPath, [cliBin, 'graph', '--help'], { encoding: 'utf8' });
+  assert(graphHelp.status === 0, `graph --help exits with 0 (got ${graphHelp.status})`);
+  assert(graphHelp.stdout.includes('--json'), 'graph --help mentions --json option');
+
+  // Test 2: Stdin piping via '-' resolves credential safely
+  const testTraceSecret = synth(['ghp_', 'mockclitestsecret1234567890']);
+  const stdinPipeRes = cp.spawnSync(process.execPath, [cliBin, 'trace', '-'], {
+    input: testTraceSecret,
+    encoding: 'utf8',
+  });
+  assert(stdinPipeRes.status === 0, `trace with stdin '-' exits 0 (got ${stdinPipeRes.status})`);
+  assert(stdinPipeRes.stdout.includes('GIT PROVENANCE & BLAST RADIUS TRACE'), 'trace executed provenance analysis');
+  assert(!stdinPipeRes.stderr.includes('Security Warning'), 'stdin piping does not emit security warning');
+
+  // Test 3: SLD_SECRET environment variable resolution
+  const envSecret = synth(['AKIA', 'CLITESTENVSECRET1234']);
+  const envRes = cp.spawnSync(process.execPath, [cliBin, 'trace'], {
+    env: { ...process.env, SLD_SECRET: envSecret },
+    encoding: 'utf8',
+  });
+  assert(envRes.status === 0, `trace with SLD_SECRET exits 0 (got ${envRes.status})`);
+  assert(envRes.stdout.includes('GIT PROVENANCE & BLAST RADIUS TRACE'), 'trace with SLD_SECRET executed trace');
+  assert(!envRes.stderr.includes('Security Warning'), 'SLD_SECRET does not emit argument security warning');
+
+  // Test 4: Empty stdin fails with exit code 2 and explicit error
+  const emptyStdinRes = cp.spawnSync(process.execPath, [cliBin, 'trace', '-'], {
+    input: '   \n  \t  ',
+    encoding: 'utf8',
+  });
+  assert(emptyStdinRes.status === 2, `trace with empty stdin exits 2 (got ${emptyStdinRes.status})`);
+  assert(emptyStdinRes.stderr.includes('Error: No secret string received from stdin.'), 'empty stdin reports clear error');
+
+  // Test 5: Oversized stdin (>64KB) fails with exit code 2 and bounds error
+  const oversizedData = 'x'.repeat(70 * 1024);
+  const oversizedRes = cp.spawnSync(process.execPath, [cliBin, 'trace', '-'], {
+    input: oversizedData,
+    encoding: 'utf8',
+  });
+  assert(oversizedRes.status === 2, `trace with oversized stdin exits 2 (got ${oversizedRes.status})`);
+  assert(oversizedRes.stderr.includes('exceeds maximum permitted size (64KB)'), 'oversized stdin reports 64KB bound error');
+
+  // Test 6: Direct plaintext CLI argument emits high-visibility warning to stderr (backward compatibility)
+  const directArgSecret = synth(['AKIA', 'DIRECTARGUMENTTEST12']);
+  const directRes = cp.spawnSync(process.execPath, [cliBin, 'trace', directArgSecret], {
+    env: { ...process.env, SLD_REJECT_CLI_SECRETS: '', SLD_STRICT: '' },
+    encoding: 'utf8',
+  });
+  assert(directRes.status === 0, `trace with direct argument exits 0 in backward-compatibility mode (got ${directRes.status})`);
+  assert(directRes.stderr.includes('Security Warning: Passing secrets via CLI arguments exposes them in shell history'), 'direct argument emits security warning');
+  assert(directRes.stderr.includes("printf '%s' \"$SECRET\""), 'warning recommends printf stdin piping');
+
+  // Test 7: Direct plaintext CLI argument rejected when SLD_REJECT_CLI_SECRETS is enabled
+  const strictRejectRes = cp.spawnSync(process.execPath, [cliBin, 'trace', directArgSecret], {
+    env: { ...process.env, SLD_REJECT_CLI_SECRETS: '1' },
+    encoding: 'utf8',
+  });
+  assert(strictRejectRes.status === 2, `trace with direct argument in strict mode exits 2 (got ${strictRejectRes.status})`);
+  assert(strictRejectRes.stderr.includes('Direct command-line secret arguments are disallowed by strict security policy'), 'strict mode rejects direct argument');
+
+  // Test 8: Missing secret argument in interactive invocation exits 2 with safe usage guidance
+  const noInputRes = cp.spawnSync(process.execPath, [cliBin, 'trace'], {
+    env: { ...process.env, SLD_SECRET: '' },
+    encoding: 'utf8',
+  });
+  assert(noInputRes.status === 2, `trace without secret input exits 2 (got ${noInputRes.status})`);
+  assert(noInputRes.stderr.includes("Usage: printf '%s' \"$SECRET\" | secret-leak-detector trace -"), 'missing input usage shows printf stdin guidance');
+
   console.log('\n============================================================');
   console.log(`🎉 TEST SUMMARY: ${passed} PASSED, ${failed} FAILED`);
   console.log('============================================================\n');
