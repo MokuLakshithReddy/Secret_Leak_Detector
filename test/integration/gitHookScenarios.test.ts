@@ -131,6 +131,8 @@ export async function runGitHookIntegrationTests(): Promise<void> {
   assert(hookScript.startsWith('#!/bin/sh'), 'Hook script starts with #!/bin/sh');
   assert(hookScript.includes('# [SLD_HOOK_MANAGED]'), 'Hook script contains SLD_HOOK_MARKER');
   assert(hookScript.includes('scan --staged'), 'Hook script invokes staged scan');
+  assert(hookScript.includes("tr '[:upper:]' '[:lower:]'"), 'Hook script normalizes SLD_STRICT environment flag casing');
+  assert(hookScript.includes('[ "$STRICT_ENV_VALUE" = "1" ] || [ "$STRICT_ENV_VALUE" = "true" ]'), 'Hook script accepts both SLD_STRICT=1 and SLD_STRICT=true');
   assert(!hookScript.includes('${{ inputs'), 'Hook script contains no template literal injection points');
   console.log('');
 
