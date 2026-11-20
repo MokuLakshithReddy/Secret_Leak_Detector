@@ -6,6 +6,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ## [1.0.5] - 2026-11-20
 
 ### Security & Hardening
+- **Unified Strict Environment Flag Parsing:** Normalize SLD_STRICT consistently across scan handling, direct CLI argument rejection, and generated pre-commit hooks. Accept 1 and true (case-insensitive) in every path, with regression coverage for both values and the relaxed false case.
 - **Streaming Scanner Concurrency & Fail-Closed Stability:**
   - Unified stream file stability checks into `verifyStreamStability()`, checking path existence/identity (`fs.statSync`) prior to descriptor stats (`fs.fstatSync`) to cleanly handle file replacement, truncation, or deletion.
   - Eliminated duplicate callback invocations on stream interruption, preventing race conditions where both `StreamScanIncompleteError` and file stream completion could trigger.

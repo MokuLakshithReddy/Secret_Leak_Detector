@@ -219,7 +219,7 @@ $ SLD_SECRET="$CREDENTIAL_TO_INSPECT" secret-leak-detector trace
 
 # Security Note: Using `printf '%s'` instead of `echo` prevents trailing newlines and shell escape expansion.
 # Environment variables avoid shell history but may be visible in /proc/<pid>/environ.
-# For zero-leak policy enforcement, set SLD_REJECT_CLI_SECRETS=1 or SLD_STRICT=true to reject direct arguments.
+# For zero-leak policy enforcement, set SLD_REJECT_CLI_SECRETS=1 or SLD_STRICT=1 / SLD_STRICT=true (case-insensitive) to reject direct arguments.
 
 ============================================================
 🔍 GIT PROVENANCE & BLAST RADIUS TRACE

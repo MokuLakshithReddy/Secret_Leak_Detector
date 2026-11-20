@@ -41,6 +41,12 @@ function fail(msg: string): never {
   process.exit(2);
 }
 
+/** Parse boolean environment flags consistently across CLI security policies. */
+function isEnabledEnvFlag(value: string | undefined): boolean {
+  const normalized = value?.trim().toLowerCase();
+  return normalized === '1' || normalized === 'true';
+}
+
 async function main() {
   const cwd = process.cwd();
 
@@ -171,7 +177,7 @@ async function runScan(cmdArgs: string[], cwd: string) {
     cmdArgs.includes('--no-ignore-skipped') ||
     cmdArgs.includes('--fail-on-skipped') ||
     cmdArgs.includes('--strict') ||
-    process.env.SLD_STRICT === '1' ||
+    isEnabledEnvFlag(process.env.SLD_STRICT) ||
     process.env.SLD_FAIL_ON_SKIPPED === '1';
 
   let gitStrict: string | undefined;
@@ -594,7 +600,7 @@ function printCommandHelp(commandName: string): void {
   console.log(`  • Environment variable (SLD_SECRET) avoids shell history, but is visible in /proc/<pid>/environ.`);
   console.log(`    Inject it transiently using a secrets manager (e.g., Vault, 1Password CLI 'op run', Doppler).`);
   console.log(`  • Direct command-line secret arguments expose credentials to all local users via process listings.`);
-  console.log(`    Set SLD_REJECT_CLI_SECRETS=1 or SLD_STRICT=true to enforce strict rejection of direct arguments.\n`);
+  console.log(`    Set SLD_REJECT_CLI_SECRETS=1 or SLD_STRICT=1/true (case-insensitive) to reject direct arguments.\n`);
 }
 
 async function resolveSecretInput(cmdArgs: string[], commandName: string): Promise<string> {
@@ -644,7 +650,7 @@ async function resolveSecretInput(cmdArgs: string[], commandName: string): Promi
 
   // 3. Direct CLI argument with security policy check
   if (explicitArg) {
-    if (process.env.SLD_REJECT_CLI_SECRETS === '1' || process.env.SLD_STRICT === 'true') {
+    if (isEnabledEnvFlag(process.env.SLD_REJECT_CLI_SECRETS) || isEnabledEnvFlag(process.env.SLD_STRICT)) {
       fail(
         `Error: Direct command-line secret arguments are disallowed by strict security policy. Pipe via stdin instead: printf '%s' "$SECRET" | secret-leak-detector ${commandName} -`
       );
