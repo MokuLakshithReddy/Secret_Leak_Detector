@@ -23,6 +23,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Documentation & Calibration
 - **Documentation & Phrasing Accuracy:**
   - Softened absolute marketing claims in `README.md` to reflect defense-in-depth pre-commit scanning and post-commit remediation rather than impossible guarantees.
+  - Replaced CLI documentation examples for `trace`, `timeline`, and `graph` that passed direct string arguments with secure stdin piping (`echo "$SECRET" | secret-leak-detector trace -`) and `SLD_SECRET` environment variable patterns.
+  - Removed misleading `secretLeakDetector.redactSecrets` configuration property from `package.json`, keeping credential redaction unconditionally mandatory across all UI views.
   - Updated all version references, installation snippets, and validation documentation to v1.0.5.
   - Documented the process-blinded nature of the internal synthetic corpus in evaluation documentation and maintained Issue #46 for tracking independent third-party evaluations.
 
