@@ -5645,13 +5645,31 @@ exit 0
 
   // Test 7: Direct plaintext CLI argument rejected when SLD_REJECT_CLI_SECRETS is enabled
   const strictRejectRes = cp.spawnSync(process.execPath, [cliBin, 'trace', directArgSecret], {
-    env: { ...process.env, SLD_REJECT_CLI_SECRETS: '1' },
+    env: { ...process.env, SLD_REJECT_CLI_SECRETS: '1', SLD_STRICT: '' },
     encoding: 'utf8',
   });
   assert(strictRejectRes.status === 2, `trace with direct argument in strict mode exits 2 (got ${strictRejectRes.status})`);
   assert(strictRejectRes.stderr.includes('Direct command-line secret arguments are disallowed by strict security policy'), 'strict mode rejects direct argument');
 
-  // Test 8: Missing secret argument in interactive invocation exits 2 with safe usage guidance
+  // Test 8: SLD_STRICT accepts both documented truthy values for direct-argument rejection
+  for (const strictValue of ['1', 'true', 'TRUE']) {
+    const strictEnvRes = cp.spawnSync(process.execPath, [cliBin, 'trace', directArgSecret], {
+      env: { ...process.env, SLD_REJECT_CLI_SECRETS: '', SLD_STRICT: strictValue },
+      encoding: 'utf8',
+    });
+    assert(strictEnvRes.status === 2, `SLD_STRICT=${strictValue} rejects direct secret arguments (got ${strictEnvRes.status})`);
+    assert(strictEnvRes.stderr.includes('Direct command-line secret arguments are disallowed by strict security policy'), `SLD_STRICT=${strictValue} reports strict-policy rejection`);
+  }
+
+  // Test 9: SLD_STRICT=false does not activate direct-argument rejection
+  const strictFalseRes = cp.spawnSync(process.execPath, [cliBin, 'trace', directArgSecret], {
+    env: { ...process.env, SLD_REJECT_CLI_SECRETS: '', SLD_STRICT: 'false' },
+    encoding: 'utf8',
+  });
+  assert(strictFalseRes.status === 0, `SLD_STRICT=false preserves backward-compatible argument handling (got ${strictFalseRes.status})`);
+  assert(strictFalseRes.stderr.includes('Security Warning: Passing secrets via CLI arguments'), 'SLD_STRICT=false still warns about direct arguments');
+
+  // Test 10: Missing secret argument in interactive invocation exits 2 with safe usage guidance
   const noInputRes = cp.spawnSync(process.execPath, [cliBin, 'trace'], {
     env: { ...process.env, SLD_SECRET: '' },
     encoding: 'utf8',
