@@ -615,15 +615,17 @@ export function scanFileStream(
       throw new StreamScanIncompleteError(filePath, reason);
     }
 
+    let pathStat: fs.Stats;
     try {
-      const pathStat = fs.statSync(filePath);
-      if (pathStat.ino !== initialIno || pathStat.size !== fileSize || pathStat.mtimeMs !== initialMtime) {
-        const reason = `File replaced or modified concurrently on disk during stream scan`;
-        options.onSkippedFile?.(filePath, reason);
-        throw new StreamScanIncompleteError(filePath, reason);
-      }
+      pathStat = fs.statSync(filePath);
     } catch (err: any) {
       const reason = `File removed or unlinked concurrently during stream scan: ${err.message || err}`;
+      options.onSkippedFile?.(filePath, reason);
+      throw new StreamScanIncompleteError(filePath, reason);
+    }
+
+    if (pathStat.ino !== initialIno || pathStat.size !== fileSize || pathStat.mtimeMs !== initialMtime) {
+      const reason = `File replaced or modified concurrently on disk during stream scan`;
       options.onSkippedFile?.(filePath, reason);
       throw new StreamScanIncompleteError(filePath, reason);
     }
