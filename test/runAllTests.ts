@@ -1537,7 +1537,7 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
     // Test 4: CLI --version
     const cliPath = path.join(process.cwd(), 'dist', 'cli.js');
     const verRes = cp.spawnSync(process.execPath, [cliPath, '--version'], { encoding: 'utf8' });
-    assert(verRes.stdout.trim() === '1.0.4', 'CLI --version prints valid semantic version (got: ' + verRes.stdout.trim() + ')');
+    assert(verRes.stdout.trim() === '1.0.5', 'CLI --version prints valid semantic version (got: ' + verRes.stdout.trim() + ')');
   }
 
   // --- 28. Robust Git Diff Parsing, Glob Matching, UTF-16, & Hook Lifecycle ---
@@ -1762,9 +1762,9 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
     assert(histVerifyResult.isResolved === false, 'Secret remaining in git history is NOT marked resolved');
     assert(histVerifyResult.historyStatus === 'REMOVED_FROM_HEAD_STILL_IN_HISTORY', 'History status correctly set to REMOVED_FROM_HEAD_STILL_IN_HISTORY');
 
-    // Test 4: Version utility returns matching 1.0.4 version
+    // Test 4: Version utility returns matching 1.0.5 version
     const { getPackageVersion } = require('../src/core/version');
-    assert(getPackageVersion() === '1.0.4', `getPackageVersion returns 1.0.4 (got ${getPackageVersion()})`);
+    assert(getPackageVersion() === '1.0.5', `getPackageVersion returns 1.0.5 (got ${getPackageVersion()})`);
 
     // --- 31. Binary and Oversize Tolerant Staged Scans, Scoped Excludes & Hook Registry ---
     console.log('\n--- 31. Binary and Oversize Tolerant Staged Scans, Scoped Excludes & Hook Registry ---');
@@ -5282,6 +5282,57 @@ exit 0
       assert(saltOutput.includes('Passing private salts via command-line flags (--salt) is prohibited'), 'CLI outputs clear prohibition error for --salt flag');
       assert(!saltOutput.includes(dummyArgSalt), 'CLI never exposes the supplied salt value in output');
     }
+
+    // Test 10: validateBaselineSchema enforces 64-hex private v2 or 16-hex legacy fingerprints
+    const valid64Fp = 'a'.repeat(64);
+    const valid16Fp = 'b'.repeat(16);
+    const invalid32Fp = 'c'.repeat(32);
+    const invalidCharFp = 'z'.repeat(64);
+
+    const baseValidSchema = {
+      version: 1,
+      generatedAt: '2026-11-20T00:00:00.000Z',
+      generator: 'Secret Leak Detector v1.0.5',
+      fingerprintScheme: 'hmac-sha256-private-v2',
+      fingerprintKeyId: '0123456789abcdef',
+      findings: [
+        { id: 'v1', fingerprint: valid64Fp, ruleId: 'AWS Access Key ID', file: 'app.ts', line: 1 },
+        { id: 'v2', fingerprint: valid16Fp, ruleId: 'AWS Access Key ID', file: 'app.ts', line: 2 },
+      ],
+    };
+    assert(validateBaselineSchema(baseValidSchema).findings.length === 2, 'validateBaselineSchema accepts 64-hex and 16-hex fingerprints');
+
+    let invalidLenErr: any;
+    try {
+      validateBaselineSchema({
+        ...baseValidSchema,
+        findings: [{ id: 'bad1', fingerprint: invalid32Fp, ruleId: 'AWS Access Key ID', file: 'app.ts', line: 1 }],
+      });
+    } catch (err: any) {
+      invalidLenErr = err;
+    }
+    assert(invalidLenErr instanceof BaselineValidationError, 'validateBaselineSchema rejects 32-char fingerprint under private-v2');
+
+    let invalidCharErr: any;
+    try {
+      validateBaselineSchema({
+        ...baseValidSchema,
+        findings: [{ id: 'bad2', fingerprint: invalidCharFp, ruleId: 'AWS Access Key ID', file: 'app.ts', line: 1 }],
+      });
+    } catch (err: any) {
+      invalidCharErr = err;
+    }
+    assert(invalidCharErr instanceof BaselineValidationError, 'validateBaselineSchema rejects non-hex fingerprint under private-v2');
+
+    // Test 11: Validate the repository root baseline file contains 0 legacy 16-char fingerprints
+    const rootRepoBaselinePath = path.resolve(process.cwd(), '.secretleak-baseline.json');
+    if (fs.existsSync(rootRepoBaselinePath)) {
+      const rootBaselineData = JSON.parse(fs.readFileSync(rootRepoBaselinePath, 'utf8'));
+      const validatedRoot = validateBaselineSchema(rootBaselineData);
+      assert(validatedRoot.fingerprintScheme === 'hmac-sha256-private-v2', 'Root baseline is hmac-sha256-private-v2');
+      const legacyCount = validatedRoot.findings.filter((f) => f.fingerprint.length !== 64).length;
+      assert(legacyCount === 0, `Root baseline has 0 legacy non-64 fingerprints (got ${legacyCount})`);
+    }
   } finally {
     try { fs.rmSync(sec51Dir, { recursive: true, force: true }); } catch { }
   }
@@ -5372,8 +5423,7 @@ exit 0
     // Test 5: Detect concurrent in-place modification (same size, modified mtime/ctime) -> fail-closed
     const concurrentModFile = path.join(realSec52, 'concurrent_mod.dat');
     fs.writeFileSync(concurrentModFile, Buffer.alloc(10000, 'a\n'));
-    let modReason = '';
-    const modCollector = (f: string, r: string) => { modReason = r; };
+    const modCallbacks: Array<{ file: string; reason: string }> = [];
     let modThrew = false;
     let modCallCount = 0;
     try {
@@ -5387,15 +5437,16 @@ exit 0
         return originalReadSync.apply(nodeFs, arguments as any);
       };
       try {
-        scanFileStream(concurrentModFile, { onSkippedFile: modCollector }, 10000, 2048);
+        scanFileStream(concurrentModFile, { onSkippedFile: (file, reason) => modCallbacks.push({ file, reason }) }, 10000, 2048);
       } catch (err: any) {
         if (err instanceof StreamScanIncompleteError) modThrew = true;
       }
     } finally {
       nodeFs.readSync = originalReadSync;
     }
-      assert(modThrew === true, 'scanFileStream throws StreamScanIncompleteError on concurrent in-place modification');
-      assert(modReason.includes('File modified concurrently'), `onSkippedFile informed of in-place concurrent modification (got: ${modReason})`);
+    assert(modThrew === true, 'scanFileStream throws StreamScanIncompleteError on concurrent in-place modification');
+    assert(modCallbacks.length === 1, `onSkippedFile called EXACTLY ONCE for in-place concurrent modification (got ${modCallbacks.length})`);
+    assert(modCallbacks[0]?.reason.includes('File modified concurrently'), `onSkippedFile informed of in-place concurrent modification (got: ${modCallbacks[0]?.reason})`);
 
     // Test 6: End-to-end fail-closed scan execution: scanFile catches StreamScanIncompleteError, calls onSkippedFile, returns [], and buildScanResult produces INCOMPLETE
     const e2eStreamFile = path.join(realSec52, 'e2e_stream.dat');
@@ -5428,6 +5479,80 @@ exit 0
     } finally {
       nodeFs.readSync = originalReadSync;
     }
+
+    // Test 7: Concurrently replaced file triggers onSkippedFile EXACTLY ONCE with "File replaced or modified concurrently on disk"
+    const replacedFile = path.join(realSec52, 'replaced_stream.dat');
+    fs.writeFileSync(replacedFile, Buffer.alloc(10000, 'r\n'));
+    const replaceCallbacks: Array<{ file: string; reason: string }> = [];
+    let replaceThrew = false;
+    let replaceCallCount = 0;
+    try {
+      nodeFs.readSync = function (fd: number, buffer: any, offset: number, length: number, position: number) {
+        replaceCallCount++;
+        if (replaceCallCount === 2) {
+          // Replace file on disk by unlinking and recreating
+          try { fs.unlinkSync(replacedFile); } catch { }
+          fs.writeFileSync(replacedFile, Buffer.alloc(12000, 'new_content\n'));
+        }
+        return originalReadSync.apply(nodeFs, arguments as any);
+      };
+      try {
+        scanFileStream(replacedFile, {
+          onSkippedFile: (file, reason) => replaceCallbacks.push({ file, reason }),
+        }, 10000, 2048);
+      } catch (err: any) {
+        if (err instanceof StreamScanIncompleteError) replaceThrew = true;
+      }
+    } finally {
+      nodeFs.readSync = originalReadSync;
+    }
+    assert(replaceThrew === true, 'scanFileStream throws StreamScanIncompleteError on replaced file');
+    assert(replaceCallbacks.length === 1, `onSkippedFile called EXACTLY ONCE for replaced file (got ${replaceCallbacks.length})`);
+    assert(
+      replaceCallbacks[0]?.reason.includes('File replaced concurrently on disk') ||
+      replaceCallbacks[0]?.reason.includes('File replaced or modified concurrently on disk'),
+      `Reason specifies replaced on disk (got: ${replaceCallbacks[0]?.reason})`
+    );
+    assert(
+      !replaceCallbacks[0]?.reason.includes('File removed or unlinked'),
+      'Reason does NOT falsely report file removed or unlinked'
+    );
+
+    // Test 8: Concurrently unlinked/removed file triggers onSkippedFile EXACTLY ONCE with "File removed or unlinked"
+    const removedFile = path.join(realSec52, 'removed_stream.dat');
+    fs.writeFileSync(removedFile, Buffer.alloc(10000, 'u\n'));
+    const removeCallbacks: Array<{ file: string; reason: string }> = [];
+    let removeThrew = false;
+    let removeCallCount = 0;
+    try {
+      nodeFs.readSync = function (fd: number, buffer: any, offset: number, length: number, position: number) {
+        removeCallCount++;
+        if (removeCallCount === 2) {
+          // Remove file from disk
+          try { fs.unlinkSync(removedFile); } catch { }
+        }
+        return originalReadSync.apply(nodeFs, arguments as any);
+      };
+      try {
+        scanFileStream(removedFile, {
+          onSkippedFile: (file, reason) => removeCallbacks.push({ file, reason }),
+        }, 10000, 2048);
+      } catch (err: any) {
+        if (err instanceof StreamScanIncompleteError) removeThrew = true;
+      }
+    } finally {
+      nodeFs.readSync = originalReadSync;
+    }
+    assert(removeThrew === true, 'scanFileStream throws StreamScanIncompleteError on unlinked/removed file');
+    assert(removeCallbacks.length === 1, `onSkippedFile called EXACTLY ONCE for unlinked file (got ${removeCallbacks.length})`);
+    assert(
+      removeCallbacks[0]?.reason.includes('File removed or unlinked'),
+      `Reason specifies removed or unlinked (got: ${removeCallbacks[0]?.reason})`
+    );
+    assert(
+      !removeCallbacks[0]?.reason.includes('File replaced or modified concurrently on disk'),
+      'Reason does NOT falsely report file replaced'
+    );
   } finally {
     try { fs.rmSync(sec52Dir, { recursive: true, force: true }); } catch { }
   }

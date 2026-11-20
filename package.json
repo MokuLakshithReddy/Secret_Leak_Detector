@@ -2,7 +2,7 @@
   "name": "secret-leak-detector",
   "displayName": "Secret Leak Detector",
   "description": "Developer-first credential protection. Detect, trace, block, and fix secret leaks before they leave your machine.",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "publisher": "MokuLakshithReddy",
   "icon": "media/icon.png",
   "license": "SEE LICENSE IN LICENSE",
@@ -254,7 +254,7 @@
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
     "ajv-formats-draft2019": "^1.6.1",
-    "esbuild": "^0.20.1",
+    "esbuild": "^0.25.12",
     "mocha": "^12.0.3",
     "ts-node": "^10.9.2",
     "typescript": "^5.3.3"
@@ -278,5 +278,9 @@
     "LICENSE",
     "SECURITY.md",
     "CHANGELOG.md"
-  ]
+  ],
+  "overrides": {
+    "glob": "^14.0.6",
+    "minimatch": "^11.0.9"
+  }
 }
