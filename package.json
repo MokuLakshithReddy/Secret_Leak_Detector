@@ -156,11 +156,6 @@
           "default": 3.4,
           "description": "Minimum Shannon entropy threshold for generic secret detection."
         },
-        "secretLeakDetector.redactSecrets": {
-          "type": "boolean",
-          "default": true,
-          "description": "Mask credential values in the UI, tree views, tooltips, and terminal to avoid secondary leaks. Disabling this setting displays raw unmasked secrets in tree tooltips and findings views."
-        },
         "secretLeakDetector.excludeGlobs": {
           "type": "array",
           "items": {

@@ -120,10 +120,12 @@ Commands:
                          Options:
                            --max <n>          Number of commits to inspect (default: 100)
 
-  trace [secret]         Trace a credential's commit provenance, duration, and blast radius
+  trace [- | secret]     Trace a credential's commit provenance, duration, and blast radius
                          (Pass secret via stdin or SLD_SECRET to avoid process table exposure)
-  timeline [secret]      Display ASCII exposure timeline across commit history
-  graph [secret]         Export formal Git DAG Exposure Graph (nodes, edges, reachability)
+  timeline [- | secret]  Display ASCII exposure timeline across commit history
+                         (Pass secret via stdin or SLD_SECRET to avoid process table exposure)
+  graph [- | secret]     Export formal Git DAG Exposure Graph (nodes, edges, reachability)
+                         (Pass secret via stdin or SLD_SECRET to avoid process table exposure)
 
   baseline init          Generate .secretleak-baseline.json with existing findings
   baseline update        Refresh line numbers for known baseline findings (never whitelists new leaks)
@@ -608,8 +610,9 @@ async function resolveSecretInput(cmdArgs: string[], commandName: string): Promi
     return explicitArg;
   }
 
-  console.error(`Usage: secret-leak-detector ${commandName} <secret-string | ->`);
-  console.error(`       Or set SLD_SECRET environment variable.`);
+  console.error(`Usage: echo "$SECRET" | secret-leak-detector ${commandName} -`);
+  console.error(`   Or: SLD_SECRET="$SECRET" secret-leak-detector ${commandName}`);
+  console.error(`   Or: secret-leak-detector ${commandName} <secret-string> (⚠️ exposes secret in process table/shell history)`);
   process.exit(2);
 }
 

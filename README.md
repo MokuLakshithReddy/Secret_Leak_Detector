@@ -210,7 +210,10 @@ Even if a secret is deleted from the current file, Secret Leak Detector traces G
 - Checks contaminated branch reachability (`git branch -a --contains`) and remote tracking status (`origin/*`).
 
 ```bash
-$ secret-leak-detector trace <CREDENTIAL_TO_INSPECT>
+# Provide secret safely via stdin or SLD_SECRET to avoid shell history and process table exposure:
+$ echo "$CREDENTIAL_TO_INSPECT" | secret-leak-detector trace -
+# Or via environment variable:
+$ SLD_SECRET="$CREDENTIAL_TO_INSPECT" secret-leak-detector trace
 
 ============================================================
 🔍 GIT PROVENANCE & BLAST RADIUS TRACE
@@ -262,14 +265,17 @@ npx secret-leak-detector scan . --scan-build-artifacts
 # Scan full Git commit log for historical secret leaks
 npx secret-leak-detector history --max 100
 
-# Trace provenance and blast radius of a credential
-npx secret-leak-detector trace <CREDENTIAL_TO_INSPECT>
+# Trace provenance and blast radius of a credential (safely via stdin or SLD_SECRET)
+echo "$CREDENTIAL" | npx secret-leak-detector trace -
+# Or: SLD_SECRET="$CREDENTIAL" npx secret-leak-detector trace
 
 # Output exposure DAG timeline with reachability & merge awareness
-npx secret-leak-detector timeline <CREDENTIAL_TO_INSPECT>
+echo "$CREDENTIAL" | npx secret-leak-detector timeline -
+# Or: SLD_SECRET="$CREDENTIAL" npx secret-leak-detector timeline
 
 # Export formal Git DAG Exposure Graph (nodes, edges, branch reachability)
-npx secret-leak-detector graph <CREDENTIAL_TO_INSPECT> --json
+echo "$CREDENTIAL" | npx secret-leak-detector graph - --json
+# Or: SLD_SECRET="$CREDENTIAL" npx secret-leak-detector graph --json
 
 # Interactive controlled remediation (patch preview & .env extraction)
 npx secret-leak-detector fix src/config/aws.ts
