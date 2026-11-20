@@ -3,6 +3,29 @@
 All notable changes to **Secret Leak Detector** are documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.5] - 2026-11-20
+
+### Security & Hardening
+- **Streaming Scanner Concurrency & Fail-Closed Stability:**
+  - Unified stream file stability checks into `verifyStreamStability()`, checking path existence/identity (`fs.statSync`) prior to descriptor stats (`fs.fstatSync`) to cleanly handle file replacement, truncation, or deletion.
+  - Eliminated duplicate callback invocations on stream interruption, preventing race conditions where both `StreamScanIncompleteError` and file stream completion could trigger.
+  - Added regression test suite (Section 51) verifying concurrency aborts, truncation detection, and single error propagation across platforms.
+- **Strict Dependency Audit Gates:**
+  - Upgraded automated CI vulnerability audit gates from `--audit-level=high` to `--audit-level=low` alongside `--omit=dev` across all CI pipelines (`.github/workflows/secret-leak-detector.yml`).
+  - Added mandatory `Dependency Vulnerability Audit Gate` to the release workflow (`.github/workflows/publish.yml`) to prevent releasing with any unaddressed advisories.
+  - Resolved all dependency vulnerabilities: upgraded `esbuild` to `^0.25.0` (`0.25.12`), added overrides for `glob` (`^14.0.6`) and `minimatch` (`^11.0.9`), reaching 0 vulnerabilities across production and development dependencies.
+- **Baseline HMAC-SHA256 Fingerprint Reconciliation:**
+  - Reconciled remaining 16-character legacy baseline fingerprints in `.secretleak-baseline.json` to 64-character private HMAC-SHA256 (`hmac-sha256-private-v2`), completely eliminating legacy fingerprint lookup vulnerabilities.
+  - Added regression test suite (Section 52) validating that baseline files strictly contain private HMAC-SHA256 hashes without legacy 16-character entries.
+- **CI Workflow Action Pinning:**
+  - Pinned all GitHub Actions steps across CI and release workflows to immutable 40-character commit SHAs for Node 24 runtime compatibility (`actions/checkout`, `actions/setup-node`, `actions/upload-artifact`, `actions/download-artifact`).
+
+### Documentation & Calibration
+- **Documentation & Phrasing Accuracy:**
+  - Softened absolute marketing claims in `README.md` to reflect defense-in-depth pre-commit scanning and post-commit remediation rather than impossible guarantees.
+  - Updated all version references, installation snippets, and validation documentation to v1.0.5.
+  - Documented the process-blinded nature of the internal synthetic corpus in evaluation documentation and maintained Issue #46 for tracking independent third-party evaluations.
+
 ## [1.0.4] - 2026-11-07
 
 ### Reliability & Git History Hardening

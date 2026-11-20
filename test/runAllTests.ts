@@ -1537,7 +1537,7 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
     // Test 4: CLI --version
     const cliPath = path.join(process.cwd(), 'dist', 'cli.js');
     const verRes = cp.spawnSync(process.execPath, [cliPath, '--version'], { encoding: 'utf8' });
-    assert(verRes.stdout.trim() === '1.0.4', 'CLI --version prints valid semantic version (got: ' + verRes.stdout.trim() + ')');
+    assert(verRes.stdout.trim() === '1.0.5', 'CLI --version prints valid semantic version (got: ' + verRes.stdout.trim() + ')');
   }
 
   // --- 28. Robust Git Diff Parsing, Glob Matching, UTF-16, & Hook Lifecycle ---
@@ -1762,9 +1762,9 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
     assert(histVerifyResult.isResolved === false, 'Secret remaining in git history is NOT marked resolved');
     assert(histVerifyResult.historyStatus === 'REMOVED_FROM_HEAD_STILL_IN_HISTORY', 'History status correctly set to REMOVED_FROM_HEAD_STILL_IN_HISTORY');
 
-    // Test 4: Version utility returns matching 1.0.4 version
+    // Test 4: Version utility returns matching 1.0.5 version
     const { getPackageVersion } = require('../src/core/version');
-    assert(getPackageVersion() === '1.0.4', `getPackageVersion returns 1.0.4 (got ${getPackageVersion()})`);
+    assert(getPackageVersion() === '1.0.5', `getPackageVersion returns 1.0.5 (got ${getPackageVersion()})`);
 
     // --- 31. Binary and Oversize Tolerant Staged Scans, Scoped Excludes & Hook Registry ---
     console.log('\n--- 31. Binary and Oversize Tolerant Staged Scans, Scoped Excludes & Hook Registry ---');
@@ -5292,7 +5292,7 @@ exit 0
     const baseValidSchema = {
       version: 1,
       generatedAt: '2026-11-20T00:00:00.000Z',
-      generator: 'Secret Leak Detector v1.0.4',
+      generator: 'Secret Leak Detector v1.0.5',
       fingerprintScheme: 'hmac-sha256-private-v2',
       fingerprintKeyId: '0123456789abcdef',
       findings: [
@@ -5491,7 +5491,7 @@ exit 0
         replaceCallCount++;
         if (replaceCallCount === 2) {
           // Replace file on disk by unlinking and recreating
-          try { fs.unlinkSync(replacedFile); } catch {}
+          try { fs.unlinkSync(replacedFile); } catch { }
           fs.writeFileSync(replacedFile, Buffer.alloc(12000, 'new_content\n'));
         }
         return originalReadSync.apply(nodeFs, arguments as any);
@@ -5529,7 +5529,7 @@ exit 0
         removeCallCount++;
         if (removeCallCount === 2) {
           // Remove file from disk
-          try { fs.unlinkSync(removedFile); } catch {}
+          try { fs.unlinkSync(removedFile); } catch { }
         }
         return originalReadSync.apply(nodeFs, arguments as any);
       };

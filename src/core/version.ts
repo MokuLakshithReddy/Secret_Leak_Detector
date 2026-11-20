@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-export const CURRENT_VERSION = '1.0.4';
+export const CURRENT_VERSION = '1.0.5';
 
 export function getPackageVersion(): string {
   try {

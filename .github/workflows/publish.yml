@@ -31,6 +31,11 @@ jobs:
       - name: Install Dependencies
         run: npm ci
 
+      - name: Dependency Vulnerability Audit Gate
+        run: |
+          npm audit --audit-level=low
+          npm audit --omit=dev
+
       - name: Build Scanner & CLI
         run: npm run build
 
