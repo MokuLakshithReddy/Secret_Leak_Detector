@@ -179,6 +179,63 @@ export function assertSafeBaselineDestination(
   }
 }
 
+/**
+ * Validates that a file referenced by a baseline finding is safe to inspect:
+ * - Must not be an absolute path (POSIX or Windows drive/UNC)
+ * - Must not escape the workspace root via path traversal (../)
+ * - If it exists and is a symlink or contains symlinks, it must resolve strictly inside the workspace root
+ * Returns the resolved canonical target path, or throws BaselineValidationError.
+ */
+export function validateSafeReferencedPath(relPath: string, workspaceRoot: string): string {
+  if (!relPath || typeof relPath !== 'string' || relPath.trim().length === 0) {
+    throw new BaselineValidationError('Referenced finding file path must be a non-empty string.');
+  }
+
+  // Reject absolute paths across platforms (POSIX leading slash, Windows drive letter, UNC)
+  const normPath = relPath.replace(/\\/g, '/');
+  if (path.isAbsolute(relPath) || path.isAbsolute(normPath) || /^[a-zA-Z]:/.test(relPath) || normPath.startsWith('/')) {
+    throw new BaselineValidationError(
+      `Refusing to scan unsafe baseline path '${relPath}': absolute paths are not permitted.`
+    );
+  }
+
+  let rootReal: string;
+  try {
+    rootReal = fs.realpathSync(workspaceRoot);
+  } catch (err: any) {
+    throw new BaselineValidationError(`Cannot resolve workspace root for baseline: ${err.message || err}`);
+  }
+
+  const resolved = path.resolve(rootReal, normPath);
+  const rel = path.relative(rootReal, resolved);
+  if (rel === '..' || rel.startsWith('..' + path.sep) || rel.startsWith('../') || path.isAbsolute(rel)) {
+    throw new BaselineValidationError(
+      `Refusing to scan unsafe baseline path '${relPath}': path escapes the workspace root.`
+    );
+  }
+
+  // If the file exists on disk, verify symlink resolution strictly stays within workspace root
+  if (fs.existsSync(resolved)) {
+    let targetReal: string;
+    try {
+      targetReal = fs.realpathSync(resolved);
+    } catch (err: any) {
+      throw new BaselineValidationError(`Cannot resolve real path for '${relPath}': ${err.message || err}`);
+    }
+
+    const realRel = path.relative(rootReal, targetReal);
+    if (realRel === '..' || realRel.startsWith('..' + path.sep) || realRel.startsWith('../') || path.isAbsolute(realRel)) {
+      throw new BaselineValidationError(
+        `Refusing to scan unsafe baseline path '${relPath}': symlink points outside the workspace root ('${targetReal}').`
+      );
+    }
+
+    return targetReal;
+  }
+
+  return resolved;
+}
+
 export class BaselineEngine {
   private workspaceRoot: string;
   private baselinePath: string;
@@ -495,8 +552,7 @@ export class BaselineEngine {
         continue;
       }
 
-      const normRelFile = normalizeBaselinePath(f.file);
-      const fullPath = path.resolve(this.workspaceRoot, normRelFile);
+      const fullPath = validateSafeReferencedPath(f.file, this.workspaceRoot);
 
       let scannedFindings: SecretFinding[] | undefined = fileScanCache.get(fullPath);
       if (!scannedFindings) {

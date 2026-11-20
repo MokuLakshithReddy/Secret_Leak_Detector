@@ -730,7 +730,7 @@ async function runBaseline(cmdArgs: string[], cwd: string) {
   const acceptAll = cmdArgs.includes('--accept-all') || cmdArgs.includes('--yes') || cmdArgs.includes('-y') || isForce;
   const subCommand = cmdArgs.find((a) => a === 'init' || a === 'update' || a === 'migrate' || a === 'rollback') || 'init';
   if (subCommand !== 'init' && subCommand !== 'update' && subCommand !== 'migrate' && subCommand !== 'rollback') {
-    fail('Usage: secret-leak-detector baseline [init|update|migrate|rollback] [--force] [--accept-all] [--salt <key>] [--dry-run] [--no-backup] [--allow-partial] [--drop-unresolved]');
+    fail('Usage: secret-leak-detector baseline [init|update|migrate|rollback] [--force] [--accept-all] [--dry-run] [--no-backup] [--allow-partial] [--drop-unresolved]');
   }
 
   const baselineEngine = new BaselineEngine(cwd);
@@ -739,16 +739,20 @@ async function runBaseline(cmdArgs: string[], cwd: string) {
     if (!baselineEngine.exists()) {
       fail(`Error: Baseline file '${DEFAULT_BASELINE_FILENAME}' does not exist. Nothing to migrate.`);
     }
+
+    if (cmdArgs.includes('--salt')) {
+      fail(
+        'Error: Passing private salts via command-line flags (--salt) is prohibited to prevent credential exposure in process tables, shell history, and logs. Set the SLD_SALT environment variable or initialize a private key using "secret-leak-detector salt init" instead.'
+      );
+    }
+
     const isDryRun = cmdArgs.includes('--dry-run');
-    const saltIdx = cmdArgs.indexOf('--salt');
-    const customSalt = saltIdx !== -1 ? cmdArgs[saltIdx + 1] : undefined;
     const noBackup = cmdArgs.includes('--no-backup');
     const allowPartial = cmdArgs.includes('--allow-partial');
     const dropUnresolved = cmdArgs.includes('--drop-unresolved');
 
     try {
       const res = baselineEngine.migrateBaseline({
-        customSalt,
         dryRun: isDryRun,
         createBackup: !noBackup,
         allowPartial,

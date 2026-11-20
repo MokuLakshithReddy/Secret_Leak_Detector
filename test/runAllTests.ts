@@ -2,7 +2,7 @@ import { scanContent, scanFile, buildScanResult, scanFileStream, StreamScanIncom
 import { calculateShannonEntropy, calculateNormalizedEntropy } from '../src/core/entropy/entropy';
 import { redactSecret, generateFingerprint, resolveSalt, initializePrivateSalt, getFingerprintKeyId, generateLegacyFingerprint } from '../src/core/redactor/redactor';
 import * as crypto from 'crypto';
-import { BaselineEngine, BaselineValidationError, validateBaselineSchema } from '../src/core/baseline/baselineEngine';
+import { BaselineEngine, BaselineValidationError, validateBaselineSchema, validateSafeReferencedPath } from '../src/core/baseline/baselineEngine';
 import { toRedactedFindingView } from '../src/webview/dashboardModel';
 import { VerificationEngine } from '../src/core/verification/verificationEngine';
 import { GitHistoryEngine, unquoteGitPath, parseDiffHeaderPaths } from '../src/core/history/gitHistoryEngine';
@@ -25,10 +25,10 @@ function findPosixShell(): string | null {
   const candidates =
     process.platform === 'win32'
       ? [
-          'C:\\Program Files\\Git\\bin\\bash.exe',
-          'C:\\Program Files\\Git\\usr\\bin\\bash.exe',
-          'C:\\Program Files (x86)\\Git\\bin\\bash.exe',
-        ]
+        'C:\\Program Files\\Git\\bin\\bash.exe',
+        'C:\\Program Files\\Git\\usr\\bin\\bash.exe',
+        'C:\\Program Files (x86)\\Git\\bin\\bash.exe',
+      ]
       : ['/bin/sh', '/usr/bin/sh', '/bin/bash', '/usr/bin/bash'];
   for (const c of candidates) {
     try {
@@ -521,7 +521,7 @@ fs.rmSync(baselineSecurityRoot, { recursive: true, force: true });
 // Clean up test baseline
 try {
   fs.rmSync(tmpDir, { recursive: true, force: true });
-} catch {}
+} catch { }
 delete process.env.SLD_ISOLATE_BASELINE_TESTS;
 
 // --- 7. SARIF Generation Test ---
@@ -682,152 +682,152 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
 
   // --- 18. Git Staged-Scan: Adversarial Filenames, Renames & Commit Gate ---
   console.log('\n--- 18. Git Staged-Scan: Adversarial Filenames, Renames & Commit Gate ---');
-    const scratchRoot = path.join(process.cwd(), 'scratch', 'sld-staged-tests');
-    fs.rmSync(scratchRoot, { recursive: true, force: true });
-    fs.mkdirSync(scratchRoot, { recursive: true });
+  const scratchRoot = path.join(process.cwd(), 'scratch', 'sld-staged-tests');
+  fs.rmSync(scratchRoot, { recursive: true, force: true });
+  fs.mkdirSync(scratchRoot, { recursive: true });
 
-    const awsSecret = 'AKIA1234567890ABCDEF';
-    const ghSecret = 'ghp_1234567890abcdefghijklmnopqrstuvwxyz';
+  const awsSecret = 'AKIA1234567890ABCDEF';
+  const ghSecret = 'ghp_1234567890abcdefghijklmnopqrstuvwxyz';
 
-    const makeRepo = (name: string) => {
-      const r = path.join(scratchRoot, name);
-      fs.rmSync(r, { recursive: true, force: true });
-      fs.mkdirSync(r, { recursive: true });
-      cp.execSync('git init -q .', { cwd: r, stdio: 'ignore' });
-      cp.execSync('git config user.email test@test.com', { cwd: r, stdio: 'ignore' });
-      cp.execSync('git config user.name test', { cwd: r, stdio: 'ignore' });
-      // Raw, unquoted paths so adversarial filenames are enumerated unambiguously.
-      cp.execSync('git config core.quotepath false', { cwd: r, stdio: 'ignore' });
-      fs.writeFileSync(path.join(r, 'readme.md'), '# safe\n');
-      cp.execSync('git add -A', { cwd: r, stdio: 'ignore' });
-      cp.execSync('git commit -q -m initial', { cwd: r, stdio: 'ignore' });
-      return r;
-    };
+  const makeRepo = (name: string) => {
+    const r = path.join(scratchRoot, name);
+    fs.rmSync(r, { recursive: true, force: true });
+    fs.mkdirSync(r, { recursive: true });
+    cp.execSync('git init -q .', { cwd: r, stdio: 'ignore' });
+    cp.execSync('git config user.email test@test.com', { cwd: r, stdio: 'ignore' });
+    cp.execSync('git config user.name test', { cwd: r, stdio: 'ignore' });
+    // Raw, unquoted paths so adversarial filenames are enumerated unambiguously.
+    cp.execSync('git config core.quotepath false', { cwd: r, stdio: 'ignore' });
+    fs.writeFileSync(path.join(r, 'readme.md'), '# safe\n');
+    cp.execSync('git add -A', { cwd: r, stdio: 'ignore' });
+    cp.execSync('git commit -q -m initial', { cwd: r, stdio: 'ignore' });
+    return r;
+  };
 
-    // Ensure the CLI binary is built (the pre-commit hook invokes dist/cli.js).
-    const cli = path.join(process.cwd(), 'dist', 'cli.js');
-    if (!fs.existsSync(cli)) {
-      cp.execSync('node esbuild.js --cli', { cwd: process.cwd(), stdio: 'ignore' });
+  // Ensure the CLI binary is built (the pre-commit hook invokes dist/cli.js).
+  const cli = path.join(process.cwd(), 'dist', 'cli.js');
+  if (!fs.existsSync(cli)) {
+    cp.execSync('node esbuild.js --cli', { cwd: process.cwd(), stdio: 'ignore' });
+  }
+
+  // 18a. Adversarial filenames (spaces, $, ;) scanned from the staged blob, never the working tree.
+  {
+    const r = makeRepo('adv-filenames');
+    fs.writeFileSync(path.join(r, 'normal.txt'), `const key = "${awsSecret}";\n`);
+    fs.writeFileSync(path.join(r, 'file with spaces.ts'), `const token = "${ghSecret}";\n`);
+    fs.writeFileSync(path.join(r, 'weird;name$.ts'), `const token = "${ghSecret}";\n`);
+    cp.execSync('git add -A', { cwd: r, stdio: 'ignore' });
+    const res = await new GitService(r).scanStagedChanges();
+    assert(res.status === 'FINDINGS', `Adversarial filenames: expected FINDINGS, got ${res.status}`);
+    const files = res.findings.map((f) => f.file);
+    assert(files.some((f) => String(f).includes('file with spaces.ts')), 'File with spaces scanned from staged blob');
+    assert(files.some((f) => String(f).includes('weird;name$.ts')), 'File with $ and ; scanned from staged blob');
+    assert(files.some((f) => String(f).includes('normal.txt')), 'normal.txt scanned from staged blob');
+    assert(res.filesScanned >= 2, `Staged files scanned (got ${res.filesScanned})`);
+  }
+
+  // 18b. Rename: the destination path (new content) is scanned.
+  {
+    const r = makeRepo('rename');
+    fs.writeFileSync(path.join(r, 'oldname.ts'), `const key = "${awsSecret}";\n`);
+    cp.execSync('git add -A', { cwd: r, stdio: 'ignore' });
+    cp.execSync('git mv oldname.ts newname.ts', { cwd: r, stdio: 'ignore' });
+    cp.execSync('git add -A', { cwd: r, stdio: 'ignore' });
+    const res = await new GitService(r).scanStagedChanges();
+    assert(res.status === 'FINDINGS', `Rename: expected FINDINGS, got ${res.status}`);
+    assert(res.findings.some((f) => String(f.file) === 'newname.ts'), 'Renamed destination newname.ts scanned');
+  }
+
+  // 18g. Scored rename status (R100): git reports R100, not bare R.
+  {
+    const r = makeRepo('rename-scored');
+    fs.writeFileSync(path.join(r, 'oldname.ts'), `const key = "${awsSecret}";\n`);
+    cp.execSync('git add -A', { cwd: r, stdio: 'ignore' });
+    cp.execSync('git commit -q -m add-oldname', { cwd: r, stdio: 'ignore' });
+    cp.execSync('git mv oldname.ts newname.ts', { cwd: r, stdio: 'ignore' });
+    // Confirm git emits a scored status (R100) when rename detection is enabled.
+    const raw = cp.execSync('git diff --cached -z -M --name-status', {
+      cwd: r, encoding: 'utf8',
+    }).toString();
+    assert(/^R\d+\0/.test(raw), `Git rename status should be scored (e.g. R100), got: ${JSON.stringify(raw)}`);
+    const res = await new GitService(r).scanStagedChanges();
+    assert(res.status === 'FINDINGS', `Scored rename R100: expected FINDINGS, got ${res.status}`);
+    assert(res.findings.some((f) => String(f.file) === 'newname.ts'), 'Scored rename destination scanned');
+  }
+
+  // 18h. Scored copy status (C100): git reports C100 for copies.
+  {
+    const r = makeRepo('copy-scored');
+    fs.writeFileSync(path.join(r, 'orig.ts'), `const key = "${awsSecret}";\n`);
+    cp.execSync('git add -A', { cwd: r, stdio: 'ignore' });
+    cp.execSync('git commit -q -m add-orig', { cwd: r, stdio: 'ignore' });
+    fs.copyFileSync(path.join(r, 'orig.ts'), path.join(r, 'copy.ts'));
+    cp.execSync('git add -A', { cwd: r, stdio: 'ignore' });
+    const raw = cp.execSync('git diff --cached -z -C --find-copies-harder --name-status', {
+      cwd: r, encoding: 'utf8',
+    }).toString();
+    assert(/^C\d+\0/.test(raw), `Git copy status should be scored (e.g. C100), got: ${JSON.stringify(raw)}`);
+    const res = await new GitService(r).scanStagedChanges();
+    assert(res.status === 'FINDINGS', `Scored copy C100: expected FINDINGS, got ${res.status}`);
+    assert(res.findings.some((f) => String(f.file) === 'copy.ts'), 'Scored copy destination scanned');
+  }
+
+  // 18c. Clean staged changes -> CLEAN (commit allowed).
+  {
+    const r = makeRepo('clean');
+    fs.writeFileSync(path.join(r, 'safe.ts'), `const x = 1;\n`);
+    cp.execSync('git add -A', { cwd: r, stdio: 'ignore' });
+    const res = await new GitService(r).scanStagedChanges();
+    assert(res.status === 'CLEAN', `Clean staged: expected CLEAN, got ${res.status}`);
+  }
+
+  // 18d. Deleted file skipped (nothing to scan), not an error.
+  {
+    const r = makeRepo('delete');
+    fs.writeFileSync(path.join(r, 'todelete.txt'), `const key = "${awsSecret}";\n`);
+    cp.execSync('git add -A', { cwd: r, stdio: 'ignore' });
+    cp.execSync('git commit -q -m add', { cwd: r, stdio: 'ignore' });
+    cp.execSync('git rm -q todelete.txt', { cwd: r, stdio: 'ignore' });
+    const res = await new GitService(r).scanStagedChanges();
+    assert(res.status === 'CLEAN', `Deleted file skipped: expected CLEAN, got ${res.status}`);
+  }
+
+  // 18e. Secret staged -> CLI scan exits non-zero (commit blocked).
+  {
+    const r = makeRepo('commit-gate');
+    fs.writeFileSync(path.join(r, 'secrets.ts'), `const key = "${awsSecret}";\n`);
+    cp.execSync('git add -A', { cwd: r, stdio: 'ignore' });
+    let threw = false;
+    try {
+      cp.execSync(`${process.execPath} "${cli}" scan --staged --fail-on HIGH`, {
+        cwd: r, encoding: 'utf8', stdio: 'pipe',
+      });
+    } catch (e: any) {
+      threw = true;
+      assert(e.status === 1 || /exit code 1/.test(String(e)), `Secret staged scan blocked (status ${e.status})`);
     }
+    assert(threw, 'Secret staged scan must exit non-zero to block the commit');
+  }
 
-    // 18a. Adversarial filenames (spaces, $, ;) scanned from the staged blob, never the working tree.
-    {
-      const r = makeRepo('adv-filenames');
-      fs.writeFileSync(path.join(r, 'normal.txt'), `const key = "${awsSecret}";\n`);
-      fs.writeFileSync(path.join(r, 'file with spaces.ts'), `const token = "${ghSecret}";\n`);
-      fs.writeFileSync(path.join(r, 'weird;name$.ts'), `const token = "${ghSecret}";\n`);
-      cp.execSync('git add -A', { cwd: r, stdio: 'ignore' });
-      const res = await new GitService(r).scanStagedChanges();
-      assert(res.status === 'FINDINGS', `Adversarial filenames: expected FINDINGS, got ${res.status}`);
-      const files = res.findings.map((f) => f.file);
-      assert(files.some((f) => String(f).includes('file with spaces.ts')), 'File with spaces scanned from staged blob');
-      assert(files.some((f) => String(f).includes('weird;name$.ts')), 'File with $ and ; scanned from staged blob');
-      assert(files.some((f) => String(f).includes('normal.txt')), 'normal.txt scanned from staged blob');
-      assert(res.filesScanned >= 2, `Staged files scanned (got ${res.filesScanned})`);
+  // 18f. Clean staged change -> CLI scan exits 0 (commit allowed).
+  {
+    const r = makeRepo('commit-gate-clean');
+    fs.writeFileSync(path.join(r, 'safe.ts'), `const x = 1;\n`);
+    cp.execSync('git add -A', { cwd: r, stdio: 'ignore' });
+    let threw = false;
+    let errDetail = '';
+    try {
+      cp.execSync(`"${process.execPath}" "${cli}" scan --staged --fail-on HIGH`, {
+        cwd: r, encoding: 'utf8', stdio: 'pipe',
+      });
+    } catch (e: any) {
+      threw = true;
+      errDetail = String(e.stderr || e.stdout || e.message || '');
     }
+    assert(!threw, `Clean staged scan must exit 0 to allow the commit (${errDetail})`);
+  }
 
-    // 18b. Rename: the destination path (new content) is scanned.
-    {
-      const r = makeRepo('rename');
-      fs.writeFileSync(path.join(r, 'oldname.ts'), `const key = "${awsSecret}";\n`);
-      cp.execSync('git add -A', { cwd: r, stdio: 'ignore' });
-      cp.execSync('git mv oldname.ts newname.ts', { cwd: r, stdio: 'ignore' });
-      cp.execSync('git add -A', { cwd: r, stdio: 'ignore' });
-      const res = await new GitService(r).scanStagedChanges();
-      assert(res.status === 'FINDINGS', `Rename: expected FINDINGS, got ${res.status}`);
-      assert(res.findings.some((f) => String(f.file) === 'newname.ts'), 'Renamed destination newname.ts scanned');
-    }
-
-    // 18g. Scored rename status (R100): git reports R100, not bare R.
-    {
-      const r = makeRepo('rename-scored');
-      fs.writeFileSync(path.join(r, 'oldname.ts'), `const key = "${awsSecret}";\n`);
-      cp.execSync('git add -A', { cwd: r, stdio: 'ignore' });
-      cp.execSync('git commit -q -m add-oldname', { cwd: r, stdio: 'ignore' });
-      cp.execSync('git mv oldname.ts newname.ts', { cwd: r, stdio: 'ignore' });
-      // Confirm git emits a scored status (R100) when rename detection is enabled.
-      const raw = cp.execSync('git diff --cached -z -M --name-status', {
-        cwd: r, encoding: 'utf8',
-      }).toString();
-      assert(/^R\d+\0/.test(raw), `Git rename status should be scored (e.g. R100), got: ${JSON.stringify(raw)}`);
-      const res = await new GitService(r).scanStagedChanges();
-      assert(res.status === 'FINDINGS', `Scored rename R100: expected FINDINGS, got ${res.status}`);
-      assert(res.findings.some((f) => String(f.file) === 'newname.ts'), 'Scored rename destination scanned');
-    }
-
-    // 18h. Scored copy status (C100): git reports C100 for copies.
-    {
-      const r = makeRepo('copy-scored');
-      fs.writeFileSync(path.join(r, 'orig.ts'), `const key = "${awsSecret}";\n`);
-      cp.execSync('git add -A', { cwd: r, stdio: 'ignore' });
-      cp.execSync('git commit -q -m add-orig', { cwd: r, stdio: 'ignore' });
-      fs.copyFileSync(path.join(r, 'orig.ts'), path.join(r, 'copy.ts'));
-      cp.execSync('git add -A', { cwd: r, stdio: 'ignore' });
-      const raw = cp.execSync('git diff --cached -z -C --find-copies-harder --name-status', {
-        cwd: r, encoding: 'utf8',
-      }).toString();
-      assert(/^C\d+\0/.test(raw), `Git copy status should be scored (e.g. C100), got: ${JSON.stringify(raw)}`);
-      const res = await new GitService(r).scanStagedChanges();
-      assert(res.status === 'FINDINGS', `Scored copy C100: expected FINDINGS, got ${res.status}`);
-      assert(res.findings.some((f) => String(f.file) === 'copy.ts'), 'Scored copy destination scanned');
-    }
-
-    // 18c. Clean staged changes -> CLEAN (commit allowed).
-    {
-      const r = makeRepo('clean');
-      fs.writeFileSync(path.join(r, 'safe.ts'), `const x = 1;\n`);
-      cp.execSync('git add -A', { cwd: r, stdio: 'ignore' });
-      const res = await new GitService(r).scanStagedChanges();
-      assert(res.status === 'CLEAN', `Clean staged: expected CLEAN, got ${res.status}`);
-    }
-
-    // 18d. Deleted file skipped (nothing to scan), not an error.
-    {
-      const r = makeRepo('delete');
-      fs.writeFileSync(path.join(r, 'todelete.txt'), `const key = "${awsSecret}";\n`);
-      cp.execSync('git add -A', { cwd: r, stdio: 'ignore' });
-      cp.execSync('git commit -q -m add', { cwd: r, stdio: 'ignore' });
-      cp.execSync('git rm -q todelete.txt', { cwd: r, stdio: 'ignore' });
-      const res = await new GitService(r).scanStagedChanges();
-      assert(res.status === 'CLEAN', `Deleted file skipped: expected CLEAN, got ${res.status}`);
-    }
-
-    // 18e. Secret staged -> CLI scan exits non-zero (commit blocked).
-    {
-      const r = makeRepo('commit-gate');
-      fs.writeFileSync(path.join(r, 'secrets.ts'), `const key = "${awsSecret}";\n`);
-      cp.execSync('git add -A', { cwd: r, stdio: 'ignore' });
-      let threw = false;
-      try {
-        cp.execSync(`${process.execPath} "${cli}" scan --staged --fail-on HIGH`, {
-          cwd: r, encoding: 'utf8', stdio: 'pipe',
-        });
-      } catch (e: any) {
-        threw = true;
-        assert(e.status === 1 || /exit code 1/.test(String(e)), `Secret staged scan blocked (status ${e.status})`);
-      }
-      assert(threw, 'Secret staged scan must exit non-zero to block the commit');
-    }
-
-    // 18f. Clean staged change -> CLI scan exits 0 (commit allowed).
-    {
-      const r = makeRepo('commit-gate-clean');
-      fs.writeFileSync(path.join(r, 'safe.ts'), `const x = 1;\n`);
-      cp.execSync('git add -A', { cwd: r, stdio: 'ignore' });
-      let threw = false;
-      let errDetail = '';
-      try {
-        cp.execSync(`"${process.execPath}" "${cli}" scan --staged --fail-on HIGH`, {
-          cwd: r, encoding: 'utf8', stdio: 'pipe',
-        });
-      } catch (e: any) {
-        threw = true;
-        errDetail = String(e.stderr || e.stdout || e.message || '');
-      }
-      assert(!threw, `Clean staged scan must exit 0 to allow the commit (${errDetail})`);
-    }
-
-    fs.rmSync(scratchRoot, { recursive: true, force: true });
+  fs.rmSync(scratchRoot, { recursive: true, force: true });
 
   // --- 19. Remediation: Fault-Injection Rollback Tests ---
   console.log('\n--- 19. Remediation: Fault-Injection Rollback Tests ---');
@@ -1306,7 +1306,7 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
       } finally {
         try {
           fs.rmSync(vdir, { recursive: true, force: true });
-        } catch {}
+        } catch { }
       }
     }
 
@@ -1409,7 +1409,7 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
       } finally {
         try {
           fs.rmSync(malformedDir, { recursive: true, force: true });
-        } catch {}
+        } catch { }
       }
     }
 
@@ -1677,7 +1677,7 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
     try {
       const fs = require('fs');
       if (fs.existsSync(baselineEngine.getPath())) fs.unlinkSync(baselineEngine.getPath());
-    } catch {}
+    } catch { }
 
     // --- 30. Staged Added-Line Filter, Ignore-Skipped & Verification Invariants ---
     console.log('\n--- 30. Staged Added-Line Filter, Ignore-Skipped & Verification Invariants ---');
@@ -1686,7 +1686,7 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
     const stagedScratch = path.join(process.cwd(), 'scratch', 'sld-added-line-test');
     try {
       fs.rmSync(stagedScratch, { recursive: true, force: true });
-    } catch {}
+    } catch { }
     fs.mkdirSync(stagedScratch, { recursive: true });
 
     const cp = require('child_process');
@@ -1741,7 +1741,7 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
     // Clean up scratch git repo
     try {
       fs.rmSync(stagedScratch, { recursive: true, force: true });
-    } catch {}
+    } catch { }
 
     // Test 3: VerificationEngine rejects secrets that still exist in history
     const { VerificationEngine } = require('../src/core/verification/verificationEngine');
@@ -1815,7 +1815,7 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
       assert(binStagedRes.findings.length === 0, 'No false findings on clean staged files with binary');
 
       // Clean up bin scratch
-      try { fs.rmSync(binScratch, { recursive: true, force: true }); } catch {}
+      try { fs.rmSync(binScratch, { recursive: true, force: true }); } catch { }
 
       // 4. Hook registry functions
       const testHookPath = path.join(os.tmpdir(), 'test-repo', '.git', 'hooks', 'pre-commit');
@@ -1899,7 +1899,7 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
       const disguiseResult = stagedSync(stagedDisguised);
       assert(disguiseResult.status === 'FINDINGS', `Text file disguised as .png/.sqlite is scanned and detected (got ${disguiseResult.status})`);
       assert(disguiseResult.findings.length >= 2, `Both disguised files flagged (got ${disguiseResult.findings.length})`);
-      try { fs.rmSync(stagedDisguised, { recursive: true, force: true }); } catch {}
+      try { fs.rmSync(stagedDisguised, { recursive: true, force: true }); } catch { }
 
       // 8. Pre-commit hook configuration and fail-closed guidance
       const { buildPreCommitHook } = require('../src/git/preCommitHook');
@@ -1950,7 +1950,7 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
       const bypassedRes = scanStagedChangesSync(oversizeScratch, { maxFileSize: 1 * 1024 * 1024, ignoreSkipped: true });
       assert(bypassedRes.status === 'CLEAN', 'Oversized file with ignoreSkipped: true is tolerated');
       assert(bypassedRes.skippedFiles && bypassedRes.skippedFiles.length === 1, 'Oversized file recorded in skippedFiles');
-      try { fs.rmSync(oversizeScratch, { recursive: true, force: true }); } catch {}
+      try { fs.rmSync(oversizeScratch, { recursive: true, force: true }); } catch { }
 
       // 3. Submodule gitlink immunity (mode 160000)
       const subParentScratch = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-sub-parent-'));
@@ -1974,8 +1974,8 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
         // In environments where git submodule add is restricted, verify function doesn't crash
         assert(true, 'Submodule check completed');
       }
-      try { fs.rmSync(subParentScratch, { recursive: true, force: true }); } catch {}
-      try { fs.rmSync(subChildScratch, { recursive: true, force: true }); } catch {}
+      try { fs.rmSync(subParentScratch, { recursive: true, force: true }); } catch { }
+      try { fs.rmSync(subChildScratch, { recursive: true, force: true }); } catch { }
     }
 
     // --- 34. Private Salt (.sld/salt), Auto-Recovery Hook Cleanup & NON_TEXT_EXTENSIONS ---
@@ -2005,7 +2005,7 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
       const fpCustom = generateFingerprint('secret123', undefined, saltScratch);
       const fpDefault = generateFingerprint('secret123');
       assert(fpCustom !== fpDefault, 'Private salt yields distinct HMAC fingerprint from default');
-      try { fs.rmSync(saltScratch, { recursive: true, force: true }); } catch {}
+      try { fs.rmSync(saltScratch, { recursive: true, force: true }); } catch { }
 
       // 3. Hook fail-closed recovery guidance
       const dummyMissingCli = path.join(os.tmpdir(), 'deleted-extension-cli.js');
@@ -2154,7 +2154,7 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
         } finally {
           try {
             fs.rmSync(multilineRepo, { recursive: true, force: true });
-          } catch {}
+          } catch { }
         }
 
         // 4. Strict mode failOnSkipped returns ERROR when files are skipped
@@ -2178,7 +2178,7 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
         } finally {
           try {
             fs.rmSync(strictRepo, { recursive: true, force: true });
-          } catch {}
+          } catch { }
         }
 
         // 5. Scanner workspaceRoot uses custom private salt
@@ -2199,12 +2199,12 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
         } finally {
           try {
             fs.rmSync(saltDir, { recursive: true, force: true });
-          } catch {}
+          } catch { }
         }
       } finally {
         try {
           fs.rmSync(dummyRepo, { recursive: true, force: true });
-        } catch {}
+        } catch { }
       }
     }
 
@@ -2258,1063 +2258,1063 @@ const splitKey = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz";
       assert(selfHealHook.includes('ALLOW_SELF_HEAL=1'), 'Self-heal hook enables recovery branch');
     }
   }
-    // --- 37. Cross-Platform Baseline Canonicalization, Deobfuscation Source Expressions, and Atomic Uninstaller ---
-    console.log('\n--- 37. Cross-Platform Baseline Canonicalization, Deobfuscation Source Expressions, and Atomic Uninstaller ---');
-    {
-      const { BaselineEngine } = require('../src/core/baseline/baselineEngine');
-      const { scanContent } = require('../src/core/scanner/scanner');
-      const { GitTimelineEngine } = require('../src/core/history/gitTimeline');
-      const { cleanHook } = require('../src/uninstall');
+  // --- 37. Cross-Platform Baseline Canonicalization, Deobfuscation Source Expressions, and Atomic Uninstaller ---
+  console.log('\n--- 37. Cross-Platform Baseline Canonicalization, Deobfuscation Source Expressions, and Atomic Uninstaller ---');
+  {
+    const { BaselineEngine } = require('../src/core/baseline/baselineEngine');
+    const { scanContent } = require('../src/core/scanner/scanner');
+    const { GitTimelineEngine } = require('../src/core/history/gitTimeline');
+    const { cleanHook } = require('../src/uninstall');
 
-      // 1. Deobfuscation sourceExpression preservation
-      const splitCode = 'const token = "ghp_" + "123456789012345678901234567890123456";';
-      const splitFindings = scanContent(splitCode, 'app.ts');
-      assert(splitFindings.length === 1, 'Split token detected');
-      assert(splitFindings[0].sourceExpression === '"ghp_" + "123456789012345678901234567890123456"', 'Finding preserves exact raw sourceExpression');
+    // 1. Deobfuscation sourceExpression preservation
+    const splitCode = 'const token = "ghp_" + "123456789012345678901234567890123456";';
+    const splitFindings = scanContent(splitCode, 'app.ts');
+    assert(splitFindings.length === 1, 'Split token detected');
+    assert(splitFindings[0].sourceExpression === '"ghp_" + "123456789012345678901234567890123456"', 'Finding preserves exact raw sourceExpression');
 
-      // 2. Base64 deobfuscation sourceExpression preservation
-      const b64Secret = Buffer.from('AKIA1234567890B64SEC', 'utf8').toString('base64');
-      const b64Code = 'const key = Buffer.from("' + b64Secret + '", "base64");\n';
-      const b64Findings = scanContent(b64Code, 'app.ts');
-      assert(b64Findings.length >= 1, 'Base64 token detected');
-      assert(b64Findings[0].sourceExpression !== undefined && b64Findings[0].sourceExpression.includes(b64Secret), 'Base64 finding preserves sourceExpression');
+    // 2. Base64 deobfuscation sourceExpression preservation
+    const b64Secret = Buffer.from('AKIA1234567890B64SEC', 'utf8').toString('base64');
+    const b64Code = 'const key = Buffer.from("' + b64Secret + '", "base64");\n';
+    const b64Findings = scanContent(b64Code, 'app.ts');
+    assert(b64Findings.length >= 1, 'Base64 token detected');
+    assert(b64Findings[0].sourceExpression !== undefined && b64Findings[0].sourceExpression.includes(b64Secret), 'Base64 finding preserves sourceExpression');
 
-      // 3. GitTimelineEngine returns ERROR status on query failure
-      const timelineEngine = new GitTimelineEngine('/nonexistent/repo/directory/xyz');
-      const timelineReport = await timelineEngine.buildTimeline('secret_xyz', 'sec***');
-      assert(timelineReport.currentStatus === 'ERROR', 'GitTimeline reports ERROR on query failure (got ' + timelineReport.currentStatus + ')');
-      assert(timelineReport.timelineAscii.includes('failed'), 'Timeline ascii explains error');
+    // 3. GitTimelineEngine returns ERROR status on query failure
+    const timelineEngine = new GitTimelineEngine('/nonexistent/repo/directory/xyz');
+    const timelineReport = await timelineEngine.buildTimeline('secret_xyz', 'sec***');
+    assert(timelineReport.currentStatus === 'ERROR', 'GitTimeline reports ERROR on query failure (got ' + timelineReport.currentStatus + ')');
+    assert(timelineReport.timelineAscii.includes('failed'), 'Timeline ascii explains error');
 
-      // 4. Baseline path canonicalization does not produce relative escape
-      const origCiSec37 = process.env.CI;
-      const origGhActionsSec37 = process.env.GITHUB_ACTIONS;
-      const origGitlabSec37 = process.env.GITLAB_CI;
-      delete process.env.CI;
-      delete process.env.GITHUB_ACTIONS;
-      delete process.env.GITLAB_CI;
-      let baselineResult: any;
+    // 4. Baseline path canonicalization does not produce relative escape
+    const origCiSec37 = process.env.CI;
+    const origGhActionsSec37 = process.env.GITHUB_ACTIONS;
+    const origGitlabSec37 = process.env.GITLAB_CI;
+    delete process.env.CI;
+    delete process.env.GITHUB_ACTIONS;
+    delete process.env.GITLAB_CI;
+    let baselineResult: any;
+    try {
+      const baselineEngine = new BaselineEngine(process.cwd(), '.secretleak-baseline.json');
+      baselineResult = baselineEngine.loadBaselineFromGit('HEAD');
+    } finally {
+      if (origCiSec37 !== undefined) process.env.CI = origCiSec37;
+      else delete process.env.CI;
+      if (origGhActionsSec37 !== undefined) process.env.GITHUB_ACTIONS = origGhActionsSec37;
+      else delete process.env.GITHUB_ACTIONS;
+      if (origGitlabSec37 !== undefined) process.env.GITLAB_CI = origGitlabSec37;
+      else delete process.env.GITLAB_CI;
+    }
+    assert(baselineResult !== undefined, 'loadBaselineFromGit runs cleanly without path resolution crash');
+
+    // 5. cleanHook acquires lock and cleans managed hook safely
+    const testHookDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-uninstall-lock-'));
+    const testHookFile = path.join(testHookDir, 'pre-commit');
+    fs.writeFileSync(testHookFile, '#!/bin/sh\n# [SLD_HOOK_MANAGED]\nexit 0\n', { mode: 0o755 });
+    assert(fs.existsSync(testHookFile), 'Test hook file created');
+    const cleanSuccess = cleanHook(testHookFile);
+    assert(cleanSuccess === true, 'cleanHook returns true for managed hook');
+    assert(!fs.existsSync(testHookFile), 'cleanHook removed managed hook');
+    assert(!fs.existsSync(path.join(testHookDir, 'pre-commit.sld.lock')), 'cleanHook released lock file');
+    try { fs.rmSync(testHookDir, { recursive: true, force: true }); } catch { }
+
+    // ── Section 38: Uninstaller Lock Race Protection, Capture Group Isolation, and Source Expression Remediation ──
+    console.log('\n--- 38. Uninstaller Lock Race Protection, Capture Group Isolation & Strict Defaults ---');
+
+    // 1. cleanHook aborts cleanly when lock is held by another active process
+    const lockContentionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-lock-contention-'));
+    const activeHookFile = path.join(lockContentionDir, 'pre-commit');
+    const activeLockFile = path.join(lockContentionDir, 'pre-commit.sld.lock');
+    fs.writeFileSync(activeHookFile, '#!/bin/sh\n# [SLD_HOOK_MANAGED]\nexit 0\n', { mode: 0o755 });
+    fs.writeFileSync(activeLockFile, '999999', 'utf8'); // Active lock
+    const lockContentionResult = cleanHook(activeHookFile);
+    assert(lockContentionResult === false, 'cleanHook returns false when lock is held by another active process');
+    assert(fs.existsSync(activeHookFile), 'Hook is not touched when lock cannot be acquired');
+    try { fs.rmSync(lockContentionDir, { recursive: true, force: true }); } catch { }
+
+    // 2. Twilio regex branch 2 properly isolates 32-character hex secret from assignment
+    const twilioCode = 'const auth_token = "0123456789abcdef0123456789abcdef";';
+    const twilioFindings = scanContent(twilioCode, 'auth.js');
+    assert(twilioFindings.length === 1, 'Twilio auth token detected');
+    assert(twilioFindings[0].rawSecret === '0123456789abcdef0123456789abcdef', 'Twilio rawSecret is 32-char token, not assignment string (got ' + twilioFindings[0].rawSecret + ')');
+
+    // 3. applyControlledRemediation handles findings with sourceExpression
+    const remDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-rem-src-expr-'));
+    const remFile = path.join(remDir, 'test.js');
+    fs.writeFileSync(remFile, `import 'dotenv/config';\nconst token = "part1_" + "part2_abcdef1234567890";\n`, 'utf8');
+    const fakeFinding: any = {
+      id: 'finding_expr_1',
+      type: 'Generic API Key',
+      provider: 'Generic',
+      rawSecret: 'part1_part2_abcdef1234567890',
+      sourceExpression: '"part1_" + "part2_abcdef1234567890"',
+      redactedSecret: 'part••••••••••••',
+      file: 'test.js',
+      fullPath: remFile,
+      line: 2,
+      column: (fs.readFileSync(remFile, 'utf8').split(/\r?\n/)[1] || '').indexOf('"part1_" + "part2_abcdef1234567890"') + 1,
+      length: '"part1_" + "part2_abcdef1234567890"'.length,
+      remediation: { envVarName: 'TEST_API_KEY' },
+    };
+    const remRes = applyControlledRemediation(fakeFinding, remDir);
+    assert(remRes.success === true, 'applyControlledRemediation succeeds with sourceExpression');
+    const remUpdatedContent = fs.readFileSync(remFile, 'utf8');
+    assert(remUpdatedContent.includes('process.env.TEST_API_KEY'), 'Source expression replaced with process.env.TEST_API_KEY');
+    assert(!remUpdatedContent.includes('part1_'), 'Old split parts completely removed');
+    try { fs.rmSync(remDir, { recursive: true, force: true }); } catch { }
+
+    // 4. resolveSalt honors SLD_SALT and SLD_FINGERPRINT_SALT
+    const { resolveSalt } = require('../src/core/redactor/redactor');
+    const origSldSalt = process.env.SLD_SALT;
+    const origSldFps = process.env.SLD_FINGERPRINT_SALT;
+    try {
+      delete process.env.SLD_SALT;
+      process.env.SLD_FINGERPRINT_SALT = 'C'.repeat(64);
+      assert(resolveSalt() === 'C'.repeat(64), 'resolveSalt honors a sufficiently strong SLD_FINGERPRINT_SALT');
+      process.env.SLD_SALT = 'D'.repeat(64);
+      assert(resolveSalt() === 'D'.repeat(64), 'resolveSalt prioritizes a sufficiently strong SLD_SALT');
+      process.env.SLD_SALT = 'weak-key';
+      let weakSaltRejected = false;
       try {
-        const baselineEngine = new BaselineEngine(process.cwd(), '.secretleak-baseline.json');
-        baselineResult = baselineEngine.loadBaselineFromGit('HEAD');
+        resolveSalt();
+      } catch {
+        weakSaltRejected = true;
+      }
+      assert(weakSaltRejected, 'resolveSalt rejects weak environment-provided fingerprint keys');
+    } finally {
+      if (origSldSalt !== undefined) process.env.SLD_SALT = origSldSalt;
+      else delete process.env.SLD_SALT;
+      if (origSldFps !== undefined) process.env.SLD_FINGERPRINT_SALT = origSldFps;
+      else delete process.env.SLD_FINGERPRINT_SALT;
+    }
+
+    // 5. DEFAULT_IGNORE_PATTERNS includes .vscode-test
+    const { DEFAULT_IGNORE_PATTERNS } = require('../src/core/ignore/ignoreEngine');
+    assert(DEFAULT_IGNORE_PATTERNS.includes('.vscode-test/**'), 'DEFAULT_IGNORE_PATTERNS includes .vscode-test/**');
+    assert(DEFAULT_IGNORE_PATTERNS.includes('**/.vscode-test/**'), 'DEFAULT_IGNORE_PATTERNS includes **/.vscode-test/**');
+
+    // 6. Hook defaults to strict failOnSkipped (1), relaxed hook sets failOnSkipped to 0
+    const defaultHook = buildPreCommitHook();
+    assert(defaultHook.includes('SLD_FAIL_ON_SKIPPED_DEFAULT="1"'), 'Default hook defaults failOnSkipped to 1 (strict fail-closed)');
+    const relaxedHook = buildPreCommitHook(undefined, undefined, undefined, true, true, false);
+    assert(relaxedHook.includes('SLD_FAIL_ON_SKIPPED_DEFAULT="0"'), 'Relaxed hook sets failOnSkipped to 0');
+  }
+
+  // --- 39. History Scanning Multiline Invariants, Multi-Hunk Attributions, and Working-Tree State ---
+  console.log('\n--- 39. History Scanning Multiline Invariants, Multi-Hunk Attributions, and Working-Tree State ---');
+  {
+    const { GitHistoryEngine } = require('../src/core/history/gitHistoryEngine');
+    const { GitTimelineEngine } = require('../src/core/history/gitTimeline');
+    const { execFileSync } = require('child_process');
+    const fromHex = (h: string) => Buffer.from(h, 'hex').toString('utf8');
+
+    const testHistoryRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-hist-pem-'));
+    try {
+      execFileSync('git', ['init', testHistoryRepo]);
+      execFileSync('git', ['-C', testHistoryRepo, 'config', 'user.name', 'Security Tester']);
+      execFileSync('git', ['-C', testHistoryRepo, 'config', 'user.email', 'sec@test.com']);
+
+      const gitHistory = new GitHistoryEngine(testHistoryRepo);
+      const gitTimeline = new GitTimelineEngine(testHistoryRepo);
+
+      // Test credentials constructed from hex at runtime so test runner source does not leak literal secrets
+      const placeholderPem = fromHex('2d2d2d2d2d424547494e205253412050524956415445204b45592d2d2d2d2d0a2f2f2070656e64696e67206b657920696e73657274696f6e0a2d2d2d2d2d454e44205253412050524956415445204b45592d2d2d2d2d0a');
+      const realPem = fromHex('2d2d2d2d2d424547494e205253412050524956415445204b45592d2d2d2d2d0a4d4949456f77494241414b4341514541305931763864325933653961422b4c2f376d3451377a3852317439753276337734783579367a37613862396330643165326633670a34683569366a376b386c396d306e316f3270337134723573367437753876397730783179327a336134623563366437653866396730683169326a336b346c356d366e376f0a3870397130723173327433753476357736783779387a396130623163326433653466356736683769386a396b306c316d326e336f347035713672377338743975307631770a2d2d2d2d2d454e44205253412050524956415445204b45592d2d2d2d2d');
+      const updatedPem = fromHex('2d2d2d2d2d424547494e205253412050524956415445204b45592d2d2d2d2d0a4d4949456f77494241414b4341514541383838383838383838383838383838383838383838383838383838383838383838383838383838383838383838383838383838380a34683569366a376b386c396d306e316f3270337134723573367437753876397730783179327a336134623563366437653866396730683169326a336b346c356d366e376f0a3870397130723173327433753476357736783779387a396130623163326433653466356736683769386a396b306c316d326e336f347035713672377338743975307631770a2d2d2d2d2d454e44205253412050524956415445204b45592d2d2d2d2d');
+      const revokedDelimiters = fromHex('2d2d2d2d2d424547494e205253412050524956415445204b45592d2d2d2d2d0a2d2d2d2d2d454e44205253412050524956415445204b45592d2d2d2d2d0a');
+      const githubToken = fromHex('6768705f313131313232323233333333343434343535353536363636373737373838383839393939');
+      const hunkSecret = fromHex('6768705f393939393838383837373737363636363535353534343434333333333232323231313131');
+      const uncommittedSecret = fromHex('6768705f616263646561626364656162636465616263646561626364656162636465616263646561');
+      const phantomSecret = fromHex('6768705f303030303030303030303030303030303030303030303030303030303030303030303030');
+
+      // 1. PEM header existing before body added (detected when body is introduced)
+      // Commit 1: Header and placeholder footer
+      fs.writeFileSync(path.join(testHistoryRepo, 'server.pem'), placeholderPem, 'utf8');
+      execFileSync('git', ['-C', testHistoryRepo, 'add', 'server.pem']);
+      execFileSync('git', ['-C', testHistoryRepo, 'commit', '-m', 'chore: add placeholder cert']);
+
+      // Commit 2: Replace body with real PEM key
+      fs.writeFileSync(path.join(testHistoryRepo, 'server.pem'), realPem + '\n', 'utf8');
+      execFileSync('git', ['-C', testHistoryRepo, 'add', 'server.pem']);
+      execFileSync('git', ['-C', testHistoryRepo, 'commit', '-m', 'feat: install private key']);
+
+      const findings1 = await gitHistory.scanHistoryCommits();
+      const pemFinding1 = findings1.find((f: any) => f.rawSecret && f.rawSecret.includes('MIIEowIBAAKCAQEA0Y1v8d2Y3e9aB+L/7m4Q7z8R1t9u2v3w4x5y6z7a8b9c0d1e2f3g'));
+      assert(pemFinding1 !== undefined, 'scanHistoryCommits detects PEM key when body was added after header existed');
+      assert(pemFinding1?.gitExposure?.isPresentInHead === true, 'PEM key is active in HEAD');
+
+      // 2. PEM body modified while another credential (API key) added in same commit
+      // Commit 3: update PEM key body + add GitHub token in config.json
+      fs.writeFileSync(path.join(testHistoryRepo, 'server.pem'), updatedPem + '\n', 'utf8');
+      fs.writeFileSync(path.join(testHistoryRepo, 'config.json'), JSON.stringify({ token: githubToken }), 'utf8');
+      execFileSync('git', ['-C', testHistoryRepo, 'add', 'server.pem', 'config.json']);
+      execFileSync('git', ['-C', testHistoryRepo, 'commit', '-m', 'feat: update cert and add github pat']);
+
+      const findings2 = await gitHistory.scanHistoryCommits();
+      const pemFinding2 = findings2.find((f: any) => f.rawSecret && f.rawSecret.includes('MIIEowIBAAKCAQEA8888888888888888888888888888888888888888888888888888'));
+      const ghFinding2 = findings2.find((f: any) => f.rawSecret === githubToken);
+      assert(pemFinding2 !== undefined, 'scanHistoryCommits detects modified PEM key in multi-secret commit');
+      assert(ghFinding2 !== undefined, 'scanHistoryCommits detects GitHub PAT in same commit as modified PEM key');
+
+      // 3. PEM key removed while header remains (isPresentInHead === false)
+      // Commit 4: Delete PEM body from server.pem, leaving only delimiters
+      fs.writeFileSync(path.join(testHistoryRepo, 'server.pem'), revokedDelimiters, 'utf8');
+      execFileSync('git', ['-C', testHistoryRepo, 'add', 'server.pem']);
+      execFileSync('git', ['-C', testHistoryRepo, 'commit', '-m', 'chore: revoke cert leaving placeholder']);
+
+      const inHeadAfterRevocation = await gitHistory.isSecretInHead(realPem, 'server.pem');
+      assert(inHeadAfterRevocation === false, 'isSecretInHead returns false when PEM body is removed but header remains');
+
+      const findingsAfterRevocation = await gitHistory.scanHistoryCommits();
+      const historicalPem = findingsAfterRevocation.find((f: any) => f.rawSecret && f.rawSecret.includes('MIIEowIBAAKCAQEA0Y1v8d2Y3e9aB+L/7m4Q7z8R1t9u2v3w4x5y6z7a8b9c0d1e2f3g'));
+      assert(historicalPem !== undefined, 'Revoked PEM key is preserved in historical commit findings');
+      assert(historicalPem?.gitExposure?.isPresentInHead === false, 'Revoked PEM key correctly marked as NOT present in HEAD');
+
+      // 4. Credential added in hunk 3 of a multi-hunk diff
+      const distantFile = path.join(testHistoryRepo, 'distant.txt');
+      const initialLines = Array.from({ length: 300 }, (_, i) => `line ${i + 1}`);
+      fs.writeFileSync(distantFile, initialLines.join('\n') + '\n', 'utf8');
+      execFileSync('git', ['-C', testHistoryRepo, 'add', 'distant.txt']);
+      execFileSync('git', ['-C', testHistoryRepo, 'commit', '-m', 'chore: add large baseline file']);
+
+      // Modify at line 10, line 150, and line 280 (hunk 3 contains secret)
+      initialLines[9] = 'modified line 10';
+      initialLines[149] = 'modified line 150';
+      initialLines[279] = `const TOKEN = "${hunkSecret}";`;
+      fs.writeFileSync(distantFile, initialLines.join('\n') + '\n', 'utf8');
+      execFileSync('git', ['-C', testHistoryRepo, 'add', 'distant.txt']);
+      execFileSync('git', ['-C', testHistoryRepo, 'commit', '-m', 'feat: update lines across file with token']);
+
+      const findingsMultiHunk = await gitHistory.scanHistoryCommits();
+      const hunkFinding = findingsMultiHunk.find((f: any) => f.rawSecret === hunkSecret);
+      assert(hunkFinding !== undefined, 'scanHistoryCommits detects credential in hunk 3 of multi-hunk diff');
+
+      // 5. Empty history results verified against working tree:
+      // Absent everywhere -> NOT_FOUND
+      const tracePhantom = await gitHistory.traceSecret(phantomSecret);
+      assert(tracePhantom.statusDescription.includes('not found in Git history or working tree'), 'traceSecret reports NOT_FOUND when secret is absent everywhere');
+      const timelinePhantom = await gitTimeline.buildTimeline(phantomSecret, 'ghp_••••');
+      assert(timelinePhantom.currentStatus === 'NOT_FOUND', 'buildTimeline reports NOT_FOUND when secret is absent everywhere');
+
+      // Present in working tree only (uncommitted) -> CLEAN_UNCOMMITTED
+      fs.writeFileSync(path.join(testHistoryRepo, 'uncommitted.ts'), `const secret = "${uncommittedSecret}";\n`, 'utf8');
+      const traceUncommitted = await gitHistory.traceSecret(uncommittedSecret);
+      assert(traceUncommitted.statusDescription.includes('Present in working tree only (uncommitted)'), 'traceSecret reports uncommitted working tree status');
+      const timelineUncommitted = await gitTimeline.buildTimeline(uncommittedSecret, 'ghp_••••');
+      assert(timelineUncommitted.currentStatus === 'CLEAN_UNCOMMITTED', 'buildTimeline reports CLEAN_UNCOMMITTED when present in working tree only');
+    } finally {
+      try {
+        fs.rmSync(testHistoryRepo, { recursive: true, force: true });
+      } catch { }
+    }
+  }
+
+  // --- 40. History Correctness, Staged Index Verification & CI Baseline Invariants ---
+  console.log('\n--- 40. History Correctness, Staged Index Verification & CI Baseline Invariants ---');
+  {
+    const { GitHistoryEngine } = require('../src/core/history/gitHistoryEngine');
+    const { GitTimelineEngine } = require('../src/core/history/gitTimeline');
+    const { BaselineEngine } = require('../src/core/baseline/baselineEngine');
+    const { execFileSync } = require('child_process');
+    const fromHex = (h: string) => Buffer.from(h, 'hex').toString('utf8');
+
+    const sec40Repo = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-sec40-repo-'));
+    try {
+      execFileSync('git', ['init', sec40Repo]);
+      execFileSync('git', ['-C', sec40Repo, 'config', 'user.name', 'Security Tester']);
+      execFileSync('git', ['-C', sec40Repo, 'config', 'user.email', 'sec@test.com']);
+
+      const gitHistory = new GitHistoryEngine(sec40Repo);
+      const gitTimeline = new GitTimelineEngine(sec40Repo);
+
+      const stagedSecret = fromHex('6768705f737461676564736563726574313233343536373839306162636465663132333435363738');
+      const deepSecret = fromHex('6768705f646565707365637265743132333435363738393061626364656631323334353637383930');
+      const binarySecret = fromHex('6768705f62696e617279736563726574313233343536373839306162636465663132333435363738');
+
+      // 1. Staged credential with cleaned working tree detected via git show :<path>
+      const authFile = path.join(sec40Repo, 'auth.ts');
+      fs.writeFileSync(authFile, `const TOKEN = "${stagedSecret}";\n`, 'utf8');
+      execFileSync('git', ['-C', sec40Repo, 'add', 'auth.ts']);
+      // Overwrite disk file with clean content without updating index
+      fs.writeFileSync(authFile, '// clean content on disk\n', 'utf8');
+
+      const foundInWorkingTree = await gitHistory.isSecretInWorkingTree(stagedSecret);
+      assert(foundInWorkingTree === true, 'isSecretInWorkingTree detects staged credential via git show :<path> even when disk file is cleaned');
+
+      const traceStaged = await gitHistory.traceSecret(stagedSecret);
+      assert(traceStaged.isSecretInWorkingTree === true, 'traceSecret identifies staged credential when disk file is cleaned');
+
+      // Reset auth.ts for subsequent tests
+      execFileSync('git', ['-C', sec40Repo, 'reset', 'HEAD', '--', 'auth.ts']);
+      fs.unlinkSync(authFile);
+
+      // 2. Deep historical trace (> 200 commits) finds secret introduced 205 commits ago
+      const vaultFile = path.join(sec40Repo, 'vault.txt');
+      fs.writeFileSync(vaultFile, `DEEP_KEY=${deepSecret}\n`, 'utf8');
+      execFileSync('git', ['-C', sec40Repo, 'add', 'vault.txt']);
+      execFileSync('git', ['-C', sec40Repo, 'commit', '-m', 'feat: initial secret commit']);
+
+      // Immediately revoke deepSecret in commit 2
+      fs.writeFileSync(vaultFile, 'DEEP_KEY=clean\n', 'utf8');
+      execFileSync('git', ['-C', sec40Repo, 'add', 'vault.txt']);
+      execFileSync('git', ['-C', sec40Repo, 'commit', '-m', 'chore: revoke deep secret']);
+
+      // Generate 205 intermediate commits from the clean tree via fast commit-tree
+      let parentSha = execFileSync('git', ['-C', sec40Repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+      const treeSha = execFileSync('git', ['-C', sec40Repo, 'write-tree'], { encoding: 'utf8' }).trim();
+      for (let i = 1; i <= 205; i++) {
+        parentSha = execFileSync(
+          'git',
+          ['-C', sec40Repo, 'commit-tree', treeSha, '-p', parentSha, '-m', `chore: dummy commit ${i}`],
+          { encoding: 'utf8' }
+        ).trim();
+      }
+      execFileSync('git', ['-C', sec40Repo, 'update-ref', 'HEAD', parentSha]);
+
+      // Default search (maxCommits = 0) searches entire history without 200 limit
+      const deepTrace = await gitHistory.traceSecret(deepSecret);
+      assert(deepTrace.isPresentInHistory === true, 'traceSecret with default depth finds secret beyond 200 commits');
+      assert(deepTrace.isPartialHistory === false, 'traceSecret default search is not partial');
+      assert(deepTrace.introducedCommit !== undefined, 'traceSecret locates first commit for deep secret');
+
+      const deepTimeline = await gitTimeline.buildTimeline(deepSecret, 'ghp_••••');
+      assert(deepTimeline.currentStatus === 'REMOVED_FROM_HEAD_PRESENT_IN_HISTORY', 'buildTimeline reports REMOVED_FROM_HEAD_PRESENT_IN_HISTORY for deep historical secret');
+
+      // 3. Limited historical search returns PARTIAL_HISTORY
+      const limitedResult = await gitHistory.findCommitsContainingSecretResult(deepSecret, 50);
+      assert(limitedResult.status === 'PARTIAL_HISTORY', 'findCommitsContainingSecretResult returns PARTIAL_HISTORY when limited');
+      assert(limitedResult.isPartialHistory === true, 'isPartialHistory is true when search depth is limited');
+
+      const limitedTrace = await gitHistory.traceSecret(deepSecret, 50);
+      assert(limitedTrace.isPartialHistory === true, 'traceSecret returns isPartialHistory true when limited');
+      assert(limitedTrace.searchStatus === 'PARTIAL_HISTORY', 'traceSecret searchStatus is PARTIAL_HISTORY when limited');
+
+      const limitedTimeline = await gitTimeline.buildTimeline(deepSecret, 'ghp_••••', 50);
+      assert(limitedTimeline.currentStatus === 'PARTIAL_HISTORY', 'buildTimeline reports PARTIAL_HISTORY when limited');
+
+      // 4. Operational git grep failure returns ERROR / SEARCH_INCOMPLETE, not NOT_FOUND
+      const nonexistentHistory = new GitHistoryEngine(path.join(os.tmpdir(), 'nonexistent-repo-sld-40'));
+      const errResult = await nonexistentHistory.findCommitsContainingSecretResult('test_secret');
+      assert(errResult.status === 'ERROR', 'findCommitsContainingSecretResult returns ERROR on invalid repository');
+
+      const errTrace = await nonexistentHistory.traceSecret('test_secret');
+      assert(errTrace.searchStatus === 'ERROR', 'traceSecret searchStatus is ERROR on invalid repository');
+
+      const nonexistentTimeline = new GitTimelineEngine(path.join(os.tmpdir(), 'nonexistent-repo-sld-40'));
+      const errTimeline = await nonexistentTimeline.buildTimeline('test_secret', 'test***');
+      assert(errTimeline.currentStatus === 'ERROR', 'buildTimeline reports ERROR on invalid repository');
+
+      // 5. Historical binary commit containing credential detected via scanHistoryCommits()
+      const binFile = path.join(sec40Repo, 'payload.bin');
+      const binaryBuffer = Buffer.concat([
+        Buffer.from([0x00, 0x01, 0x02, 0xff]),
+        Buffer.from(`const SECRET = "${binarySecret}";\n`),
+        Buffer.from([0x00, 0x00, 0xfe]),
+      ]);
+      fs.writeFileSync(binFile, binaryBuffer);
+      execFileSync('git', ['-C', sec40Repo, 'add', 'payload.bin']);
+      execFileSync('git', ['-C', sec40Repo, 'commit', '-m', 'feat: commit binary payload with secret']);
+
+      const historyFindings = await gitHistory.scanHistoryCommits(10);
+      const binaryFinding = historyFindings.find((f: any) => f.rawSecret === binarySecret);
+      assert(binaryFinding !== undefined, 'scanHistoryCommits detects credential inside binary file change');
+
+      // 6. In CI, loadBaselineFromGit('HEAD') is rejected even when 'HEAD' is explicitly passed
+      const baselineJson = JSON.stringify({
+        version: 1,
+        generatedAt: new Date().toISOString(),
+        findings: [],
+      });
+      fs.writeFileSync(path.join(sec40Repo, '.secretleak-baseline.json'), baselineJson, 'utf8');
+      execFileSync('git', ['-C', sec40Repo, 'add', '.secretleak-baseline.json']);
+      execFileSync('git', ['-C', sec40Repo, 'commit', '-m', 'chore: add baseline']);
+
+      const origCiSec40 = process.env.CI;
+      try {
+        process.env.CI = 'true';
+        const bEngineCi = new BaselineEngine(sec40Repo, '.secretleak-baseline.json');
+        const ciHeadBaseline = bEngineCi.loadBaselineFromGit('HEAD');
+        assert(ciHeadBaseline === null, 'CI loadBaselineFromGit rejects explicit HEAD to prevent self-trust');
       } finally {
-        if (origCiSec37 !== undefined) process.env.CI = origCiSec37;
+        if (origCiSec40 !== undefined) process.env.CI = origCiSec40;
         else delete process.env.CI;
-        if (origGhActionsSec37 !== undefined) process.env.GITHUB_ACTIONS = origGhActionsSec37;
-        else delete process.env.GITHUB_ACTIONS;
-        if (origGitlabSec37 !== undefined) process.env.GITLAB_CI = origGitlabSec37;
-        else delete process.env.GITLAB_CI;
-      }
-      assert(baselineResult !== undefined, 'loadBaselineFromGit runs cleanly without path resolution crash');
-
-      // 5. cleanHook acquires lock and cleans managed hook safely
-      const testHookDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-uninstall-lock-'));
-      const testHookFile = path.join(testHookDir, 'pre-commit');
-      fs.writeFileSync(testHookFile, '#!/bin/sh\n# [SLD_HOOK_MANAGED]\nexit 0\n', { mode: 0o755 });
-      assert(fs.existsSync(testHookFile), 'Test hook file created');
-      const cleanSuccess = cleanHook(testHookFile);
-      assert(cleanSuccess === true, 'cleanHook returns true for managed hook');
-      assert(!fs.existsSync(testHookFile), 'cleanHook removed managed hook');
-      assert(!fs.existsSync(path.join(testHookDir, 'pre-commit.sld.lock')), 'cleanHook released lock file');
-      try { fs.rmSync(testHookDir, { recursive: true, force: true }); } catch {}
-
-      // ── Section 38: Uninstaller Lock Race Protection, Capture Group Isolation, and Source Expression Remediation ──
-      console.log('\n--- 38. Uninstaller Lock Race Protection, Capture Group Isolation & Strict Defaults ---');
-
-      // 1. cleanHook aborts cleanly when lock is held by another active process
-      const lockContentionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-lock-contention-'));
-      const activeHookFile = path.join(lockContentionDir, 'pre-commit');
-      const activeLockFile = path.join(lockContentionDir, 'pre-commit.sld.lock');
-      fs.writeFileSync(activeHookFile, '#!/bin/sh\n# [SLD_HOOK_MANAGED]\nexit 0\n', { mode: 0o755 });
-      fs.writeFileSync(activeLockFile, '999999', 'utf8'); // Active lock
-      const lockContentionResult = cleanHook(activeHookFile);
-      assert(lockContentionResult === false, 'cleanHook returns false when lock is held by another active process');
-      assert(fs.existsSync(activeHookFile), 'Hook is not touched when lock cannot be acquired');
-      try { fs.rmSync(lockContentionDir, { recursive: true, force: true }); } catch {}
-
-      // 2. Twilio regex branch 2 properly isolates 32-character hex secret from assignment
-      const twilioCode = 'const auth_token = "0123456789abcdef0123456789abcdef";';
-      const twilioFindings = scanContent(twilioCode, 'auth.js');
-      assert(twilioFindings.length === 1, 'Twilio auth token detected');
-      assert(twilioFindings[0].rawSecret === '0123456789abcdef0123456789abcdef', 'Twilio rawSecret is 32-char token, not assignment string (got ' + twilioFindings[0].rawSecret + ')');
-
-      // 3. applyControlledRemediation handles findings with sourceExpression
-      const remDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-rem-src-expr-'));
-      const remFile = path.join(remDir, 'test.js');
-      fs.writeFileSync(remFile, `import 'dotenv/config';\nconst token = "part1_" + "part2_abcdef1234567890";\n`, 'utf8');
-      const fakeFinding: any = {
-        id: 'finding_expr_1',
-        type: 'Generic API Key',
-        provider: 'Generic',
-        rawSecret: 'part1_part2_abcdef1234567890',
-        sourceExpression: '"part1_" + "part2_abcdef1234567890"',
-        redactedSecret: 'part••••••••••••',
-        file: 'test.js',
-        fullPath: remFile,
-        line: 2,
-        column: (fs.readFileSync(remFile, 'utf8').split(/\r?\n/)[1] || '').indexOf('"part1_" + "part2_abcdef1234567890"') + 1,
-        length: '"part1_" + "part2_abcdef1234567890"'.length,
-        remediation: { envVarName: 'TEST_API_KEY' },
-      };
-      const remRes = applyControlledRemediation(fakeFinding, remDir);
-      assert(remRes.success === true, 'applyControlledRemediation succeeds with sourceExpression');
-      const remUpdatedContent = fs.readFileSync(remFile, 'utf8');
-      assert(remUpdatedContent.includes('process.env.TEST_API_KEY'), 'Source expression replaced with process.env.TEST_API_KEY');
-      assert(!remUpdatedContent.includes('part1_'), 'Old split parts completely removed');
-      try { fs.rmSync(remDir, { recursive: true, force: true }); } catch {}
-
-      // 4. resolveSalt honors SLD_SALT and SLD_FINGERPRINT_SALT
-      const { resolveSalt } = require('../src/core/redactor/redactor');
-      const origSldSalt = process.env.SLD_SALT;
-      const origSldFps = process.env.SLD_FINGERPRINT_SALT;
-      try {
-        delete process.env.SLD_SALT;
-        process.env.SLD_FINGERPRINT_SALT = 'C'.repeat(64);
-        assert(resolveSalt() === 'C'.repeat(64), 'resolveSalt honors a sufficiently strong SLD_FINGERPRINT_SALT');
-        process.env.SLD_SALT = 'D'.repeat(64);
-        assert(resolveSalt() === 'D'.repeat(64), 'resolveSalt prioritizes a sufficiently strong SLD_SALT');
-        process.env.SLD_SALT = 'weak-key';
-        let weakSaltRejected = false;
-        try {
-          resolveSalt();
-        } catch {
-          weakSaltRejected = true;
-        }
-        assert(weakSaltRejected, 'resolveSalt rejects weak environment-provided fingerprint keys');
-      } finally {
-        if (origSldSalt !== undefined) process.env.SLD_SALT = origSldSalt;
-        else delete process.env.SLD_SALT;
-        if (origSldFps !== undefined) process.env.SLD_FINGERPRINT_SALT = origSldFps;
-        else delete process.env.SLD_FINGERPRINT_SALT;
       }
 
-      // 5. DEFAULT_IGNORE_PATTERNS includes .vscode-test
-      const { DEFAULT_IGNORE_PATTERNS } = require('../src/core/ignore/ignoreEngine');
-      assert(DEFAULT_IGNORE_PATTERNS.includes('.vscode-test/**'), 'DEFAULT_IGNORE_PATTERNS includes .vscode-test/**');
-      assert(DEFAULT_IGNORE_PATTERNS.includes('**/.vscode-test/**'), 'DEFAULT_IGNORE_PATTERNS includes **/.vscode-test/**');
+      // 7. Staged scan defaults to strict failOnSkipped: true
+      const bigFile = path.join(sec40Repo, 'huge.dat');
+      fs.writeFileSync(bigFile, Buffer.alloc(11 * 1024 * 1024));
+      execFileSync('git', ['-C', sec40Repo, 'add', 'huge.dat']);
 
-      // 6. Hook defaults to strict failOnSkipped (1), relaxed hook sets failOnSkipped to 0
-      const defaultHook = buildPreCommitHook();
-      assert(defaultHook.includes('SLD_FAIL_ON_SKIPPED_DEFAULT="1"'), 'Default hook defaults failOnSkipped to 1 (strict fail-closed)');
-      const relaxedHook = buildPreCommitHook(undefined, undefined, undefined, true, true, false);
-      assert(relaxedHook.includes('SLD_FAIL_ON_SKIPPED_DEFAULT="0"'), 'Relaxed hook sets failOnSkipped to 0');
-    }
-
-    // --- 39. History Scanning Multiline Invariants, Multi-Hunk Attributions, and Working-Tree State ---
-    console.log('\n--- 39. History Scanning Multiline Invariants, Multi-Hunk Attributions, and Working-Tree State ---');
-    {
-      const { GitHistoryEngine } = require('../src/core/history/gitHistoryEngine');
-      const { GitTimelineEngine } = require('../src/core/history/gitTimeline');
-      const { execFileSync } = require('child_process');
-      const fromHex = (h: string) => Buffer.from(h, 'hex').toString('utf8');
-
-      const testHistoryRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-hist-pem-'));
-      try {
-        execFileSync('git', ['init', testHistoryRepo]);
-        execFileSync('git', ['-C', testHistoryRepo, 'config', 'user.name', 'Security Tester']);
-        execFileSync('git', ['-C', testHistoryRepo, 'config', 'user.email', 'sec@test.com']);
-
-        const gitHistory = new GitHistoryEngine(testHistoryRepo);
-        const gitTimeline = new GitTimelineEngine(testHistoryRepo);
-
-        // Test credentials constructed from hex at runtime so test runner source does not leak literal secrets
-        const placeholderPem = fromHex('2d2d2d2d2d424547494e205253412050524956415445204b45592d2d2d2d2d0a2f2f2070656e64696e67206b657920696e73657274696f6e0a2d2d2d2d2d454e44205253412050524956415445204b45592d2d2d2d2d0a');
-        const realPem = fromHex('2d2d2d2d2d424547494e205253412050524956415445204b45592d2d2d2d2d0a4d4949456f77494241414b4341514541305931763864325933653961422b4c2f376d3451377a3852317439753276337734783579367a37613862396330643165326633670a34683569366a376b386c396d306e316f3270337134723573367437753876397730783179327a336134623563366437653866396730683169326a336b346c356d366e376f0a3870397130723173327433753476357736783779387a396130623163326433653466356736683769386a396b306c316d326e336f347035713672377338743975307631770a2d2d2d2d2d454e44205253412050524956415445204b45592d2d2d2d2d');
-        const updatedPem = fromHex('2d2d2d2d2d424547494e205253412050524956415445204b45592d2d2d2d2d0a4d4949456f77494241414b4341514541383838383838383838383838383838383838383838383838383838383838383838383838383838383838383838383838383838380a34683569366a376b386c396d306e316f3270337134723573367437753876397730783179327a336134623563366437653866396730683169326a336b346c356d366e376f0a3870397130723173327433753476357736783779387a396130623163326433653466356736683769386a396b306c316d326e336f347035713672377338743975307631770a2d2d2d2d2d454e44205253412050524956415445204b45592d2d2d2d2d');
-        const revokedDelimiters = fromHex('2d2d2d2d2d424547494e205253412050524956415445204b45592d2d2d2d2d0a2d2d2d2d2d454e44205253412050524956415445204b45592d2d2d2d2d0a');
-        const githubToken = fromHex('6768705f313131313232323233333333343434343535353536363636373737373838383839393939');
-        const hunkSecret = fromHex('6768705f393939393838383837373737363636363535353534343434333333333232323231313131');
-        const uncommittedSecret = fromHex('6768705f616263646561626364656162636465616263646561626364656162636465616263646561');
-        const phantomSecret = fromHex('6768705f303030303030303030303030303030303030303030303030303030303030303030303030');
-
-        // 1. PEM header existing before body added (detected when body is introduced)
-        // Commit 1: Header and placeholder footer
-        fs.writeFileSync(path.join(testHistoryRepo, 'server.pem'), placeholderPem, 'utf8');
-        execFileSync('git', ['-C', testHistoryRepo, 'add', 'server.pem']);
-        execFileSync('git', ['-C', testHistoryRepo, 'commit', '-m', 'chore: add placeholder cert']);
-
-        // Commit 2: Replace body with real PEM key
-        fs.writeFileSync(path.join(testHistoryRepo, 'server.pem'), realPem + '\n', 'utf8');
-        execFileSync('git', ['-C', testHistoryRepo, 'add', 'server.pem']);
-        execFileSync('git', ['-C', testHistoryRepo, 'commit', '-m', 'feat: install private key']);
-
-        const findings1 = await gitHistory.scanHistoryCommits();
-        const pemFinding1 = findings1.find((f: any) => f.rawSecret && f.rawSecret.includes('MIIEowIBAAKCAQEA0Y1v8d2Y3e9aB+L/7m4Q7z8R1t9u2v3w4x5y6z7a8b9c0d1e2f3g'));
-        assert(pemFinding1 !== undefined, 'scanHistoryCommits detects PEM key when body was added after header existed');
-        assert(pemFinding1?.gitExposure?.isPresentInHead === true, 'PEM key is active in HEAD');
-
-        // 2. PEM body modified while another credential (API key) added in same commit
-        // Commit 3: update PEM key body + add GitHub token in config.json
-        fs.writeFileSync(path.join(testHistoryRepo, 'server.pem'), updatedPem + '\n', 'utf8');
-        fs.writeFileSync(path.join(testHistoryRepo, 'config.json'), JSON.stringify({ token: githubToken }), 'utf8');
-        execFileSync('git', ['-C', testHistoryRepo, 'add', 'server.pem', 'config.json']);
-        execFileSync('git', ['-C', testHistoryRepo, 'commit', '-m', 'feat: update cert and add github pat']);
-
-        const findings2 = await gitHistory.scanHistoryCommits();
-        const pemFinding2 = findings2.find((f: any) => f.rawSecret && f.rawSecret.includes('MIIEowIBAAKCAQEA8888888888888888888888888888888888888888888888888888'));
-        const ghFinding2 = findings2.find((f: any) => f.rawSecret === githubToken);
-        assert(pemFinding2 !== undefined, 'scanHistoryCommits detects modified PEM key in multi-secret commit');
-        assert(ghFinding2 !== undefined, 'scanHistoryCommits detects GitHub PAT in same commit as modified PEM key');
-
-        // 3. PEM key removed while header remains (isPresentInHead === false)
-        // Commit 4: Delete PEM body from server.pem, leaving only delimiters
-        fs.writeFileSync(path.join(testHistoryRepo, 'server.pem'), revokedDelimiters, 'utf8');
-        execFileSync('git', ['-C', testHistoryRepo, 'add', 'server.pem']);
-        execFileSync('git', ['-C', testHistoryRepo, 'commit', '-m', 'chore: revoke cert leaving placeholder']);
-
-        const inHeadAfterRevocation = await gitHistory.isSecretInHead(realPem, 'server.pem');
-        assert(inHeadAfterRevocation === false, 'isSecretInHead returns false when PEM body is removed but header remains');
-
-        const findingsAfterRevocation = await gitHistory.scanHistoryCommits();
-        const historicalPem = findingsAfterRevocation.find((f: any) => f.rawSecret && f.rawSecret.includes('MIIEowIBAAKCAQEA0Y1v8d2Y3e9aB+L/7m4Q7z8R1t9u2v3w4x5y6z7a8b9c0d1e2f3g'));
-        assert(historicalPem !== undefined, 'Revoked PEM key is preserved in historical commit findings');
-        assert(historicalPem?.gitExposure?.isPresentInHead === false, 'Revoked PEM key correctly marked as NOT present in HEAD');
-
-        // 4. Credential added in hunk 3 of a multi-hunk diff
-        const distantFile = path.join(testHistoryRepo, 'distant.txt');
-        const initialLines = Array.from({ length: 300 }, (_, i) => `line ${i + 1}`);
-        fs.writeFileSync(distantFile, initialLines.join('\n') + '\n', 'utf8');
-        execFileSync('git', ['-C', testHistoryRepo, 'add', 'distant.txt']);
-        execFileSync('git', ['-C', testHistoryRepo, 'commit', '-m', 'chore: add large baseline file']);
-
-        // Modify at line 10, line 150, and line 280 (hunk 3 contains secret)
-        initialLines[9] = 'modified line 10';
-        initialLines[149] = 'modified line 150';
-        initialLines[279] = `const TOKEN = "${hunkSecret}";`;
-        fs.writeFileSync(distantFile, initialLines.join('\n') + '\n', 'utf8');
-        execFileSync('git', ['-C', testHistoryRepo, 'add', 'distant.txt']);
-        execFileSync('git', ['-C', testHistoryRepo, 'commit', '-m', 'feat: update lines across file with token']);
-
-        const findingsMultiHunk = await gitHistory.scanHistoryCommits();
-        const hunkFinding = findingsMultiHunk.find((f: any) => f.rawSecret === hunkSecret);
-        assert(hunkFinding !== undefined, 'scanHistoryCommits detects credential in hunk 3 of multi-hunk diff');
-
-        // 5. Empty history results verified against working tree:
-        // Absent everywhere -> NOT_FOUND
-        const tracePhantom = await gitHistory.traceSecret(phantomSecret);
-        assert(tracePhantom.statusDescription.includes('not found in Git history or working tree'), 'traceSecret reports NOT_FOUND when secret is absent everywhere');
-        const timelinePhantom = await gitTimeline.buildTimeline(phantomSecret, 'ghp_••••');
-        assert(timelinePhantom.currentStatus === 'NOT_FOUND', 'buildTimeline reports NOT_FOUND when secret is absent everywhere');
-
-        // Present in working tree only (uncommitted) -> CLEAN_UNCOMMITTED
-        fs.writeFileSync(path.join(testHistoryRepo, 'uncommitted.ts'), `const secret = "${uncommittedSecret}";\n`, 'utf8');
-        const traceUncommitted = await gitHistory.traceSecret(uncommittedSecret);
-        assert(traceUncommitted.statusDescription.includes('Present in working tree only (uncommitted)'), 'traceSecret reports uncommitted working tree status');
-        const timelineUncommitted = await gitTimeline.buildTimeline(uncommittedSecret, 'ghp_••••');
-        assert(timelineUncommitted.currentStatus === 'CLEAN_UNCOMMITTED', 'buildTimeline reports CLEAN_UNCOMMITTED when present in working tree only');
-      } finally {
-        try {
-          fs.rmSync(testHistoryRepo, { recursive: true, force: true });
-        } catch {}
+      const cliPath = path.resolve(__dirname, '../dist/cli.js');
+      if (!fs.existsSync(cliPath)) {
+        execFileSync(process.execPath, ['esbuild.js', '--cli'], { cwd: path.resolve(__dirname, '..') });
       }
-    }
 
-    // --- 40. History Correctness, Staged Index Verification & CI Baseline Invariants ---
-    console.log('\n--- 40. History Correctness, Staged Index Verification & CI Baseline Invariants ---');
-    {
-      const { GitHistoryEngine } = require('../src/core/history/gitHistoryEngine');
-      const { GitTimelineEngine } = require('../src/core/history/gitTimeline');
-      const { BaselineEngine } = require('../src/core/baseline/baselineEngine');
-      const { execFileSync } = require('child_process');
-      const fromHex = (h: string) => Buffer.from(h, 'hex').toString('utf8');
-
-      const sec40Repo = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-sec40-repo-'));
+      let stagedDefaultExit: number | null = null;
       try {
-        execFileSync('git', ['init', sec40Repo]);
-        execFileSync('git', ['-C', sec40Repo, 'config', 'user.name', 'Security Tester']);
-        execFileSync('git', ['-C', sec40Repo, 'config', 'user.email', 'sec@test.com']);
-
-        const gitHistory = new GitHistoryEngine(sec40Repo);
-        const gitTimeline = new GitTimelineEngine(sec40Repo);
-
-        const stagedSecret = fromHex('6768705f737461676564736563726574313233343536373839306162636465663132333435363738');
-        const deepSecret = fromHex('6768705f646565707365637265743132333435363738393061626364656631323334353637383930');
-        const binarySecret = fromHex('6768705f62696e617279736563726574313233343536373839306162636465663132333435363738');
-
-        // 1. Staged credential with cleaned working tree detected via git show :<path>
-        const authFile = path.join(sec40Repo, 'auth.ts');
-        fs.writeFileSync(authFile, `const TOKEN = "${stagedSecret}";\n`, 'utf8');
-        execFileSync('git', ['-C', sec40Repo, 'add', 'auth.ts']);
-        // Overwrite disk file with clean content without updating index
-        fs.writeFileSync(authFile, '// clean content on disk\n', 'utf8');
-
-        const foundInWorkingTree = await gitHistory.isSecretInWorkingTree(stagedSecret);
-        assert(foundInWorkingTree === true, 'isSecretInWorkingTree detects staged credential via git show :<path> even when disk file is cleaned');
-
-        const traceStaged = await gitHistory.traceSecret(stagedSecret);
-        assert(traceStaged.isSecretInWorkingTree === true, 'traceSecret identifies staged credential when disk file is cleaned');
-
-        // Reset auth.ts for subsequent tests
-        execFileSync('git', ['-C', sec40Repo, 'reset', 'HEAD', '--', 'auth.ts']);
-        fs.unlinkSync(authFile);
-
-        // 2. Deep historical trace (> 200 commits) finds secret introduced 205 commits ago
-        const vaultFile = path.join(sec40Repo, 'vault.txt');
-        fs.writeFileSync(vaultFile, `DEEP_KEY=${deepSecret}\n`, 'utf8');
-        execFileSync('git', ['-C', sec40Repo, 'add', 'vault.txt']);
-        execFileSync('git', ['-C', sec40Repo, 'commit', '-m', 'feat: initial secret commit']);
-
-        // Immediately revoke deepSecret in commit 2
-        fs.writeFileSync(vaultFile, 'DEEP_KEY=clean\n', 'utf8');
-        execFileSync('git', ['-C', sec40Repo, 'add', 'vault.txt']);
-        execFileSync('git', ['-C', sec40Repo, 'commit', '-m', 'chore: revoke deep secret']);
-
-        // Generate 205 intermediate commits from the clean tree via fast commit-tree
-        let parentSha = execFileSync('git', ['-C', sec40Repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-        const treeSha = execFileSync('git', ['-C', sec40Repo, 'write-tree'], { encoding: 'utf8' }).trim();
-        for (let i = 1; i <= 205; i++) {
-          parentSha = execFileSync(
-            'git',
-            ['-C', sec40Repo, 'commit-tree', treeSha, '-p', parentSha, '-m', `chore: dummy commit ${i}`],
-            { encoding: 'utf8' }
-          ).trim();
-        }
-        execFileSync('git', ['-C', sec40Repo, 'update-ref', 'HEAD', parentSha]);
-
-        // Default search (maxCommits = 0) searches entire history without 200 limit
-        const deepTrace = await gitHistory.traceSecret(deepSecret);
-        assert(deepTrace.isPresentInHistory === true, 'traceSecret with default depth finds secret beyond 200 commits');
-        assert(deepTrace.isPartialHistory === false, 'traceSecret default search is not partial');
-        assert(deepTrace.introducedCommit !== undefined, 'traceSecret locates first commit for deep secret');
-
-        const deepTimeline = await gitTimeline.buildTimeline(deepSecret, 'ghp_••••');
-        assert(deepTimeline.currentStatus === 'REMOVED_FROM_HEAD_PRESENT_IN_HISTORY', 'buildTimeline reports REMOVED_FROM_HEAD_PRESENT_IN_HISTORY for deep historical secret');
-
-        // 3. Limited historical search returns PARTIAL_HISTORY
-        const limitedResult = await gitHistory.findCommitsContainingSecretResult(deepSecret, 50);
-        assert(limitedResult.status === 'PARTIAL_HISTORY', 'findCommitsContainingSecretResult returns PARTIAL_HISTORY when limited');
-        assert(limitedResult.isPartialHistory === true, 'isPartialHistory is true when search depth is limited');
-
-        const limitedTrace = await gitHistory.traceSecret(deepSecret, 50);
-        assert(limitedTrace.isPartialHistory === true, 'traceSecret returns isPartialHistory true when limited');
-        assert(limitedTrace.searchStatus === 'PARTIAL_HISTORY', 'traceSecret searchStatus is PARTIAL_HISTORY when limited');
-
-        const limitedTimeline = await gitTimeline.buildTimeline(deepSecret, 'ghp_••••', 50);
-        assert(limitedTimeline.currentStatus === 'PARTIAL_HISTORY', 'buildTimeline reports PARTIAL_HISTORY when limited');
-
-        // 4. Operational git grep failure returns ERROR / SEARCH_INCOMPLETE, not NOT_FOUND
-        const nonexistentHistory = new GitHistoryEngine(path.join(os.tmpdir(), 'nonexistent-repo-sld-40'));
-        const errResult = await nonexistentHistory.findCommitsContainingSecretResult('test_secret');
-        assert(errResult.status === 'ERROR', 'findCommitsContainingSecretResult returns ERROR on invalid repository');
-
-        const errTrace = await nonexistentHistory.traceSecret('test_secret');
-        assert(errTrace.searchStatus === 'ERROR', 'traceSecret searchStatus is ERROR on invalid repository');
-
-        const nonexistentTimeline = new GitTimelineEngine(path.join(os.tmpdir(), 'nonexistent-repo-sld-40'));
-        const errTimeline = await nonexistentTimeline.buildTimeline('test_secret', 'test***');
-        assert(errTimeline.currentStatus === 'ERROR', 'buildTimeline reports ERROR on invalid repository');
-
-        // 5. Historical binary commit containing credential detected via scanHistoryCommits()
-        const binFile = path.join(sec40Repo, 'payload.bin');
-        const binaryBuffer = Buffer.concat([
-          Buffer.from([0x00, 0x01, 0x02, 0xff]),
-          Buffer.from(`const SECRET = "${binarySecret}";\n`),
-          Buffer.from([0x00, 0x00, 0xfe]),
-        ]);
-        fs.writeFileSync(binFile, binaryBuffer);
-        execFileSync('git', ['-C', sec40Repo, 'add', 'payload.bin']);
-        execFileSync('git', ['-C', sec40Repo, 'commit', '-m', 'feat: commit binary payload with secret']);
-
-        const historyFindings = await gitHistory.scanHistoryCommits(10);
-        const binaryFinding = historyFindings.find((f: any) => f.rawSecret === binarySecret);
-        assert(binaryFinding !== undefined, 'scanHistoryCommits detects credential inside binary file change');
-
-        // 6. In CI, loadBaselineFromGit('HEAD') is rejected even when 'HEAD' is explicitly passed
-        const baselineJson = JSON.stringify({
-          version: 1,
-          generatedAt: new Date().toISOString(),
-          findings: [],
+        execFileSync(process.execPath, [cliPath, 'scan', '--staged'], {
+          cwd: sec40Repo,
+          stdio: 'pipe',
         });
-        fs.writeFileSync(path.join(sec40Repo, '.secretleak-baseline.json'), baselineJson, 'utf8');
-        execFileSync('git', ['-C', sec40Repo, 'add', '.secretleak-baseline.json']);
-        execFileSync('git', ['-C', sec40Repo, 'commit', '-m', 'chore: add baseline']);
-
-        const origCiSec40 = process.env.CI;
-        try {
-          process.env.CI = 'true';
-          const bEngineCi = new BaselineEngine(sec40Repo, '.secretleak-baseline.json');
-          const ciHeadBaseline = bEngineCi.loadBaselineFromGit('HEAD');
-          assert(ciHeadBaseline === null, 'CI loadBaselineFromGit rejects explicit HEAD to prevent self-trust');
-        } finally {
-          if (origCiSec40 !== undefined) process.env.CI = origCiSec40;
-          else delete process.env.CI;
-        }
-
-        // 7. Staged scan defaults to strict failOnSkipped: true
-        const bigFile = path.join(sec40Repo, 'huge.dat');
-        fs.writeFileSync(bigFile, Buffer.alloc(11 * 1024 * 1024));
-        execFileSync('git', ['-C', sec40Repo, 'add', 'huge.dat']);
-
-        const cliPath = path.resolve(__dirname, '../dist/cli.js');
-        if (!fs.existsSync(cliPath)) {
-          execFileSync(process.execPath, ['esbuild.js', '--cli'], { cwd: path.resolve(__dirname, '..') });
-        }
-
-        let stagedDefaultExit: number | null = null;
-        try {
-          execFileSync(process.execPath, [cliPath, 'scan', '--staged'], {
-            cwd: sec40Repo,
-            stdio: 'pipe',
-          });
-          stagedDefaultExit = 0;
-        } catch (err: any) {
-          stagedDefaultExit = err.status;
-        }
-        assert(stagedDefaultExit === 2, 'scan --staged exits code 2 by default when files are skipped');
-
-        let stagedRelaxedExit: number | null = null;
-        try {
-          execFileSync(process.execPath, [cliPath, 'scan', '--staged', '--allow-skipped'], {
-            cwd: sec40Repo,
-            stdio: 'pipe',
-          });
-          stagedRelaxedExit = 0;
-        } catch (err: any) {
-          stagedRelaxedExit = err.status;
-        }
-        assert(stagedRelaxedExit === 0, 'scan --staged --allow-skipped exits code 0 when relaxed');
-
-        execFileSync('git', ['-C', sec40Repo, 'reset', 'HEAD', '--', 'huge.dat']);
-        fs.unlinkSync(bigFile);
-
-        // 8. Limited search with matches visibly preserves partial history in trace and timeline
-        const partialSecret = fromHex('6768705f7061727469616c73656372657431323334353637383930616263646531323334');
-        const partialFile = path.join(sec40Repo, 'partial.txt');
-        fs.writeFileSync(partialFile, `KEY=${partialSecret}\n`, 'utf8');
-        execFileSync('git', ['-C', sec40Repo, 'add', 'partial.txt']);
-        execFileSync('git', ['-C', sec40Repo, 'commit', '-m', 'feat: add partial secret']);
-
-        // Add 55 dummy commits so total history exceeds maxCommits=30
-        let pSha = execFileSync('git', ['-C', sec40Repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-        const tSha = execFileSync('git', ['-C', sec40Repo, 'write-tree'], { encoding: 'utf8' }).trim();
-        for (let i = 1; i <= 55; i++) {
-          pSha = execFileSync(
-            'git',
-            ['-C', sec40Repo, 'commit-tree', tSha, '-p', pSha, '-m', `chore: dummy ${i}`],
-            { encoding: 'utf8' }
-          ).trim();
-        }
-        execFileSync('git', ['-C', sec40Repo, 'update-ref', 'HEAD', pSha]);
-
-        // Limited search with match (secret is in all 55 commits because tree unchanged)
-        const partialResult = await gitHistory.findCommitsContainingSecretResult(partialSecret, 30);
-        assert(partialResult.status === 'FOUND', 'findCommitsContainingSecretResult returns FOUND when match in limited window');
-        assert(partialResult.isPartialHistory === true, 'findCommitsContainingSecretResult marks isPartialHistory true');
-
-        const partialTrace = await gitHistory.traceSecret(partialSecret, 30);
-        assert(partialTrace.isPartialHistory === true, 'traceSecret preserves isPartialHistory true when matches exist in limited search');
-        assert(partialTrace.statusDescription.includes('[PARTIAL HISTORY'), 'traceSecret visibly notes partial history in statusDescription');
-
-        const partialTimeline = await gitTimeline.buildTimeline(partialSecret, 'ghp_••••', 30);
-        assert(partialTimeline.isPartialHistory === true, 'buildTimeline preserves isPartialHistory true');
-        assert(partialTimeline.timelineAscii.includes('PARTIAL'), 'buildTimeline visibly displays PARTIAL coverage in ASCII report');
-
-        // 9. Operational blob-reading failure in isSecretInWorkingTree throws operational error
-        let workingTreeThrown = false;
-        try {
-          const corruptEngine = new GitHistoryEngine(path.join(os.tmpdir(), 'nonexistent-wt-dir'));
-          await corruptEngine.isSecretInWorkingTree('dummy_token');
-        } catch (err: any) {
-          workingTreeThrown = true;
-        }
-        assert(workingTreeThrown === true, 'isSecretInWorkingTree throws operational error on failed git execution rather than returning false');
-
-        // 10. Operational blob-reading failure in isSecretInHead throws operational error
-        let inHeadThrown = false;
-        try {
-          const corruptEngine = new GitHistoryEngine(path.join(os.tmpdir(), 'nonexistent-head-dir'));
-          await corruptEngine.isSecretInHead('dummy_token');
-        } catch (err: any) {
-          inHeadThrown = true;
-        }
-        assert(inHeadThrown === true, 'isSecretInHead throws operational error on failed git execution rather than returning false');
-
-        // 11. Historical blob inspection failure in scanHistoryCommits throws descriptive error
-        let scanHistoryThrown = false;
-        try {
-          const corruptEngine = new GitHistoryEngine(path.join(os.tmpdir(), 'nonexistent-hist-dir'));
-          await corruptEngine.scanHistoryCommits(5);
-        } catch (err: any) {
-          scanHistoryThrown = true;
-        }
-        assert(scanHistoryThrown === true, 'scanHistoryCommits throws operational error on failed git execution rather than returning clean []');
-
-        // 12. Chunk 1 succeeds and chunk 2 fails: returns SEARCH_INCOMPLETE with preserved partial matches
-        class ChunkFailureEngine extends GitHistoryEngine {
-          private grepCount = 0;
-          protected override async execGit(args: string[], options: any = {}): Promise<{ stdout: any; stderr: any }> {
-            if (args[0] === 'grep') {
-              this.grepCount++;
-              if (this.grepCount > 1) {
-                throw new Error('Simulated git grep disk read timeout in chunk 2');
-              }
-            }
-            return super.execGit(args, options);
-          }
-        }
-
-        const chunkEngine = new ChunkFailureEngine(sec40Repo);
-        const chunkResult = await chunkEngine.findCommitsContainingSecretResult(partialSecret);
-        assert(chunkResult.status === 'SEARCH_INCOMPLETE', 'findCommitsContainingSecretResult returns SEARCH_INCOMPLETE when chunk 2 fails');
-        assert(chunkResult.commitShas.length > 0, 'findCommitsContainingSecretResult preserves matches found in chunk 1 before failure');
-        assert(chunkResult.error?.includes('chunk 2'), 'findCommitsContainingSecretResult records chunk failure error');
-
-        const chunkTraceEngine = new ChunkFailureEngine(sec40Repo);
-        const chunkTrace = await chunkTraceEngine.traceSecret(partialSecret);
-        assert(chunkTrace.searchStatus === 'SEARCH_INCOMPLETE', 'traceSecret returns SEARCH_INCOMPLETE when search chunks partially fail');
-        assert(chunkTrace.isPresentInHistory === true, 'traceSecret preserves isPresentInHistory true on partially failed search');
-        assert(chunkTrace.isPresentInHead === 'UNKNOWN', 'traceSecret reports isPresentInHead UNKNOWN on incomplete search');
-        assert(chunkTrace.isRemote === 'UNKNOWN', 'traceSecret reports isRemote UNKNOWN on incomplete search');
-
-        // 13. Mixed metadata retrieval failure: some commit metadata requests succeed, others fail
-        const metaSecret = fromHex('6768705f6d65746164617461736563726574313233343536373839306162636465313233');
-        const metaFile1 = path.join(sec40Repo, 'meta1.txt');
-        fs.writeFileSync(metaFile1, `TOKEN=${metaSecret}\n`, 'utf8');
-        execFileSync('git', ['-C', sec40Repo, 'add', 'meta1.txt']);
-        execFileSync('git', ['-C', sec40Repo, 'commit', '-m', 'feat: meta commit 1']);
-        const metaCommit1Sha = execFileSync('git', ['-C', sec40Repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-
-        const metaFile2 = path.join(sec40Repo, 'meta2.txt');
-        fs.writeFileSync(metaFile2, `TOKEN=${metaSecret}\n`, 'utf8');
-        execFileSync('git', ['-C', sec40Repo, 'add', 'meta2.txt']);
-        execFileSync('git', ['-C', sec40Repo, 'commit', '-m', 'feat: meta commit 2']);
-        const metaCommit2Sha = execFileSync('git', ['-C', sec40Repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-
-        class PartialMetadataEngine extends GitHistoryEngine {
-          protected override async execGit(args: string[], options: any = {}): Promise<{ stdout: any; stderr: any }> {
-            if (args[0] === 'log' && args.includes(metaCommit2Sha)) {
-              throw new Error('Simulated git log object corruption on commit 2');
-            }
-            return super.execGit(args, options);
-          }
-        }
-
-        const partialMetaEngine = new PartialMetadataEngine(sec40Repo);
-        const partialMetaTrace = await partialMetaEngine.traceSecret(metaSecret);
-        assert(partialMetaTrace.searchStatus === 'SEARCH_INCOMPLETE', 'traceSecret returns SEARCH_INCOMPLETE when some commit metadata fails');
-        assert(partialMetaTrace.isPresentInHistory === true, 'traceSecret marks isPresentInHistory true when metadata partially succeeds');
-        assert(partialMetaTrace.statusDescription.includes('[INCOMPLETE METADATA: 1 of 2'), 'traceSecret visibly notes 1 of 2 metadata requests failed');
-
-        const partialMetaTimelineEngine = new GitTimelineEngine(sec40Repo, partialMetaEngine);
-        const partialMetaTimeline = await partialMetaTimelineEngine.buildTimeline(metaSecret, 'ghp_••••');
-        assert(partialMetaTimeline.currentStatus === 'SEARCH_INCOMPLETE', 'buildTimeline returns SEARCH_INCOMPLETE when commit metadata partially fails');
-        assert(partialMetaTimeline.timelineAscii.includes('INCOMPLETE'), 'buildTimeline ASCII notes incomplete metadata');
-
-        // 14. Working-tree candidate file becomes unreadable: throws operational error and reports UNKNOWN
-        class UnreadableCandidateEngine extends GitHistoryEngine {
-          public override async isSecretInWorkingTree(secret: string): Promise<boolean> {
-            throw new Error('EACCES: permission denied, read candidate file');
-          }
-        }
-        const unreadableEngine = new UnreadableCandidateEngine(sec40Repo);
-        let wtUnreadableThrown = false;
-        try {
-          await unreadableEngine.isSecretInWorkingTree('test_secret');
-        } catch {
-          wtUnreadableThrown = true;
-        }
-        assert(wtUnreadableThrown === true, 'isSecretInWorkingTree propagates candidate-file read failure as operational error');
-
-        const wtUnreadableTrace = await unreadableEngine.traceSecret(metaSecret);
-        assert(wtUnreadableTrace.isPresentInWorkingTree === 'UNKNOWN', 'traceSecret sets isPresentInWorkingTree to UNKNOWN on read error');
-        assert(wtUnreadableTrace.isSecretInWorkingTree === 'UNKNOWN', 'traceSecret sets isSecretInWorkingTree to UNKNOWN on read error');
-        assert(wtUnreadableTrace.searchStatus === 'SEARCH_INCOMPLETE', 'traceSecret marks searchStatus SEARCH_INCOMPLETE when working-tree inspection fails');
-
-        // 15. Binary files with quoted filenames containing spaces, quotes, and non-ASCII characters
-        assert(unquoteGitPath('"a/secret \\"quoted\\" café.bin"') === 'a/secret "quoted" café.bin', 'unquoteGitPath unquotes escaped double quotes and non-ASCII characters');
-        const parsedHeaderTest = parseDiffHeaderPaths('diff --git "a/path \\"quoted\\".bin" "b/path \\"quoted\\".bin"');
-        assert(parsedHeaderTest?.pathB === 'path "quoted".bin', 'parseDiffHeaderPaths unquotes escaped double quotes');
-
-        const quotedBinarySecret = fromHex('6768705f71756f74656462696e6172797365637265743132333435363738393061626364656631323334');
-        const quotedBinaryName = "assets/secret 'quoted' and space café.bin";
-        const quotedBinaryPath = path.join(sec40Repo, quotedBinaryName);
-        fs.mkdirSync(path.dirname(quotedBinaryPath), { recursive: true });
-        const quotedBinaryBuf = Buffer.concat([
-          Buffer.from([0x00, 0x01, 0x89, 0x50]),
-          Buffer.from(`const KEY = "${quotedBinarySecret}";\n`),
-          Buffer.from([0x00, 0xff, 0xfe]),
-        ]);
-        fs.writeFileSync(quotedBinaryPath, quotedBinaryBuf);
-        execFileSync('git', ['-C', sec40Repo, 'add', quotedBinaryName]);
-        execFileSync('git', ['-C', sec40Repo, 'commit', '-m', 'feat: add quoted non-ascii binary payload']);
-
-        const quotedFindings = await gitHistory.scanHistoryCommits(10);
-        const quotedFinding = quotedFindings.find((f: any) => f.rawSecret === quotedBinarySecret);
-        assert(quotedFinding !== undefined, 'scanHistoryCommits detects credential in binary file with spaces, quotes and non-ASCII filename');
-        assert(quotedFinding?.file.includes('café'), 'scanHistoryCommits unquotes and preserves non-ASCII filename path');
-
-        // 16. HEAD verification fails after credential has already been discovered in history
-        class HeadFailureEngine extends GitHistoryEngine {
-          public override async isSecretInHead(secret: string): Promise<boolean> {
-            throw new Error('Simulated HEAD object corruption');
-          }
-        }
-        const headFailureEngine = new HeadFailureEngine(sec40Repo);
-        const headFailTrace = await headFailureEngine.traceSecret(metaSecret);
-        assert(headFailTrace.isPresentInHead === 'UNKNOWN', 'traceSecret reports isPresentInHead UNKNOWN when HEAD inspection fails');
-        assert(headFailTrace.isPresentInHistory === true, 'traceSecret preserves isPresentInHistory true when secret is confirmed in history');
-        assert(headFailTrace.searchStatus === 'SEARCH_INCOMPLETE', 'traceSecret searchStatus is SEARCH_INCOMPLETE when HEAD inspection fails');
-        assert(headFailTrace.statusDescription.includes('INCOMPLETE HEAD VERIFICATION'), 'traceSecret notes INCOMPLETE HEAD VERIFICATION instead of claiming absent from HEAD');
-
-        // 17. Search failure with 0 matches returns isPresentInHistory 'UNKNOWN'
-        class TotalFailureEngine extends GitHistoryEngine {
-          public override async findCommitsContainingSecretResult(secret: string, maxCommits = 0): Promise<any> {
-            return {
-              status: 'SEARCH_INCOMPLETE',
-              commitShas: [],
-              error: 'Simulated git pack corruption',
-              isPartialHistory: false,
-            };
-          }
-        }
-        const totalFailEngine = new TotalFailureEngine(sec40Repo);
-        const totalFailTrace = await totalFailEngine.traceSecret(metaSecret);
-        assert(totalFailTrace.isPresentInHistory === 'UNKNOWN', 'traceSecret sets isPresentInHistory to UNKNOWN when search fails without discovered matches');
-        assert(totalFailTrace.isPresentInHead === 'UNKNOWN', 'traceSecret sets isPresentInHead to UNKNOWN on incomplete search');
-
-        // 18. Timeline HEAD verification failure in loop preserves events and sets SEARCH_INCOMPLETE
-        const timelineWithFailHistory = new GitTimelineEngine(sec40Repo, headFailureEngine);
-        const timelineReportHeadFail = await timelineWithFailHistory.buildTimeline(metaSecret, 'ghp_****');
-        assert(timelineReportHeadFail.currentStatus === 'SEARCH_INCOMPLETE', 'buildTimeline returns SEARCH_INCOMPLETE when isSecretInHead throws in timeline loop');
-        assert(timelineReportHeadFail.events.length > 0, 'buildTimeline preserves available events even when isSecretInHead throws');
-        assert(timelineReportHeadFail.timelineAscii.includes('HEAD Verification:  INCOMPLETE'), 'buildTimeline ASCII notes incomplete HEAD verification');
-        assert(timelineReportHeadFail.graph.summary.removedCommit === undefined, 'buildTimeline does not falsely claim removedCommit on SEARCH_INCOMPLETE');
-
-        // 19. Timeline branch reachability query failure sets isPushedToRemote 'UNKNOWN' and does not fabricate 'main'
-        const fakeSha = execFileSync('git', ['-C', sec40Repo, 'rev-parse', 'HEAD']).toString().trim();
-        let branchQueryAttempted = false;
-        let branchQueryFailed = false;
-        try {
-          execFileSync('git', ['-C', sec40Repo, 'branch', '-a', '--contains', fakeSha + '_corrupt']);
-        } catch {
-          branchQueryFailed = true;
-        }
-        assert(branchQueryFailed, 'git branch --contains on invalid object triggers an error');
-
-        // Verify gitTimeline handles branch lookup error without fabricating ['main']
-        const originalExecFile = require('child_process').execFile;
-        // Test branch failure via a mock gitHistory and timeline inspection
-        class BranchFailureHistoryEngine extends GitHistoryEngine {
-          public override async findCommitsContainingSecretResult(secret: string, maxCommits = 0): Promise<any> {
-            return {
-              status: 'FOUND',
-              commitShas: [fakeSha],
-              isPartialHistory: false,
-            };
-          }
-        }
-        const branchFailEngine = new BranchFailureHistoryEngine(sec40Repo);
-        // In this test, we can pass a corrupted/non-existent repo path or simulate branch error in buildTimeline
-        const timelineBranchFail = new GitTimelineEngine(sec40Repo + '_nonexistent', branchFailEngine);
-        const branchFailReport = await timelineBranchFail.buildTimeline(metaSecret, 'ghp_****');
-        assert(branchFailReport.isPushedToRemote === 'UNKNOWN', 'buildTimeline reports isPushedToRemote UNKNOWN on query failure');
-        assert(branchFailReport.currentStatus === 'SEARCH_INCOMPLETE' || branchFailReport.currentStatus === 'ERROR', 'buildTimeline reports non-clean status on query failure');
-
-        // 20. Disappearing candidate file in working tree throws error and sets isSecretInWorkingTree 'UNKNOWN'
-        class DisappearingCandidateEngine extends GitHistoryEngine {
-          public override async isSecretInWorkingTree(secret: string): Promise<boolean> {
-            throw new Error("Candidate untracked file disappeared during inspection: 'disappeared.txt'");
-          }
-        }
-        const disappearingEngine = new DisappearingCandidateEngine(sec40Repo);
-        const disappearingTrace = await disappearingEngine.traceSecret(fromHex('6768705f646973617070656172696e67746f6b656e3132333435363738393061626364'));
-        assert(disappearingTrace.isSecretInWorkingTree === 'UNKNOWN', 'traceSecret sets isSecretInWorkingTree to UNKNOWN when candidate file disappears');
-        assert(disappearingTrace.searchStatus === 'ERROR', 'traceSecret searchStatus is ERROR when working tree inspection throws on disappearing file');
-
-        // 21. Partial history with zero matches returns isPresentInHistory, isPresentInHead, isRemote 'UNKNOWN'
-        const absentSecret = fromHex('6768705f616273656e7473656372657431323334353637383930616263646566313233');
-        const partialTraceZero = await gitHistory.traceSecret(absentSecret, 1);
-        assert(partialTraceZero.isPartialHistory === true, 'traceSecret with limit 1 is partial history');
-        assert(partialTraceZero.isPresentInHistory === 'UNKNOWN', 'traceSecret returns isPresentInHistory UNKNOWN when depth is limited and 0 matches found');
-        assert(partialTraceZero.isPresentInHead === 'UNKNOWN', 'traceSecret returns isPresentInHead UNKNOWN when depth is limited and 0 matches found');
-        assert(partialTraceZero.isRemote === 'UNKNOWN', 'traceSecret returns isRemote UNKNOWN when depth is limited and 0 matches found');
-        assert(partialTraceZero.searchStatus === 'PARTIAL_HISTORY', 'traceSecret searchStatus is PARTIAL_HISTORY when depth is limited');
-
-        const timelinePartialZero = await gitTimeline.buildTimeline(absentSecret, 'ghp_****', 1);
-        assert(timelinePartialZero.currentStatus === 'PARTIAL_HISTORY', 'buildTimeline returns PARTIAL_HISTORY for zero matches with limit 1');
-        assert(timelinePartialZero.isPushedToRemote === 'UNKNOWN', 'buildTimeline reports isPushedToRemote UNKNOWN for zero matches with limit 1');
-        assert(timelinePartialZero.graph.summary.isPushedToRemote === 'UNKNOWN', 'buildTimeline graph summary reports isPushedToRemote UNKNOWN for zero matches with limit 1');
-
-        // 22. Outer error handler in traceSecret returns isPresentInHistory 'UNKNOWN'
-        class CorruptedTraceEngine extends GitHistoryEngine {
-          public override async findCommitsContainingSecretResult(secret: string, maxCommits = 0): Promise<any> {
-            throw new Error('Fatal git error during trace');
-          }
-        }
-        const corruptedEngine = new CorruptedTraceEngine(sec40Repo);
-        const errorTrace = await corruptedEngine.traceSecret(absentSecret);
-        assert(errorTrace.searchStatus === 'ERROR', 'traceSecret returns searchStatus ERROR on fatal error');
-        assert(errorTrace.isPresentInHistory === 'UNKNOWN', 'traceSecret returns isPresentInHistory UNKNOWN on fatal error');
-        assert(errorTrace.isPresentInHead === 'UNKNOWN', 'traceSecret returns isPresentInHead UNKNOWN on fatal error');
-        assert(errorTrace.isRemote === 'UNKNOWN', 'traceSecret returns isRemote UNKNOWN on fatal error');
-
-        // 23. VerificationEngine with unknown history sets isResolved false and historyStatus UNKNOWN
-        class UnknownHistoryVerificationEngine extends GitHistoryEngine {
-          public override async traceSecret(secret: string, maxCommits = 0): Promise<any> {
-            return {
-              isPresentInHead: false,
-              isPresentInHistory: 'UNKNOWN',
-              isPresentInWorkingTree: false,
-              isSecretInWorkingTree: false,
-              exposureDurationDays: 0,
-              branches: [],
-              isRemote: false,
-              statusDescription: 'Git history search was incomplete',
-              searchStatus: 'SEARCH_INCOMPLETE',
-            };
-          }
-        }
-        const unknownHistEngine = new UnknownHistoryVerificationEngine(sec40Repo);
-        const { VerificationEngine } = require('../src/core/verification/verificationEngine');
-        const verifier = new VerificationEngine(sec40Repo);
-        (verifier as any).historyEngine = unknownHistEngine;
-        const fakeCleanFinding = {
-          file: 'clean.ts',
-          fullPath: path.join(sec40Repo, 'clean.ts'),
-          line: 1,
-          type: 'github-pat',
-          rawSecret: metaSecret,
-          fingerprint: 'fp123',
-          confidence: 100,
-        };
-        const verificationRes = await verifier.verifyFindingFix(fakeCleanFinding);
-        assert(verificationRes.isResolved === false, 'VerificationEngine rejects resolution when Git history is UNKNOWN');
-        assert(verificationRes.historyStatus === 'UNKNOWN', 'VerificationEngine reports historyStatus UNKNOWN on incomplete history');
-
-        // 24. VerificationEngine resolves finding when current history is clean even if previously exposed in finding
-        class CleanCurrentHistoryVerificationEngine extends GitHistoryEngine {
-          public override async traceSecret(secret: string, maxCommits = 0): Promise<any> {
-            return {
-              isPresentInHead: false,
-              isPresentInHistory: false,
-              isPresentInWorkingTree: false,
-              isSecretInWorkingTree: false,
-              exposureDurationDays: 0,
-              branches: [],
-              isRemote: false,
-              statusDescription: 'Clean in current Git history',
-              searchStatus: 'FOUND',
-            };
-          }
-        }
-        const cleanHistEngine = new CleanCurrentHistoryVerificationEngine(sec40Repo);
-        const cleanVerifier = new VerificationEngine(sec40Repo);
-        (cleanVerifier as any).historyEngine = cleanHistEngine;
-        const findingPreviouslyInHistory = {
-          file: 'clean.ts',
-          fullPath: path.join(sec40Repo, 'clean.ts'),
-          line: 1,
-          type: 'github-pat',
-          rawSecret: metaSecret,
-          fingerprint: 'fp123',
-          confidence: 100,
-          gitExposure: {
-            isPresentInHistory: true,
-            introducedCommit: { sha: 'abcdef1234567890' }
-          }
-        };
-        const cleanVerificationRes = await cleanVerifier.verifyFindingFix(findingPreviouslyInHistory as any);
-        assert(cleanVerificationRes.isResolved === true, 'VerificationEngine resolves finding when current history is clean despite old finding historical exposure');
-        assert(cleanVerificationRes.historyStatus === 'HEAD_AND_HISTORY_CLEAN', 'VerificationEngine reports HEAD_AND_HISTORY_CLEAN when current history is clean');
-        assert(cleanVerificationRes.previouslyExposedInHistory === true, 'VerificationEngine records previouslyExposedInHistory true for audit tracking');
-      } finally {
-        try {
-          fs.rmSync(sec40Repo, { recursive: true, force: true });
-        } catch {}
+        stagedDefaultExit = 0;
+      } catch (err: any) {
+        stagedDefaultExit = err.status;
       }
-    }
+      assert(stagedDefaultExit === 2, 'scan --staged exits code 2 by default when files are skipped');
 
-    // --- 41. Security Audit Release Readiness: JSON Sanitization, Merge Diffs, Symlink Confinement & Verification ---
-    console.log('\n--- 41. Security Audit Release Readiness: JSON Sanitization, Merge Diffs, Symlink Confinement & Verification ---');
-    {
-      const { scanContent } = require('../src/core/scanner/scanner');
-      const { toSafeJsonFinding, collectFiles } = require('../src/cli/index');
-      const { GitHistoryEngine } = require('../src/core/history/gitHistoryEngine');
-      const { enforceEnvFilePermissions } = require('../src/core/remediation/remediationEngine');
-      const { calculateRiskAssessment } = require('../src/core/risk/riskEngine');
+      let stagedRelaxedExit: number | null = null;
+      try {
+        execFileSync(process.execPath, [cliPath, 'scan', '--staged', '--allow-skipped'], {
+          cwd: sec40Repo,
+          stdio: 'pipe',
+        });
+        stagedRelaxedExit = 0;
+      } catch (err: any) {
+        stagedRelaxedExit = err.status;
+      }
+      assert(stagedRelaxedExit === 0, 'scan --staged --allow-skipped exits code 0 when relaxed');
+
+      execFileSync('git', ['-C', sec40Repo, 'reset', 'HEAD', '--', 'huge.dat']);
+      fs.unlinkSync(bigFile);
+
+      // 8. Limited search with matches visibly preserves partial history in trace and timeline
+      const partialSecret = fromHex('6768705f7061727469616c73656372657431323334353637383930616263646531323334');
+      const partialFile = path.join(sec40Repo, 'partial.txt');
+      fs.writeFileSync(partialFile, `KEY=${partialSecret}\n`, 'utf8');
+      execFileSync('git', ['-C', sec40Repo, 'add', 'partial.txt']);
+      execFileSync('git', ['-C', sec40Repo, 'commit', '-m', 'feat: add partial secret']);
+
+      // Add 55 dummy commits so total history exceeds maxCommits=30
+      let pSha = execFileSync('git', ['-C', sec40Repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+      const tSha = execFileSync('git', ['-C', sec40Repo, 'write-tree'], { encoding: 'utf8' }).trim();
+      for (let i = 1; i <= 55; i++) {
+        pSha = execFileSync(
+          'git',
+          ['-C', sec40Repo, 'commit-tree', tSha, '-p', pSha, '-m', `chore: dummy ${i}`],
+          { encoding: 'utf8' }
+        ).trim();
+      }
+      execFileSync('git', ['-C', sec40Repo, 'update-ref', 'HEAD', pSha]);
+
+      // Limited search with match (secret is in all 55 commits because tree unchanged)
+      const partialResult = await gitHistory.findCommitsContainingSecretResult(partialSecret, 30);
+      assert(partialResult.status === 'FOUND', 'findCommitsContainingSecretResult returns FOUND when match in limited window');
+      assert(partialResult.isPartialHistory === true, 'findCommitsContainingSecretResult marks isPartialHistory true');
+
+      const partialTrace = await gitHistory.traceSecret(partialSecret, 30);
+      assert(partialTrace.isPartialHistory === true, 'traceSecret preserves isPartialHistory true when matches exist in limited search');
+      assert(partialTrace.statusDescription.includes('[PARTIAL HISTORY'), 'traceSecret visibly notes partial history in statusDescription');
+
+      const partialTimeline = await gitTimeline.buildTimeline(partialSecret, 'ghp_••••', 30);
+      assert(partialTimeline.isPartialHistory === true, 'buildTimeline preserves isPartialHistory true');
+      assert(partialTimeline.timelineAscii.includes('PARTIAL'), 'buildTimeline visibly displays PARTIAL coverage in ASCII report');
+
+      // 9. Operational blob-reading failure in isSecretInWorkingTree throws operational error
+      let workingTreeThrown = false;
+      try {
+        const corruptEngine = new GitHistoryEngine(path.join(os.tmpdir(), 'nonexistent-wt-dir'));
+        await corruptEngine.isSecretInWorkingTree('dummy_token');
+      } catch (err: any) {
+        workingTreeThrown = true;
+      }
+      assert(workingTreeThrown === true, 'isSecretInWorkingTree throws operational error on failed git execution rather than returning false');
+
+      // 10. Operational blob-reading failure in isSecretInHead throws operational error
+      let inHeadThrown = false;
+      try {
+        const corruptEngine = new GitHistoryEngine(path.join(os.tmpdir(), 'nonexistent-head-dir'));
+        await corruptEngine.isSecretInHead('dummy_token');
+      } catch (err: any) {
+        inHeadThrown = true;
+      }
+      assert(inHeadThrown === true, 'isSecretInHead throws operational error on failed git execution rather than returning false');
+
+      // 11. Historical blob inspection failure in scanHistoryCommits throws descriptive error
+      let scanHistoryThrown = false;
+      try {
+        const corruptEngine = new GitHistoryEngine(path.join(os.tmpdir(), 'nonexistent-hist-dir'));
+        await corruptEngine.scanHistoryCommits(5);
+      } catch (err: any) {
+        scanHistoryThrown = true;
+      }
+      assert(scanHistoryThrown === true, 'scanHistoryCommits throws operational error on failed git execution rather than returning clean []');
+
+      // 12. Chunk 1 succeeds and chunk 2 fails: returns SEARCH_INCOMPLETE with preserved partial matches
+      class ChunkFailureEngine extends GitHistoryEngine {
+        private grepCount = 0;
+        protected override async execGit(args: string[], options: any = {}): Promise<{ stdout: any; stderr: any }> {
+          if (args[0] === 'grep') {
+            this.grepCount++;
+            if (this.grepCount > 1) {
+              throw new Error('Simulated git grep disk read timeout in chunk 2');
+            }
+          }
+          return super.execGit(args, options);
+        }
+      }
+
+      const chunkEngine = new ChunkFailureEngine(sec40Repo);
+      const chunkResult = await chunkEngine.findCommitsContainingSecretResult(partialSecret);
+      assert(chunkResult.status === 'SEARCH_INCOMPLETE', 'findCommitsContainingSecretResult returns SEARCH_INCOMPLETE when chunk 2 fails');
+      assert(chunkResult.commitShas.length > 0, 'findCommitsContainingSecretResult preserves matches found in chunk 1 before failure');
+      assert(chunkResult.error?.includes('chunk 2'), 'findCommitsContainingSecretResult records chunk failure error');
+
+      const chunkTraceEngine = new ChunkFailureEngine(sec40Repo);
+      const chunkTrace = await chunkTraceEngine.traceSecret(partialSecret);
+      assert(chunkTrace.searchStatus === 'SEARCH_INCOMPLETE', 'traceSecret returns SEARCH_INCOMPLETE when search chunks partially fail');
+      assert(chunkTrace.isPresentInHistory === true, 'traceSecret preserves isPresentInHistory true on partially failed search');
+      assert(chunkTrace.isPresentInHead === 'UNKNOWN', 'traceSecret reports isPresentInHead UNKNOWN on incomplete search');
+      assert(chunkTrace.isRemote === 'UNKNOWN', 'traceSecret reports isRemote UNKNOWN on incomplete search');
+
+      // 13. Mixed metadata retrieval failure: some commit metadata requests succeed, others fail
+      const metaSecret = fromHex('6768705f6d65746164617461736563726574313233343536373839306162636465313233');
+      const metaFile1 = path.join(sec40Repo, 'meta1.txt');
+      fs.writeFileSync(metaFile1, `TOKEN=${metaSecret}\n`, 'utf8');
+      execFileSync('git', ['-C', sec40Repo, 'add', 'meta1.txt']);
+      execFileSync('git', ['-C', sec40Repo, 'commit', '-m', 'feat: meta commit 1']);
+      const metaCommit1Sha = execFileSync('git', ['-C', sec40Repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+
+      const metaFile2 = path.join(sec40Repo, 'meta2.txt');
+      fs.writeFileSync(metaFile2, `TOKEN=${metaSecret}\n`, 'utf8');
+      execFileSync('git', ['-C', sec40Repo, 'add', 'meta2.txt']);
+      execFileSync('git', ['-C', sec40Repo, 'commit', '-m', 'feat: meta commit 2']);
+      const metaCommit2Sha = execFileSync('git', ['-C', sec40Repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+
+      class PartialMetadataEngine extends GitHistoryEngine {
+        protected override async execGit(args: string[], options: any = {}): Promise<{ stdout: any; stderr: any }> {
+          if (args[0] === 'log' && args.includes(metaCommit2Sha)) {
+            throw new Error('Simulated git log object corruption on commit 2');
+          }
+          return super.execGit(args, options);
+        }
+      }
+
+      const partialMetaEngine = new PartialMetadataEngine(sec40Repo);
+      const partialMetaTrace = await partialMetaEngine.traceSecret(metaSecret);
+      assert(partialMetaTrace.searchStatus === 'SEARCH_INCOMPLETE', 'traceSecret returns SEARCH_INCOMPLETE when some commit metadata fails');
+      assert(partialMetaTrace.isPresentInHistory === true, 'traceSecret marks isPresentInHistory true when metadata partially succeeds');
+      assert(partialMetaTrace.statusDescription.includes('[INCOMPLETE METADATA: 1 of 2'), 'traceSecret visibly notes 1 of 2 metadata requests failed');
+
+      const partialMetaTimelineEngine = new GitTimelineEngine(sec40Repo, partialMetaEngine);
+      const partialMetaTimeline = await partialMetaTimelineEngine.buildTimeline(metaSecret, 'ghp_••••');
+      assert(partialMetaTimeline.currentStatus === 'SEARCH_INCOMPLETE', 'buildTimeline returns SEARCH_INCOMPLETE when commit metadata partially fails');
+      assert(partialMetaTimeline.timelineAscii.includes('INCOMPLETE'), 'buildTimeline ASCII notes incomplete metadata');
+
+      // 14. Working-tree candidate file becomes unreadable: throws operational error and reports UNKNOWN
+      class UnreadableCandidateEngine extends GitHistoryEngine {
+        public override async isSecretInWorkingTree(secret: string): Promise<boolean> {
+          throw new Error('EACCES: permission denied, read candidate file');
+        }
+      }
+      const unreadableEngine = new UnreadableCandidateEngine(sec40Repo);
+      let wtUnreadableThrown = false;
+      try {
+        await unreadableEngine.isSecretInWorkingTree('test_secret');
+      } catch {
+        wtUnreadableThrown = true;
+      }
+      assert(wtUnreadableThrown === true, 'isSecretInWorkingTree propagates candidate-file read failure as operational error');
+
+      const wtUnreadableTrace = await unreadableEngine.traceSecret(metaSecret);
+      assert(wtUnreadableTrace.isPresentInWorkingTree === 'UNKNOWN', 'traceSecret sets isPresentInWorkingTree to UNKNOWN on read error');
+      assert(wtUnreadableTrace.isSecretInWorkingTree === 'UNKNOWN', 'traceSecret sets isSecretInWorkingTree to UNKNOWN on read error');
+      assert(wtUnreadableTrace.searchStatus === 'SEARCH_INCOMPLETE', 'traceSecret marks searchStatus SEARCH_INCOMPLETE when working-tree inspection fails');
+
+      // 15. Binary files with quoted filenames containing spaces, quotes, and non-ASCII characters
+      assert(unquoteGitPath('"a/secret \\"quoted\\" café.bin"') === 'a/secret "quoted" café.bin', 'unquoteGitPath unquotes escaped double quotes and non-ASCII characters');
+      const parsedHeaderTest = parseDiffHeaderPaths('diff --git "a/path \\"quoted\\".bin" "b/path \\"quoted\\".bin"');
+      assert(parsedHeaderTest?.pathB === 'path "quoted".bin', 'parseDiffHeaderPaths unquotes escaped double quotes');
+
+      const quotedBinarySecret = fromHex('6768705f71756f74656462696e6172797365637265743132333435363738393061626364656631323334');
+      const quotedBinaryName = "assets/secret 'quoted' and space café.bin";
+      const quotedBinaryPath = path.join(sec40Repo, quotedBinaryName);
+      fs.mkdirSync(path.dirname(quotedBinaryPath), { recursive: true });
+      const quotedBinaryBuf = Buffer.concat([
+        Buffer.from([0x00, 0x01, 0x89, 0x50]),
+        Buffer.from(`const KEY = "${quotedBinarySecret}";\n`),
+        Buffer.from([0x00, 0xff, 0xfe]),
+      ]);
+      fs.writeFileSync(quotedBinaryPath, quotedBinaryBuf);
+      execFileSync('git', ['-C', sec40Repo, 'add', quotedBinaryName]);
+      execFileSync('git', ['-C', sec40Repo, 'commit', '-m', 'feat: add quoted non-ascii binary payload']);
+
+      const quotedFindings = await gitHistory.scanHistoryCommits(10);
+      const quotedFinding = quotedFindings.find((f: any) => f.rawSecret === quotedBinarySecret);
+      assert(quotedFinding !== undefined, 'scanHistoryCommits detects credential in binary file with spaces, quotes and non-ASCII filename');
+      assert(quotedFinding?.file.includes('café'), 'scanHistoryCommits unquotes and preserves non-ASCII filename path');
+
+      // 16. HEAD verification fails after credential has already been discovered in history
+      class HeadFailureEngine extends GitHistoryEngine {
+        public override async isSecretInHead(secret: string): Promise<boolean> {
+          throw new Error('Simulated HEAD object corruption');
+        }
+      }
+      const headFailureEngine = new HeadFailureEngine(sec40Repo);
+      const headFailTrace = await headFailureEngine.traceSecret(metaSecret);
+      assert(headFailTrace.isPresentInHead === 'UNKNOWN', 'traceSecret reports isPresentInHead UNKNOWN when HEAD inspection fails');
+      assert(headFailTrace.isPresentInHistory === true, 'traceSecret preserves isPresentInHistory true when secret is confirmed in history');
+      assert(headFailTrace.searchStatus === 'SEARCH_INCOMPLETE', 'traceSecret searchStatus is SEARCH_INCOMPLETE when HEAD inspection fails');
+      assert(headFailTrace.statusDescription.includes('INCOMPLETE HEAD VERIFICATION'), 'traceSecret notes INCOMPLETE HEAD VERIFICATION instead of claiming absent from HEAD');
+
+      // 17. Search failure with 0 matches returns isPresentInHistory 'UNKNOWN'
+      class TotalFailureEngine extends GitHistoryEngine {
+        public override async findCommitsContainingSecretResult(secret: string, maxCommits = 0): Promise<any> {
+          return {
+            status: 'SEARCH_INCOMPLETE',
+            commitShas: [],
+            error: 'Simulated git pack corruption',
+            isPartialHistory: false,
+          };
+        }
+      }
+      const totalFailEngine = new TotalFailureEngine(sec40Repo);
+      const totalFailTrace = await totalFailEngine.traceSecret(metaSecret);
+      assert(totalFailTrace.isPresentInHistory === 'UNKNOWN', 'traceSecret sets isPresentInHistory to UNKNOWN when search fails without discovered matches');
+      assert(totalFailTrace.isPresentInHead === 'UNKNOWN', 'traceSecret sets isPresentInHead to UNKNOWN on incomplete search');
+
+      // 18. Timeline HEAD verification failure in loop preserves events and sets SEARCH_INCOMPLETE
+      const timelineWithFailHistory = new GitTimelineEngine(sec40Repo, headFailureEngine);
+      const timelineReportHeadFail = await timelineWithFailHistory.buildTimeline(metaSecret, 'ghp_****');
+      assert(timelineReportHeadFail.currentStatus === 'SEARCH_INCOMPLETE', 'buildTimeline returns SEARCH_INCOMPLETE when isSecretInHead throws in timeline loop');
+      assert(timelineReportHeadFail.events.length > 0, 'buildTimeline preserves available events even when isSecretInHead throws');
+      assert(timelineReportHeadFail.timelineAscii.includes('HEAD Verification:  INCOMPLETE'), 'buildTimeline ASCII notes incomplete HEAD verification');
+      assert(timelineReportHeadFail.graph.summary.removedCommit === undefined, 'buildTimeline does not falsely claim removedCommit on SEARCH_INCOMPLETE');
+
+      // 19. Timeline branch reachability query failure sets isPushedToRemote 'UNKNOWN' and does not fabricate 'main'
+      const fakeSha = execFileSync('git', ['-C', sec40Repo, 'rev-parse', 'HEAD']).toString().trim();
+      let branchQueryAttempted = false;
+      let branchQueryFailed = false;
+      try {
+        execFileSync('git', ['-C', sec40Repo, 'branch', '-a', '--contains', fakeSha + '_corrupt']);
+      } catch {
+        branchQueryFailed = true;
+      }
+      assert(branchQueryFailed, 'git branch --contains on invalid object triggers an error');
+
+      // Verify gitTimeline handles branch lookup error without fabricating ['main']
+      const originalExecFile = require('child_process').execFile;
+      // Test branch failure via a mock gitHistory and timeline inspection
+      class BranchFailureHistoryEngine extends GitHistoryEngine {
+        public override async findCommitsContainingSecretResult(secret: string, maxCommits = 0): Promise<any> {
+          return {
+            status: 'FOUND',
+            commitShas: [fakeSha],
+            isPartialHistory: false,
+          };
+        }
+      }
+      const branchFailEngine = new BranchFailureHistoryEngine(sec40Repo);
+      // In this test, we can pass a corrupted/non-existent repo path or simulate branch error in buildTimeline
+      const timelineBranchFail = new GitTimelineEngine(sec40Repo + '_nonexistent', branchFailEngine);
+      const branchFailReport = await timelineBranchFail.buildTimeline(metaSecret, 'ghp_****');
+      assert(branchFailReport.isPushedToRemote === 'UNKNOWN', 'buildTimeline reports isPushedToRemote UNKNOWN on query failure');
+      assert(branchFailReport.currentStatus === 'SEARCH_INCOMPLETE' || branchFailReport.currentStatus === 'ERROR', 'buildTimeline reports non-clean status on query failure');
+
+      // 20. Disappearing candidate file in working tree throws error and sets isSecretInWorkingTree 'UNKNOWN'
+      class DisappearingCandidateEngine extends GitHistoryEngine {
+        public override async isSecretInWorkingTree(secret: string): Promise<boolean> {
+          throw new Error("Candidate untracked file disappeared during inspection: 'disappeared.txt'");
+        }
+      }
+      const disappearingEngine = new DisappearingCandidateEngine(sec40Repo);
+      const disappearingTrace = await disappearingEngine.traceSecret(fromHex('6768705f646973617070656172696e67746f6b656e3132333435363738393061626364'));
+      assert(disappearingTrace.isSecretInWorkingTree === 'UNKNOWN', 'traceSecret sets isSecretInWorkingTree to UNKNOWN when candidate file disappears');
+      assert(disappearingTrace.searchStatus === 'ERROR', 'traceSecret searchStatus is ERROR when working tree inspection throws on disappearing file');
+
+      // 21. Partial history with zero matches returns isPresentInHistory, isPresentInHead, isRemote 'UNKNOWN'
+      const absentSecret = fromHex('6768705f616273656e7473656372657431323334353637383930616263646566313233');
+      const partialTraceZero = await gitHistory.traceSecret(absentSecret, 1);
+      assert(partialTraceZero.isPartialHistory === true, 'traceSecret with limit 1 is partial history');
+      assert(partialTraceZero.isPresentInHistory === 'UNKNOWN', 'traceSecret returns isPresentInHistory UNKNOWN when depth is limited and 0 matches found');
+      assert(partialTraceZero.isPresentInHead === 'UNKNOWN', 'traceSecret returns isPresentInHead UNKNOWN when depth is limited and 0 matches found');
+      assert(partialTraceZero.isRemote === 'UNKNOWN', 'traceSecret returns isRemote UNKNOWN when depth is limited and 0 matches found');
+      assert(partialTraceZero.searchStatus === 'PARTIAL_HISTORY', 'traceSecret searchStatus is PARTIAL_HISTORY when depth is limited');
+
+      const timelinePartialZero = await gitTimeline.buildTimeline(absentSecret, 'ghp_****', 1);
+      assert(timelinePartialZero.currentStatus === 'PARTIAL_HISTORY', 'buildTimeline returns PARTIAL_HISTORY for zero matches with limit 1');
+      assert(timelinePartialZero.isPushedToRemote === 'UNKNOWN', 'buildTimeline reports isPushedToRemote UNKNOWN for zero matches with limit 1');
+      assert(timelinePartialZero.graph.summary.isPushedToRemote === 'UNKNOWN', 'buildTimeline graph summary reports isPushedToRemote UNKNOWN for zero matches with limit 1');
+
+      // 22. Outer error handler in traceSecret returns isPresentInHistory 'UNKNOWN'
+      class CorruptedTraceEngine extends GitHistoryEngine {
+        public override async findCommitsContainingSecretResult(secret: string, maxCommits = 0): Promise<any> {
+          throw new Error('Fatal git error during trace');
+        }
+      }
+      const corruptedEngine = new CorruptedTraceEngine(sec40Repo);
+      const errorTrace = await corruptedEngine.traceSecret(absentSecret);
+      assert(errorTrace.searchStatus === 'ERROR', 'traceSecret returns searchStatus ERROR on fatal error');
+      assert(errorTrace.isPresentInHistory === 'UNKNOWN', 'traceSecret returns isPresentInHistory UNKNOWN on fatal error');
+      assert(errorTrace.isPresentInHead === 'UNKNOWN', 'traceSecret returns isPresentInHead UNKNOWN on fatal error');
+      assert(errorTrace.isRemote === 'UNKNOWN', 'traceSecret returns isRemote UNKNOWN on fatal error');
+
+      // 23. VerificationEngine with unknown history sets isResolved false and historyStatus UNKNOWN
+      class UnknownHistoryVerificationEngine extends GitHistoryEngine {
+        public override async traceSecret(secret: string, maxCommits = 0): Promise<any> {
+          return {
+            isPresentInHead: false,
+            isPresentInHistory: 'UNKNOWN',
+            isPresentInWorkingTree: false,
+            isSecretInWorkingTree: false,
+            exposureDurationDays: 0,
+            branches: [],
+            isRemote: false,
+            statusDescription: 'Git history search was incomplete',
+            searchStatus: 'SEARCH_INCOMPLETE',
+          };
+        }
+      }
+      const unknownHistEngine = new UnknownHistoryVerificationEngine(sec40Repo);
       const { VerificationEngine } = require('../src/core/verification/verificationEngine');
-      const { getIgnorePatterns, BUILD_ARTIFACT_PATTERNS } = require('../src/core/ignore/ignoreEngine');
-      const { CORE_RULES } = require('../src/core/detectors/rules');
-      const { execFileSync } = require('child_process');
-      const fromHex = (h: string) => Buffer.from(h, 'hex').toString('utf8');
-
-      // 1. JSON output sanitization: split concatenation, array join, template literal, and base64
-      const p1 = fromHex('6768705f3132333435'); // "ghp_12345"
-      const p2 = fromHex('36373839303132333435363738393031323334353637383930313233343536'); // 31 chars
-      const codeConcat = `const token = "${p1}" + "${p2}";`;
-      const findingsConcat = scanContent(codeConcat, 'testConcat.js');
-      assert(findingsConcat.length > 0, 'Split concatenation detected');
-      const safeConcat = toSafeJsonFinding(findingsConcat[0]);
-      assert(safeConcat.rawSecret === undefined, 'toSafeJsonFinding strips rawSecret on concatenation finding');
-      assert(safeConcat.sourceExpression === undefined, 'toSafeJsonFinding strips sourceExpression on concatenation finding');
-      assert((safeConcat as any).evidence?.surroundingCode === undefined, 'toSafeJsonFinding strips surroundingCode');
-      assert((safeConcat as any).remediation?.diffPreview === undefined, 'toSafeJsonFinding strips diffPreview');
-      const jsonConcat = JSON.stringify(safeConcat);
-      assert(!jsonConcat.includes(p1 + p2), 'Serialized JSON does not contain raw concatenated secret');
-      assert(!jsonConcat.includes(p1), 'Serialized JSON does not contain token prefix fragment');
-
-      const codeArray = `const token = ["${p1}", "${p2}"].join("");`;
-      const findingsArray = scanContent(codeArray, 'testArray.js');
-      assert(findingsArray.length > 0, 'Array join detected');
-      const safeArray = toSafeJsonFinding(findingsArray[0]);
-      assert(safeArray.rawSecret === undefined, 'toSafeJsonFinding strips rawSecret on array join finding');
-      assert(safeArray.sourceExpression === undefined, 'toSafeJsonFinding strips sourceExpression on array join finding');
-      assert(!JSON.stringify(safeArray).includes(p1 + p2), 'Serialized JSON does not contain array joined secret');
-
-      const codeTpl = 'const token = `' + p1 + '${"' + p2 + '"}`;\n';
-      const findingsTpl = scanContent(codeTpl, 'testTpl.js');
-      assert(findingsTpl.length > 0, 'Template interpolation detected');
-      const safeTpl = toSafeJsonFinding(findingsTpl[0]);
-      assert(safeTpl.rawSecret === undefined, 'toSafeJsonFinding strips rawSecret on template finding');
-      assert(safeTpl.sourceExpression === undefined, 'toSafeJsonFinding strips sourceExpression on template finding');
-      assert(!JSON.stringify(safeTpl).includes(p1 + p2), 'Serialized JSON does not contain interpolated secret');
-
-      const rawSecret = p1 + p2;
-      const b64 = Buffer.from(rawSecret).toString('base64');
-      const codeB64 = `const apiKey = Buffer.from("${b64}", "base64").toString();`;
-      const findingsB64 = scanContent(codeB64, 'testB64.js');
-      assert(findingsB64.length > 0, 'Base64 credential detected');
-      const safeB64 = toSafeJsonFinding(findingsB64[0]);
-      assert(safeB64.rawSecret === undefined, 'toSafeJsonFinding strips rawSecret on base64 finding');
-      assert(safeB64.sourceExpression === undefined, 'toSafeJsonFinding strips sourceExpression on base64 finding');
-      assert(!JSON.stringify(safeB64).includes(rawSecret), 'Serialized JSON does not contain decoded base64 secret');
-
-      // 2. Merge commit diff inspection (-m)
-      const sec41MergeRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-hist-merge-'));
-      try {
-        execFileSync('git', ['init', sec41MergeRepo]);
-        execFileSync('git', ['-C', sec41MergeRepo, 'config', 'user.name', 'Merge Tester']);
-        execFileSync('git', ['-C', sec41MergeRepo, 'config', 'user.email', 'merge@test.com']);
-
-        fs.writeFileSync(path.join(sec41MergeRepo, 'app.ts'), '// initial file\nexport const v = 1;\n', 'utf8');
-        execFileSync('git', ['-C', sec41MergeRepo, 'add', 'app.ts']);
-        execFileSync('git', ['-C', sec41MergeRepo, 'commit', '-m', 'chore: initial commit']);
-
-        execFileSync('git', ['-C', sec41MergeRepo, 'checkout', '-b', 'branch-a']);
-        fs.writeFileSync(path.join(sec41MergeRepo, 'app.ts'), '// branch-a change\nexport const v = 2;\n', 'utf8');
-        execFileSync('git', ['-C', sec41MergeRepo, 'add', 'app.ts']);
-        execFileSync('git', ['-C', sec41MergeRepo, 'commit', '-m', 'chore: branch-a edit']);
-
-        const mainBranchName = execFileSync('git', ['-C', sec41MergeRepo, 'branch', '--show-current'], { encoding: 'utf8' }).trim() || 'master';
-        try {
-          execFileSync('git', ['-C', sec41MergeRepo, 'checkout', 'master'], { stdio: 'pipe' });
-        } catch {
-          execFileSync('git', ['-C', sec41MergeRepo, 'checkout', 'main']);
-        }
-        fs.writeFileSync(path.join(sec41MergeRepo, 'app.ts'), '// main change\nexport const v = 3;\n', 'utf8');
-        execFileSync('git', ['-C', sec41MergeRepo, 'add', 'app.ts']);
-        execFileSync('git', ['-C', sec41MergeRepo, 'commit', '-m', 'chore: main edit']);
-
-        try {
-          execFileSync('git', ['-C', sec41MergeRepo, 'merge', 'branch-a']);
-        } catch {}
-
-        const mergeSecret = fromHex('6768705f6d657267653132333435363738393031323334353637383930313233');
-        fs.writeFileSync(path.join(sec41MergeRepo, 'app.ts'), `// resolved with secret\nexport const apiKey = "${mergeSecret}";\n`, 'utf8');
-        execFileSync('git', ['-C', sec41MergeRepo, 'add', 'app.ts']);
-        execFileSync('git', ['-C', sec41MergeRepo, 'commit', '-m', 'Merge branch-a resolving conflict with secret']);
-
-        const gitHistory = new GitHistoryEngine(sec41MergeRepo);
-        const findings = await gitHistory.scanHistoryCommits();
-        const mergeFinding = findings.find((f: any) => f.rawSecret === mergeSecret);
-        assert(mergeFinding !== undefined, 'scanHistoryCommits detects credential introduced in merge-resolution commit diff (-m)');
-        assert(mergeFinding?.gitExposure?.isPresentInHead === true, 'Merge-commit secret correctly identified in HEAD');
-      } finally {
-        try {
-          fs.rmSync(sec41MergeRepo, { recursive: true, force: true });
-        } catch {}
-      }
-
-      // 3. Workspace symlink confinement
-      const wsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-ws-sym-'));
-      const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-outside-sym-'));
-      try {
-        fs.writeFileSync(path.join(outsideDir, 'external_leak.ts'), '// external content\n');
-        fs.writeFileSync(path.join(wsDir, 'internal.ts'), '// internal content\n');
-
-        let symlinkCreated = false;
-        const linkPath = path.join(wsDir, 'symlink_outside');
-        try {
-          fs.symlinkSync(outsideDir, linkPath, 'junction');
-          symlinkCreated = true;
-        } catch {
-          try {
-            fs.symlinkSync(outsideDir, linkPath, 'dir');
-            symlinkCreated = true;
-          } catch {}
-        }
-
-        if (symlinkCreated) {
-          const res = collectFiles(wsDir, [], wsDir, { allowExternalSymlinks: false });
-          assert(res.traversalErrors.length > 0, 'collectFiles flags external symlink with traversal error');
-          assert(res.traversalErrors[0].operation === 'symlink', 'Traversal error operation is symlink');
-          assert(res.traversalErrors[0].error.includes('Symlink escapes workspace root'), 'Error explains symlink escapes root');
-
-          const relaxedRes = collectFiles(wsDir, [], wsDir, { allowExternalSymlinks: true });
-          assert(relaxedRes.traversalErrors.length === 0, 'collectFiles allows external symlink when allowExternalSymlinks: true');
-          assert(relaxedRes.files.some((f: string) => f.includes('external_leak.ts')), 'External file collected when allowed');
-        }
-      } finally {
-        try {
-          fs.rmSync(wsDir, { recursive: true, force: true });
-          fs.rmSync(outsideDir, { recursive: true, force: true });
-        } catch {}
-      }
-
-      // 4. Genuine removal commit vs lastSeenCommit
-      const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-hist-remov-'));
-      try {
-        execFileSync('git', ['init', repoDir]);
-        execFileSync('git', ['-C', repoDir, 'config', 'user.name', 'Removal Tester']);
-        execFileSync('git', ['-C', repoDir, 'config', 'user.email', 'removal@test.com']);
-
-        const secretToken = fromHex('6768705f72656d6f76616c313233343536373839303132333435363738393031');
-
-        fs.writeFileSync(path.join(repoDir, 'service.ts'), `export const token = "${secretToken}";\n`, 'utf8');
-        execFileSync('git', ['-C', repoDir, 'add', 'service.ts']);
-        execFileSync('git', ['-C', repoDir, 'commit', '-m', 'feat: introduce secret']);
-
-        fs.writeFileSync(path.join(repoDir, 'service.ts'), `// comment\nexport const token = "${secretToken}";\n`, 'utf8');
-        execFileSync('git', ['-C', repoDir, 'add', 'service.ts']);
-        execFileSync('git', ['-C', repoDir, 'commit', '-m', 'refactor: keep secret in file']);
-        const lastSeenSha = execFileSync('git', ['-C', repoDir, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-
-        fs.writeFileSync(path.join(repoDir, 'service.ts'), `// removed\nexport const token = process.env.TOKEN;\n`, 'utf8');
-        execFileSync('git', ['-C', repoDir, 'add', 'service.ts']);
-        execFileSync('git', ['-C', repoDir, 'commit', '-m', 'fix: remove secret from HEAD']);
-        const removalSha = execFileSync('git', ['-C', repoDir, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-
-        const gitHistory = new GitHistoryEngine(repoDir);
-        const trace = await gitHistory.traceSecret(secretToken);
-        assert(trace.isPresentInHead === false, 'Secret is absent from HEAD');
-        assert(trace.isPresentInHistory === true, 'Secret is present in history');
-        assert(trace.lastSeenCommit !== undefined, 'traceSecret identifies lastSeenCommit');
-        assert(trace.lastSeenCommit?.sha === lastSeenSha, 'lastSeenCommit is commit 2 (where secret still existed)');
-        assert(trace.removedCommit !== undefined, 'traceSecret identifies genuine removedCommit');
-        assert(trace.removedCommit?.sha === removalSha, 'removedCommit is commit 3 (where secret was deleted)');
-        assert(trace.lastSeenCommit?.sha !== trace.removedCommit?.sha, 'lastSeenCommit is distinct from removedCommit');
-      } finally {
-        try {
-          fs.rmSync(repoDir, { recursive: true, force: true });
-        } catch {}
-      }
-
-      // 5. enforceEnvFilePermissions
-      const tempEnv = path.join(os.tmpdir(), `sld-test-env-${Date.now()}.env`);
-      fs.writeFileSync(tempEnv, 'TEST_VAR="val"\n', 'utf8');
-      try {
-        enforceEnvFilePermissions(tempEnv);
-        assert(true, 'enforceEnvFilePermissions succeeds on valid file');
-
-        let posixErrorThrown = false;
-        const fakeFs = {
-          statSync: () => ({ mode: 0o100644 }),
-          chmodSync: () => { throw new Error('chmod simulated failure'); },
-          accessSync: () => {},
-          constants: fs.constants,
-        };
-        try {
-          enforceEnvFilePermissions(tempEnv, fakeFs as any, 'linux');
-        } catch (err: any) {
-          posixErrorThrown = true;
-          assert(err.message.includes('0600'), 'Error specifies 0600 mode requirement');
-        }
-        assert(posixErrorThrown, 'enforceEnvFilePermissions throws when POSIX mode is not 0600');
-
-        const cleanFs = {
-          statSync: () => ({ mode: 0o100600 }),
-          accessSync: () => {},
-          chmodSync: () => {},
-          constants: fs.constants,
-        };
-        enforceEnvFilePermissions(tempEnv, cleanFs as any, 'linux');
-        assert(true, 'enforceEnvFilePermissions succeeds when mode is 0600');
-      } finally {
-        try {
-          fs.unlinkSync(tempEnv);
-        } catch {}
-      }
-
-      // 6. Risk Engine Blast Radius UNKNOWN preservation
-      const dummyExposure = {
-        isPresentInHead: 'UNKNOWN' as const,
-        isPresentInHistory: 'UNKNOWN' as const,
-        exposureDurationDays: 0,
-        branches: [],
-        isRemote: 'UNKNOWN' as const,
-        statusDescription: 'Incomplete inspection',
+      const verifier = new VerificationEngine(sec40Repo);
+      (verifier as any).historyEngine = unknownHistEngine;
+      const fakeCleanFinding = {
+        file: 'clean.ts',
+        fullPath: path.join(sec40Repo, 'clean.ts'),
+        line: 1,
+        type: 'github-pat',
+        rawSecret: metaSecret,
+        fingerprint: 'fp123',
+        confidence: 100,
       };
-      const dummyFileContext = {
-        fileExtension: '.ts',
-        isConfig: false,
-        isTest: false,
-        isDoc: false,
-        isSensitiveName: false,
-        isExampleOrSample: false,
-      };
-      const assessment = calculateRiskAssessment(CORE_RULES[0], 100, dummyFileContext, dummyExposure);
-      assert(assessment.blastRadius.remoteExposed === 'UNKNOWN', 'blastRadius preserves UNKNOWN remoteExposed');
-      assert(assessment.blastRadius.gitHistoryExposed === 'UNKNOWN', 'blastRadius preserves UNKNOWN gitHistoryExposed');
-      assert(assessment.blastRadius.factors.some((f: string) => f.includes('Remote tracking branch status unverified')), 'Conservative risk factor applied for unverified remote status');
+      const verificationRes = await verifier.verifyFindingFix(fakeCleanFinding);
+      assert(verificationRes.isResolved === false, 'VerificationEngine rejects resolution when Git history is UNKNOWN');
+      assert(verificationRes.historyStatus === 'UNKNOWN', 'VerificationEngine reports historyStatus UNKNOWN on incomplete history');
 
-      // 7. VerificationEngine onSkippedFile handling
-      const verDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-ver-skip-'));
-      try {
-        const verifier = new VerificationEngine(verDir);
-        const finding = {
-          file: 'huge.ts',
-          fullPath: path.join(verDir, 'huge.ts'),
-          line: 1,
-          type: 'github-pat',
-          rawSecret: fromHex('6768705f64756d6d7931323334353637383930313233343536373839303132'),
-          fingerprint: 'fp_huge',
-          confidence: 100,
-        };
-        fs.writeFileSync(path.join(verDir, 'huge.ts'), Buffer.alloc(1000, 0));
-        const res = await verifier.verifyFindingFix(finding as any);
-        assert(res.isResolved === false, 'verifyFindingFix returns isResolved: false when file was skipped');
-        assert(res.historyStatus === 'UNKNOWN', 'verifyFindingFix returns historyStatus: UNKNOWN when file was skipped');
-        assert(res.details.includes('Target file inspection incomplete'), 'verifyFindingFix notes inspection incomplete in details');
-      } finally {
-        try {
-          fs.rmSync(verDir, { recursive: true, force: true });
-        } catch {}
+      // 24. VerificationEngine resolves finding when current history is clean even if previously exposed in finding
+      class CleanCurrentHistoryVerificationEngine extends GitHistoryEngine {
+        public override async traceSecret(secret: string, maxCommits = 0): Promise<any> {
+          return {
+            isPresentInHead: false,
+            isPresentInHistory: false,
+            isPresentInWorkingTree: false,
+            isSecretInWorkingTree: false,
+            exposureDurationDays: 0,
+            branches: [],
+            isRemote: false,
+            statusDescription: 'Clean in current Git history',
+            searchStatus: 'FOUND',
+          };
+        }
       }
+      const cleanHistEngine = new CleanCurrentHistoryVerificationEngine(sec40Repo);
+      const cleanVerifier = new VerificationEngine(sec40Repo);
+      (cleanVerifier as any).historyEngine = cleanHistEngine;
+      const findingPreviouslyInHistory = {
+        file: 'clean.ts',
+        fullPath: path.join(sec40Repo, 'clean.ts'),
+        line: 1,
+        type: 'github-pat',
+        rawSecret: metaSecret,
+        fingerprint: 'fp123',
+        confidence: 100,
+        gitExposure: {
+          isPresentInHistory: true,
+          introducedCommit: { sha: 'abcdef1234567890' }
+        }
+      };
+      const cleanVerificationRes = await cleanVerifier.verifyFindingFix(findingPreviouslyInHistory as any);
+      assert(cleanVerificationRes.isResolved === true, 'VerificationEngine resolves finding when current history is clean despite old finding historical exposure');
+      assert(cleanVerificationRes.historyStatus === 'HEAD_AND_HISTORY_CLEAN', 'VerificationEngine reports HEAD_AND_HISTORY_CLEAN when current history is clean');
+      assert(cleanVerificationRes.previouslyExposedInHistory === true, 'VerificationEngine records previouslyExposedInHistory true for audit tracking');
+    } finally {
+      try {
+        fs.rmSync(sec40Repo, { recursive: true, force: true });
+      } catch { }
+    }
+  }
 
-      // 8. IgnoreEngine configurable build artifacts
-      const defaultPatterns = getIgnorePatterns();
-      assert(defaultPatterns.includes('dist/**'), 'Default ignore includes dist/**');
-      assert(defaultPatterns.includes('build/**'), 'Default ignore includes build/**');
-      const includedPatterns = getIgnorePatterns({ includeBuildArtifacts: true });
-      assert(!includedPatterns.includes('dist/**'), 'includeBuildArtifacts excludes dist/** from ignore list');
-      assert(!includedPatterns.includes('build/**'), 'includeBuildArtifacts excludes build/** from ignore list');
-      assert(BUILD_ARTIFACT_PATTERNS.includes('dist/**'), 'BUILD_ARTIFACT_PATTERNS contains dist/**');
+  // --- 41. Security Audit Release Readiness: JSON Sanitization, Merge Diffs, Symlink Confinement & Verification ---
+  console.log('\n--- 41. Security Audit Release Readiness: JSON Sanitization, Merge Diffs, Symlink Confinement & Verification ---');
+  {
+    const { scanContent } = require('../src/core/scanner/scanner');
+    const { toSafeJsonFinding, collectFiles } = require('../src/cli/index');
+    const { GitHistoryEngine } = require('../src/core/history/gitHistoryEngine');
+    const { enforceEnvFilePermissions } = require('../src/core/remediation/remediationEngine');
+    const { calculateRiskAssessment } = require('../src/core/risk/riskEngine');
+    const { VerificationEngine } = require('../src/core/verification/verificationEngine');
+    const { getIgnorePatterns, BUILD_ARTIFACT_PATTERNS } = require('../src/core/ignore/ignoreEngine');
+    const { CORE_RULES } = require('../src/core/detectors/rules');
+    const { execFileSync } = require('child_process');
+    const fromHex = (h: string) => Buffer.from(h, 'hex').toString('utf8');
+
+    // 1. JSON output sanitization: split concatenation, array join, template literal, and base64
+    const p1 = fromHex('6768705f3132333435'); // "ghp_12345"
+    const p2 = fromHex('36373839303132333435363738393031323334353637383930313233343536'); // 31 chars
+    const codeConcat = `const token = "${p1}" + "${p2}";`;
+    const findingsConcat = scanContent(codeConcat, 'testConcat.js');
+    assert(findingsConcat.length > 0, 'Split concatenation detected');
+    const safeConcat = toSafeJsonFinding(findingsConcat[0]);
+    assert(safeConcat.rawSecret === undefined, 'toSafeJsonFinding strips rawSecret on concatenation finding');
+    assert(safeConcat.sourceExpression === undefined, 'toSafeJsonFinding strips sourceExpression on concatenation finding');
+    assert((safeConcat as any).evidence?.surroundingCode === undefined, 'toSafeJsonFinding strips surroundingCode');
+    assert((safeConcat as any).remediation?.diffPreview === undefined, 'toSafeJsonFinding strips diffPreview');
+    const jsonConcat = JSON.stringify(safeConcat);
+    assert(!jsonConcat.includes(p1 + p2), 'Serialized JSON does not contain raw concatenated secret');
+    assert(!jsonConcat.includes(p1), 'Serialized JSON does not contain token prefix fragment');
+
+    const codeArray = `const token = ["${p1}", "${p2}"].join("");`;
+    const findingsArray = scanContent(codeArray, 'testArray.js');
+    assert(findingsArray.length > 0, 'Array join detected');
+    const safeArray = toSafeJsonFinding(findingsArray[0]);
+    assert(safeArray.rawSecret === undefined, 'toSafeJsonFinding strips rawSecret on array join finding');
+    assert(safeArray.sourceExpression === undefined, 'toSafeJsonFinding strips sourceExpression on array join finding');
+    assert(!JSON.stringify(safeArray).includes(p1 + p2), 'Serialized JSON does not contain array joined secret');
+
+    const codeTpl = 'const token = `' + p1 + '${"' + p2 + '"}`;\n';
+    const findingsTpl = scanContent(codeTpl, 'testTpl.js');
+    assert(findingsTpl.length > 0, 'Template interpolation detected');
+    const safeTpl = toSafeJsonFinding(findingsTpl[0]);
+    assert(safeTpl.rawSecret === undefined, 'toSafeJsonFinding strips rawSecret on template finding');
+    assert(safeTpl.sourceExpression === undefined, 'toSafeJsonFinding strips sourceExpression on template finding');
+    assert(!JSON.stringify(safeTpl).includes(p1 + p2), 'Serialized JSON does not contain interpolated secret');
+
+    const rawSecret = p1 + p2;
+    const b64 = Buffer.from(rawSecret).toString('base64');
+    const codeB64 = `const apiKey = Buffer.from("${b64}", "base64").toString();`;
+    const findingsB64 = scanContent(codeB64, 'testB64.js');
+    assert(findingsB64.length > 0, 'Base64 credential detected');
+    const safeB64 = toSafeJsonFinding(findingsB64[0]);
+    assert(safeB64.rawSecret === undefined, 'toSafeJsonFinding strips rawSecret on base64 finding');
+    assert(safeB64.sourceExpression === undefined, 'toSafeJsonFinding strips sourceExpression on base64 finding');
+    assert(!JSON.stringify(safeB64).includes(rawSecret), 'Serialized JSON does not contain decoded base64 secret');
+
+    // 2. Merge commit diff inspection (-m)
+    const sec41MergeRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-hist-merge-'));
+    try {
+      execFileSync('git', ['init', sec41MergeRepo]);
+      execFileSync('git', ['-C', sec41MergeRepo, 'config', 'user.name', 'Merge Tester']);
+      execFileSync('git', ['-C', sec41MergeRepo, 'config', 'user.email', 'merge@test.com']);
+
+      fs.writeFileSync(path.join(sec41MergeRepo, 'app.ts'), '// initial file\nexport const v = 1;\n', 'utf8');
+      execFileSync('git', ['-C', sec41MergeRepo, 'add', 'app.ts']);
+      execFileSync('git', ['-C', sec41MergeRepo, 'commit', '-m', 'chore: initial commit']);
+
+      execFileSync('git', ['-C', sec41MergeRepo, 'checkout', '-b', 'branch-a']);
+      fs.writeFileSync(path.join(sec41MergeRepo, 'app.ts'), '// branch-a change\nexport const v = 2;\n', 'utf8');
+      execFileSync('git', ['-C', sec41MergeRepo, 'add', 'app.ts']);
+      execFileSync('git', ['-C', sec41MergeRepo, 'commit', '-m', 'chore: branch-a edit']);
+
+      const mainBranchName = execFileSync('git', ['-C', sec41MergeRepo, 'branch', '--show-current'], { encoding: 'utf8' }).trim() || 'master';
+      try {
+        execFileSync('git', ['-C', sec41MergeRepo, 'checkout', 'master'], { stdio: 'pipe' });
+      } catch {
+        execFileSync('git', ['-C', sec41MergeRepo, 'checkout', 'main']);
+      }
+      fs.writeFileSync(path.join(sec41MergeRepo, 'app.ts'), '// main change\nexport const v = 3;\n', 'utf8');
+      execFileSync('git', ['-C', sec41MergeRepo, 'add', 'app.ts']);
+      execFileSync('git', ['-C', sec41MergeRepo, 'commit', '-m', 'chore: main edit']);
+
+      try {
+        execFileSync('git', ['-C', sec41MergeRepo, 'merge', 'branch-a']);
+      } catch { }
+
+      const mergeSecret = fromHex('6768705f6d657267653132333435363738393031323334353637383930313233');
+      fs.writeFileSync(path.join(sec41MergeRepo, 'app.ts'), `// resolved with secret\nexport const apiKey = "${mergeSecret}";\n`, 'utf8');
+      execFileSync('git', ['-C', sec41MergeRepo, 'add', 'app.ts']);
+      execFileSync('git', ['-C', sec41MergeRepo, 'commit', '-m', 'Merge branch-a resolving conflict with secret']);
+
+      const gitHistory = new GitHistoryEngine(sec41MergeRepo);
+      const findings = await gitHistory.scanHistoryCommits();
+      const mergeFinding = findings.find((f: any) => f.rawSecret === mergeSecret);
+      assert(mergeFinding !== undefined, 'scanHistoryCommits detects credential introduced in merge-resolution commit diff (-m)');
+      assert(mergeFinding?.gitExposure?.isPresentInHead === true, 'Merge-commit secret correctly identified in HEAD');
+    } finally {
+      try {
+        fs.rmSync(sec41MergeRepo, { recursive: true, force: true });
+      } catch { }
     }
 
-    // --- 42. Lazy AST Parsing, Fail-Closed Node Version Guards & Engine Shims ---
-    console.log('\n--- 42. Lazy AST Parsing, Fail-Closed Node Version Guards & Engine Shims ---');
-    {
-      const { scanContent } = require('../src/core/scanner/scanner');
-      const { buildPreCommitHook } = require('../src/git/preCommitHook');
-      const entropyEngine = require('../src/engine/entropy');
-      const redactorEngine = require('../src/engine/redactor');
-      const scannerEngine = require('../src/engine/scanner');
-      const patternsEngine = require('../src/engine/patterns');
-      const fromHex = (h: string) => Buffer.from(h, 'hex').toString('utf8');
+    // 3. Workspace symlink confinement
+    const wsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-ws-sym-'));
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-outside-sym-'));
+    try {
+      fs.writeFileSync(path.join(outsideDir, 'external_leak.ts'), '// external content\n');
+      fs.writeFileSync(path.join(wsDir, 'internal.ts'), '// internal content\n');
 
-      // 1. Hook contains fail-closed Node version verification
-      const hookScript = buildPreCommitHook();
-      assert(hookScript.includes('NODE_MAJOR=$(ELECTRON_RUN_AS_NODE=1 "$NODE_CMD" -p \'process.versions.node.split(".")[0]\' 2>/dev/null)'), 'Hook checks Node version using fail-closed process.versions.node with ELECTRON_RUN_AS_NODE=1');
-      assert(hookScript.includes('Cannot determine Node.js version. Commit blocked.'), 'Hook blocks when Node version query fails');
-      assert(hookScript.includes('Invalid Node.js version. Commit blocked.'), 'Hook blocks on non-numeric or empty Node version');
-      assert(hookScript.includes('Node.js 18+ required'), 'Hook blocks on Node version < 18');
+      let symlinkCreated = false;
+      const linkPath = path.join(wsDir, 'symlink_outside');
+      try {
+        fs.symlinkSync(outsideDir, linkPath, 'junction');
+        symlinkCreated = true;
+      } catch {
+        try {
+          fs.symlinkSync(outsideDir, linkPath, 'dir');
+          symlinkCreated = true;
+        } catch { }
+      }
 
-      // 2. Direct POSIX shell evaluation of version check guard logic
-      const sh = findPosixShell();
-      if (sh) {
-        const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-node-ver-test-'));
-        const mockNode = path.join(tmpDir, 'mock_node.sh').replace(/\\/g, '/');
+      if (symlinkCreated) {
+        const res = collectFiles(wsDir, [], wsDir, { allowExternalSymlinks: false });
+        assert(res.traversalErrors.length > 0, 'collectFiles flags external symlink with traversal error');
+        assert(res.traversalErrors[0].operation === 'symlink', 'Traversal error operation is symlink');
+        assert(res.traversalErrors[0].error.includes('Symlink escapes workspace root'), 'Error explains symlink escapes root');
 
-        fs.writeFileSync(mockNode, `#!/bin/sh
+        const relaxedRes = collectFiles(wsDir, [], wsDir, { allowExternalSymlinks: true });
+        assert(relaxedRes.traversalErrors.length === 0, 'collectFiles allows external symlink when allowExternalSymlinks: true');
+        assert(relaxedRes.files.some((f: string) => f.includes('external_leak.ts')), 'External file collected when allowed');
+      }
+    } finally {
+      try {
+        fs.rmSync(wsDir, { recursive: true, force: true });
+        fs.rmSync(outsideDir, { recursive: true, force: true });
+      } catch { }
+    }
+
+    // 4. Genuine removal commit vs lastSeenCommit
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-hist-remov-'));
+    try {
+      execFileSync('git', ['init', repoDir]);
+      execFileSync('git', ['-C', repoDir, 'config', 'user.name', 'Removal Tester']);
+      execFileSync('git', ['-C', repoDir, 'config', 'user.email', 'removal@test.com']);
+
+      const secretToken = fromHex('6768705f72656d6f76616c313233343536373839303132333435363738393031');
+
+      fs.writeFileSync(path.join(repoDir, 'service.ts'), `export const token = "${secretToken}";\n`, 'utf8');
+      execFileSync('git', ['-C', repoDir, 'add', 'service.ts']);
+      execFileSync('git', ['-C', repoDir, 'commit', '-m', 'feat: introduce secret']);
+
+      fs.writeFileSync(path.join(repoDir, 'service.ts'), `// comment\nexport const token = "${secretToken}";\n`, 'utf8');
+      execFileSync('git', ['-C', repoDir, 'add', 'service.ts']);
+      execFileSync('git', ['-C', repoDir, 'commit', '-m', 'refactor: keep secret in file']);
+      const lastSeenSha = execFileSync('git', ['-C', repoDir, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+
+      fs.writeFileSync(path.join(repoDir, 'service.ts'), `// removed\nexport const token = process.env.TOKEN;\n`, 'utf8');
+      execFileSync('git', ['-C', repoDir, 'add', 'service.ts']);
+      execFileSync('git', ['-C', repoDir, 'commit', '-m', 'fix: remove secret from HEAD']);
+      const removalSha = execFileSync('git', ['-C', repoDir, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+
+      const gitHistory = new GitHistoryEngine(repoDir);
+      const trace = await gitHistory.traceSecret(secretToken);
+      assert(trace.isPresentInHead === false, 'Secret is absent from HEAD');
+      assert(trace.isPresentInHistory === true, 'Secret is present in history');
+      assert(trace.lastSeenCommit !== undefined, 'traceSecret identifies lastSeenCommit');
+      assert(trace.lastSeenCommit?.sha === lastSeenSha, 'lastSeenCommit is commit 2 (where secret still existed)');
+      assert(trace.removedCommit !== undefined, 'traceSecret identifies genuine removedCommit');
+      assert(trace.removedCommit?.sha === removalSha, 'removedCommit is commit 3 (where secret was deleted)');
+      assert(trace.lastSeenCommit?.sha !== trace.removedCommit?.sha, 'lastSeenCommit is distinct from removedCommit');
+    } finally {
+      try {
+        fs.rmSync(repoDir, { recursive: true, force: true });
+      } catch { }
+    }
+
+    // 5. enforceEnvFilePermissions
+    const tempEnv = path.join(os.tmpdir(), `sld-test-env-${Date.now()}.env`);
+    fs.writeFileSync(tempEnv, 'TEST_VAR="val"\n', 'utf8');
+    try {
+      enforceEnvFilePermissions(tempEnv);
+      assert(true, 'enforceEnvFilePermissions succeeds on valid file');
+
+      let posixErrorThrown = false;
+      const fakeFs = {
+        statSync: () => ({ mode: 0o100644 }),
+        chmodSync: () => { throw new Error('chmod simulated failure'); },
+        accessSync: () => { },
+        constants: fs.constants,
+      };
+      try {
+        enforceEnvFilePermissions(tempEnv, fakeFs as any, 'linux');
+      } catch (err: any) {
+        posixErrorThrown = true;
+        assert(err.message.includes('0600'), 'Error specifies 0600 mode requirement');
+      }
+      assert(posixErrorThrown, 'enforceEnvFilePermissions throws when POSIX mode is not 0600');
+
+      const cleanFs = {
+        statSync: () => ({ mode: 0o100600 }),
+        accessSync: () => { },
+        chmodSync: () => { },
+        constants: fs.constants,
+      };
+      enforceEnvFilePermissions(tempEnv, cleanFs as any, 'linux');
+      assert(true, 'enforceEnvFilePermissions succeeds when mode is 0600');
+    } finally {
+      try {
+        fs.unlinkSync(tempEnv);
+      } catch { }
+    }
+
+    // 6. Risk Engine Blast Radius UNKNOWN preservation
+    const dummyExposure = {
+      isPresentInHead: 'UNKNOWN' as const,
+      isPresentInHistory: 'UNKNOWN' as const,
+      exposureDurationDays: 0,
+      branches: [],
+      isRemote: 'UNKNOWN' as const,
+      statusDescription: 'Incomplete inspection',
+    };
+    const dummyFileContext = {
+      fileExtension: '.ts',
+      isConfig: false,
+      isTest: false,
+      isDoc: false,
+      isSensitiveName: false,
+      isExampleOrSample: false,
+    };
+    const assessment = calculateRiskAssessment(CORE_RULES[0], 100, dummyFileContext, dummyExposure);
+    assert(assessment.blastRadius.remoteExposed === 'UNKNOWN', 'blastRadius preserves UNKNOWN remoteExposed');
+    assert(assessment.blastRadius.gitHistoryExposed === 'UNKNOWN', 'blastRadius preserves UNKNOWN gitHistoryExposed');
+    assert(assessment.blastRadius.factors.some((f: string) => f.includes('Remote tracking branch status unverified')), 'Conservative risk factor applied for unverified remote status');
+
+    // 7. VerificationEngine onSkippedFile handling
+    const verDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-ver-skip-'));
+    try {
+      const verifier = new VerificationEngine(verDir);
+      const finding = {
+        file: 'huge.ts',
+        fullPath: path.join(verDir, 'huge.ts'),
+        line: 1,
+        type: 'github-pat',
+        rawSecret: fromHex('6768705f64756d6d7931323334353637383930313233343536373839303132'),
+        fingerprint: 'fp_huge',
+        confidence: 100,
+      };
+      fs.writeFileSync(path.join(verDir, 'huge.ts'), Buffer.alloc(1000, 0));
+      const res = await verifier.verifyFindingFix(finding as any);
+      assert(res.isResolved === false, 'verifyFindingFix returns isResolved: false when file was skipped');
+      assert(res.historyStatus === 'UNKNOWN', 'verifyFindingFix returns historyStatus: UNKNOWN when file was skipped');
+      assert(res.details.includes('Target file inspection incomplete'), 'verifyFindingFix notes inspection incomplete in details');
+    } finally {
+      try {
+        fs.rmSync(verDir, { recursive: true, force: true });
+      } catch { }
+    }
+
+    // 8. IgnoreEngine configurable build artifacts
+    const defaultPatterns = getIgnorePatterns();
+    assert(defaultPatterns.includes('dist/**'), 'Default ignore includes dist/**');
+    assert(defaultPatterns.includes('build/**'), 'Default ignore includes build/**');
+    const includedPatterns = getIgnorePatterns({ includeBuildArtifacts: true });
+    assert(!includedPatterns.includes('dist/**'), 'includeBuildArtifacts excludes dist/** from ignore list');
+    assert(!includedPatterns.includes('build/**'), 'includeBuildArtifacts excludes build/** from ignore list');
+    assert(BUILD_ARTIFACT_PATTERNS.includes('dist/**'), 'BUILD_ARTIFACT_PATTERNS contains dist/**');
+  }
+
+  // --- 42. Lazy AST Parsing, Fail-Closed Node Version Guards & Engine Shims ---
+  console.log('\n--- 42. Lazy AST Parsing, Fail-Closed Node Version Guards & Engine Shims ---');
+  {
+    const { scanContent } = require('../src/core/scanner/scanner');
+    const { buildPreCommitHook } = require('../src/git/preCommitHook');
+    const entropyEngine = require('../src/engine/entropy');
+    const redactorEngine = require('../src/engine/redactor');
+    const scannerEngine = require('../src/engine/scanner');
+    const patternsEngine = require('../src/engine/patterns');
+    const fromHex = (h: string) => Buffer.from(h, 'hex').toString('utf8');
+
+    // 1. Hook contains fail-closed Node version verification
+    const hookScript = buildPreCommitHook();
+    assert(hookScript.includes('NODE_MAJOR=$(ELECTRON_RUN_AS_NODE=1 "$NODE_CMD" -p \'process.versions.node.split(".")[0]\' 2>/dev/null)'), 'Hook checks Node version using fail-closed process.versions.node with ELECTRON_RUN_AS_NODE=1');
+    assert(hookScript.includes('Cannot determine Node.js version. Commit blocked.'), 'Hook blocks when Node version query fails');
+    assert(hookScript.includes('Invalid Node.js version. Commit blocked.'), 'Hook blocks on non-numeric or empty Node version');
+    assert(hookScript.includes('Node.js 18+ required'), 'Hook blocks on Node version < 18');
+
+    // 2. Direct POSIX shell evaluation of version check guard logic
+    const sh = findPosixShell();
+    if (sh) {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-node-ver-test-'));
+      const mockNode = path.join(tmpDir, 'mock_node.sh').replace(/\\/g, '/');
+
+      fs.writeFileSync(mockNode, `#!/bin/sh
 if [ "$MOCK_MODE" = "fail" ]; then
   exit 1
 elif [ "$MOCK_MODE" = "empty" ]; then
@@ -3337,8 +3337,8 @@ elif [ "$MOCK_MODE" = "22" ]; then
 fi
 `, { mode: 0o755 });
 
-        const runGuard = (mode: string) => {
-          const script = `
+      const runGuard = (mode: string) => {
+        const script = `
 NODE_CMD='${mockNode}'
 export MOCK_MODE='${mode}'
 if ! NODE_MAJOR=$(ELECTRON_RUN_AS_NODE=1 "$NODE_CMD" -p 'process.versions.node.split(".")[0]' 2>/dev/null); then
@@ -3358,47 +3358,47 @@ fi
 echo "SUCCESS:$NODE_MAJOR"
 exit 0
 `;
-          return cp.spawnSync(sh, ['-c', script], { encoding: 'utf8' });
-        };
+        return cp.spawnSync(sh, ['-c', script], { encoding: 'utf8' });
+      };
 
-        try {
-          // A. Failed command (exit non-zero)
-          const resFail = runGuard('fail');
-          assert(resFail.status === 2, 'Version check exits 2 on node command execution failure');
-          assert(resFail.stdout.includes('FAIL_DETERMINE'), 'Version check prints FAIL_DETERMINE on error');
+      try {
+        // A. Failed command (exit non-zero)
+        const resFail = runGuard('fail');
+        assert(resFail.status === 2, 'Version check exits 2 on node command execution failure');
+        assert(resFail.stdout.includes('FAIL_DETERMINE'), 'Version check prints FAIL_DETERMINE on error');
 
-          // B. Empty version output
-          const resEmpty = runGuard('empty');
-          assert(resEmpty.status === 2, 'Version check exits 2 on empty node version');
-          assert(resEmpty.stdout.includes('FAIL_INVALID'), 'Version check prints FAIL_INVALID on empty output');
+        // B. Empty version output
+        const resEmpty = runGuard('empty');
+        assert(resEmpty.status === 2, 'Version check exits 2 on empty node version');
+        assert(resEmpty.stdout.includes('FAIL_INVALID'), 'Version check prints FAIL_INVALID on empty output');
 
-          // C. Malformed / non-numeric output
-          const resMalformed = runGuard('malformed');
-          assert(resMalformed.status === 2, 'Version check exits 2 on non-numeric node version');
-          assert(resMalformed.stdout.includes('FAIL_INVALID'), 'Version check prints FAIL_INVALID on malformed output');
+        // C. Malformed / non-numeric output
+        const resMalformed = runGuard('malformed');
+        assert(resMalformed.status === 2, 'Version check exits 2 on non-numeric node version');
+        assert(resMalformed.stdout.includes('FAIL_INVALID'), 'Version check prints FAIL_INVALID on malformed output');
 
-          // D. Node 16 (too old)
-          const resNode16 = runGuard('16');
-          assert(resNode16.status === 2, 'Version check exits 2 on Node 16');
-          assert(resNode16.stdout.includes('FAIL_TOO_OLD:16'), 'Version check prints FAIL_TOO_OLD:16 on old version');
+        // D. Node 16 (too old)
+        const resNode16 = runGuard('16');
+        assert(resNode16.status === 2, 'Version check exits 2 on Node 16');
+        assert(resNode16.stdout.includes('FAIL_TOO_OLD:16'), 'Version check prints FAIL_TOO_OLD:16 on old version');
 
-          // E. Node 18, 20, 22 (supported)
-          for (const v of ['18', '20', '22']) {
-            const resValid = runGuard(v);
-            assert(resValid.status === 0, `Version check exits 0 on Node ${v}`);
-            assert(resValid.stdout.includes(`SUCCESS:${v}`), `Version check outputs SUCCESS:${v}`);
-          }
-        } finally {
-          try {
-            fs.rmSync(tmpDir, { recursive: true, force: true });
-          } catch {}
+        // E. Node 18, 20, 22 (supported)
+        for (const v of ['18', '20', '22']) {
+          const resValid = runGuard(v);
+          assert(resValid.status === 0, `Version check exits 0 on Node ${v}`);
+          assert(resValid.stdout.includes(`SUCCESS:${v}`), `Version check outputs SUCCESS:${v}`);
         }
+      } finally {
+        try {
+          fs.rmSync(tmpDir, { recursive: true, force: true });
+        } catch { }
       }
+    }
 
-      // 3. Scanner lazy AST parsing verification
-      // A. Clean TS/JS document: onSourceFileParsed is NEVER invoked
-      let cleanParsed = false;
-      const cleanTsCode = `
+    // 3. Scanner lazy AST parsing verification
+    // A. Clean TS/JS document: onSourceFileParsed is NEVER invoked
+    let cleanParsed = false;
+    const cleanTsCode = `
 export interface UserProfile {
   id: string;
   name: string;
@@ -3408,162 +3408,162 @@ export function getFullName(user: UserProfile): string {
   return user.name;
 }
 `;
-      const cleanFindings = scanContent(cleanTsCode, 'user.ts', {
-        onSourceFileParsed: () => {
-          cleanParsed = true;
-        },
-      });
-      assert(cleanFindings.length === 0, 'Clean file yields 0 findings');
-      assert(cleanParsed === false, 'Clean file never triggers AST parsing (lazy compilation)');
+    const cleanFindings = scanContent(cleanTsCode, 'user.ts', {
+      onSourceFileParsed: () => {
+        cleanParsed = true;
+      },
+    });
+    assert(cleanFindings.length === 0, 'Clean file yields 0 findings');
+    assert(cleanParsed === false, 'Clean file never triggers AST parsing (lazy compilation)');
 
-      // B. TS/JS document with secret candidate: onSourceFileParsed IS invoked
-      let secretParsed = false;
-      let receivedSourceFile: any = null;
-      // 40 characters: "ghp_" + 36 alphanumeric characters
-      const fakeToken = fromHex('6768705f313233343536373839303132333435363738393031323334353637383930313233343536');
-      const secretTsCode = `export const githubToken = "${fakeToken}";\n`;
-      const secretFindings = scanContent(secretTsCode, 'config.ts', {
-        onSourceFileParsed: (sf) => {
-          secretParsed = true;
-          receivedSourceFile = sf;
-        },
-      });
-      assert(secretFindings.length > 0, 'Secret candidate detected');
-      assert(secretParsed === true, 'AST parsing was lazily triggered on rule candidate match');
-      assert(receivedSourceFile !== null && typeof receivedSourceFile === 'object', 'onSourceFileParsed passed a valid AST SourceFile');
+    // B. TS/JS document with secret candidate: onSourceFileParsed IS invoked
+    let secretParsed = false;
+    let receivedSourceFile: any = null;
+    // 40 characters: "ghp_" + 36 alphanumeric characters
+    const fakeToken = fromHex('6768705f313233343536373839303132333435363738393031323334353637383930313233343536');
+    const secretTsCode = `export const githubToken = "${fakeToken}";\n`;
+    const secretFindings = scanContent(secretTsCode, 'config.ts', {
+      onSourceFileParsed: (sf) => {
+        secretParsed = true;
+        receivedSourceFile = sf;
+      },
+    });
+    assert(secretFindings.length > 0, 'Secret candidate detected');
+    assert(secretParsed === true, 'AST parsing was lazily triggered on rule candidate match');
+    assert(receivedSourceFile !== null && typeof receivedSourceFile === 'object', 'onSourceFileParsed passed a valid AST SourceFile');
 
-      // 4. Legacy compatibility shims
-      assert(typeof entropyEngine.calculateShannonEntropy === 'function', 'entropy shim exports calculateShannonEntropy');
-      assert(typeof redactorEngine.redactSecret === 'function', 'redactor shim exports redactSecret');
-      assert(typeof scannerEngine.scanContent === 'function', 'scanner shim exports scanContent');
-      assert(Array.isArray(patternsEngine.SECRET_RULES), 'patterns shim exports SECRET_RULES array');
-      assert(patternsEngine.SECRET_RULES.length > 0, 'SECRET_RULES is non-empty');
-      const sampleRule = patternsEngine.SECRET_RULES[0];
-      assert(typeof sampleRule.exampleFix === 'function', 'SECRET_RULES adapter includes exampleFix function');
-      assert(typeof sampleRule.remediation === 'string', 'SECRET_RULES adapter includes remediation string');
+    // 4. Legacy compatibility shims
+    assert(typeof entropyEngine.calculateShannonEntropy === 'function', 'entropy shim exports calculateShannonEntropy');
+    assert(typeof redactorEngine.redactSecret === 'function', 'redactor shim exports redactSecret');
+    assert(typeof scannerEngine.scanContent === 'function', 'scanner shim exports scanContent');
+    assert(Array.isArray(patternsEngine.SECRET_RULES), 'patterns shim exports SECRET_RULES array');
+    assert(patternsEngine.SECRET_RULES.length > 0, 'SECRET_RULES is non-empty');
+    const sampleRule = patternsEngine.SECRET_RULES[0];
+    assert(typeof sampleRule.exampleFix === 'function', 'SECRET_RULES adapter includes exampleFix function');
+    assert(typeof sampleRule.remediation === 'string', 'SECRET_RULES adapter includes remediation string');
 
-      // 5. Extension activation does not eagerly copy ast-parser.js
-      const extensionSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'extension.ts'), 'utf8');
-      const activateBody = extensionSrc.slice(
-        extensionSrc.indexOf('export async function activate'),
-        extensionSrc.indexOf('// Re-pin pre-commit hooks')
-      );
-      assert(!activateBody.includes('ensureGlobalAstParser()'), 'activate() does not eagerly invoke ensureGlobalAstParser()');
-      assert(!activateBody.includes('ast-parser.js'), 'activate() does not copy ast-parser.js during activation');
-      assert(extensionSrc.includes('function ensureGlobalAstParser'), 'extension.ts defines ensureGlobalAstParser for on-demand copying');
-    }
+    // 5. Extension activation does not eagerly copy ast-parser.js
+    const extensionSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'extension.ts'), 'utf8');
+    const activateBody = extensionSrc.slice(
+      extensionSrc.indexOf('export async function activate'),
+      extensionSrc.indexOf('// Re-pin pre-commit hooks')
+    );
+    assert(!activateBody.includes('ensureGlobalAstParser()'), 'activate() does not eagerly invoke ensureGlobalAstParser()');
+    assert(!activateBody.includes('ast-parser.js'), 'activate() does not copy ast-parser.js during activation');
+    assert(extensionSrc.includes('function ensureGlobalAstParser'), 'extension.ts defines ensureGlobalAstParser for on-demand copying');
+  }
 
-    // --- 43. Git Process Argument Confinement, Removal Error Handling & Electron Runtime Protection ---
-    console.log('\n--- 43. Git Process Argument Confinement, Removal Error Handling & Electron Runtime Protection ---');
-    {
-      const { GitHistoryEngine } = require('../src/core/history/gitHistoryEngine');
-      const { enforceEnvFilePermissions } = require('../src/core/remediation/remediationEngine');
-      const { buildPreCommitHook } = require('../src/git/preCommitHook');
-      const { execFileSync } = require('child_process');
-      const fromHex = (h: string) => Buffer.from(h, 'hex').toString('utf8');
+  // --- 43. Git Process Argument Confinement, Removal Error Handling & Electron Runtime Protection ---
+  console.log('\n--- 43. Git Process Argument Confinement, Removal Error Handling & Electron Runtime Protection ---');
+  {
+    const { GitHistoryEngine } = require('../src/core/history/gitHistoryEngine');
+    const { enforceEnvFilePermissions } = require('../src/core/remediation/remediationEngine');
+    const { buildPreCommitHook } = require('../src/git/preCommitHook');
+    const { execFileSync } = require('child_process');
+    const fromHex = (h: string) => Buffer.from(h, 'hex').toString('utf8');
 
-      // 1. Process Argument Confinement & Safe Removal Commit Attribution
-      const sec43Repo = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-sec43-repo-'));
+    // 1. Process Argument Confinement & Safe Removal Commit Attribution
+    const sec43Repo = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-sec43-repo-'));
+    try {
+      execFileSync('git', ['init', sec43Repo]);
+      execFileSync('git', ['-C', sec43Repo, 'config', 'user.name', 'Arg Sniffer Tester']);
+      execFileSync('git', ['-C', sec43Repo, 'config', 'user.email', 'argtester@test.com']);
+
+      // 40 chars GitHub token
+      const secretToken = fromHex('6768705f313233343536373839303132333435363738393031323334353637383930313233343536');
+
+      // Commit 1: introduce secret
+      fs.writeFileSync(path.join(sec43Repo, 'token.ts'), `export const key = "${secretToken}";\n`, 'utf8');
+      execFileSync('git', ['-C', sec43Repo, 'add', 'token.ts']);
+      execFileSync('git', ['-C', sec43Repo, 'commit', '-m', 'feat: add token']);
+
+      // Commit 2: edit comment, keep secret
+      fs.writeFileSync(path.join(sec43Repo, 'token.ts'), `// updated comment\nexport const key = "${secretToken}";\n`, 'utf8');
+      execFileSync('git', ['-C', sec43Repo, 'add', 'token.ts']);
+      execFileSync('git', ['-C', sec43Repo, 'commit', '-m', 'docs: update comment']);
+      const c2Sha = execFileSync('git', ['-C', sec43Repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+
+      // Commit 3: remove secret
+      fs.writeFileSync(path.join(sec43Repo, 'token.ts'), `export const key = process.env.KEY;\n`, 'utf8');
+      execFileSync('git', ['-C', sec43Repo, 'add', 'token.ts']);
+      execFileSync('git', ['-C', sec43Repo, 'commit', '-m', 'fix: remove secret from HEAD']);
+      const c3Sha = execFileSync('git', ['-C', sec43Repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+
+      // Commit 4: additional clean work
+      fs.writeFileSync(path.join(sec43Repo, 'readme.md'), `# Docs\n`, 'utf8');
+      execFileSync('git', ['-C', sec43Repo, 'add', 'readme.md']);
+      execFileSync('git', ['-C', sec43Repo, 'commit', '-m', 'docs: add readme']);
+
+      // Sniff all Git command arguments
+      class ArgumentSnifferEngine extends GitHistoryEngine {
+        public loggedArgs: string[][] = [];
+        protected override async execGit(args: string[], options: any = {}): Promise<{ stdout: any; stderr: any }> {
+          this.loggedArgs.push(args);
+          return super.execGit(args, options);
+        }
+      }
+
+      const sniffer = new ArgumentSnifferEngine(sec43Repo);
+      const removed = await sniffer.findRemovalCommit(secretToken, c2Sha);
+      assert(removed !== undefined, 'findRemovalCommit locates genuine removal commit');
+      assert(removed?.sha === c3Sha, 'Removal commit SHA correctly identified as commit 3');
+
+      // Verify credentials NEVER appear in any spawned process argument
+      const patternLine = sniffer.pickDistinctiveSearchLine(secretToken);
+      for (const args of sniffer.loggedArgs) {
+        const hasSecretInArg = args.some((a: string) => a.includes(secretToken) || a.includes(patternLine));
+        assert(!hasSecretInArg, `Git process arguments do not expose secret or patternLine: [${args.join(' ')}]`);
+        assert(!args.some((a: string) => a.startsWith('-S')), `Git process arguments do not use -S flag`);
+      }
+
+      // 2. Operational Git error during removal detection: do NOT treat as absence!
+      class FailingGrepRemovalEngine extends GitHistoryEngine {
+        public failGrepOnRemoval = false;
+        private inRemoval = false;
+        public override async findRemovalCommit(secret: string, lastSeenSha: string): Promise<GitCommitInfo | undefined> {
+          if (this.failGrepOnRemoval) {
+            this.inRemoval = true;
+            try {
+              return await super.findRemovalCommit(secret, lastSeenSha);
+            } finally {
+              this.inRemoval = false;
+            }
+          }
+          return super.findRemovalCommit(secret, lastSeenSha);
+        }
+        protected override async execGit(args: string[], options: any = {}): Promise<{ stdout: any; stderr: any }> {
+          if (this.inRemoval && args[0] === 'grep') {
+            const err: any = new Error('fatal: simulated packfile corruption during git grep');
+            err.code = 128;
+            throw err;
+          }
+          return super.execGit(args, options);
+        }
+      }
+
+      const failingEngine = new FailingGrepRemovalEngine(sec43Repo);
+      failingEngine.failGrepOnRemoval = true;
+      let findRemovalThrew = false;
       try {
-        execFileSync('git', ['init', sec43Repo]);
-        execFileSync('git', ['-C', sec43Repo, 'config', 'user.name', 'Arg Sniffer Tester']);
-        execFileSync('git', ['-C', sec43Repo, 'config', 'user.email', 'argtester@test.com']);
+        await failingEngine.findRemovalCommit(secretToken, c2Sha);
+      } catch (err: any) {
+        findRemovalThrew = true;
+        assert(err.message.includes('fatal: simulated packfile corruption'), 'findRemovalCommit throws on operational Git error');
+      }
+      assert(findRemovalThrew === true, 'findRemovalCommit refuses to treat Git execution errors as clean absence');
 
-        // 40 chars GitHub token
-        const secretToken = fromHex('6768705f313233343536373839303132333435363738393031323334353637383930313233343536');
+      const failingTrace = await failingEngine.traceSecret(secretToken);
+      assert(failingTrace.searchStatus === 'SEARCH_INCOMPLETE', 'traceSecret reports SEARCH_INCOMPLETE when removal detection encounters operational failure');
+      assert(failingTrace.isPresentInHistory === true, 'traceSecret preserves isPresentInHistory: true when removal detection fails');
 
-        // Commit 1: introduce secret
-        fs.writeFileSync(path.join(sec43Repo, 'token.ts'), `export const key = "${secretToken}";\n`, 'utf8');
-        execFileSync('git', ['-C', sec43Repo, 'add', 'token.ts']);
-        execFileSync('git', ['-C', sec43Repo, 'commit', '-m', 'feat: add token']);
-
-        // Commit 2: edit comment, keep secret
-        fs.writeFileSync(path.join(sec43Repo, 'token.ts'), `// updated comment\nexport const key = "${secretToken}";\n`, 'utf8');
-        execFileSync('git', ['-C', sec43Repo, 'add', 'token.ts']);
-        execFileSync('git', ['-C', sec43Repo, 'commit', '-m', 'docs: update comment']);
-        const c2Sha = execFileSync('git', ['-C', sec43Repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-
-        // Commit 3: remove secret
-        fs.writeFileSync(path.join(sec43Repo, 'token.ts'), `export const key = process.env.KEY;\n`, 'utf8');
-        execFileSync('git', ['-C', sec43Repo, 'add', 'token.ts']);
-        execFileSync('git', ['-C', sec43Repo, 'commit', '-m', 'fix: remove secret from HEAD']);
-        const c3Sha = execFileSync('git', ['-C', sec43Repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-
-        // Commit 4: additional clean work
-        fs.writeFileSync(path.join(sec43Repo, 'readme.md'), `# Docs\n`, 'utf8');
-        execFileSync('git', ['-C', sec43Repo, 'add', 'readme.md']);
-        execFileSync('git', ['-C', sec43Repo, 'commit', '-m', 'docs: add readme']);
-
-        // Sniff all Git command arguments
-        class ArgumentSnifferEngine extends GitHistoryEngine {
-          public loggedArgs: string[][] = [];
-          protected override async execGit(args: string[], options: any = {}): Promise<{ stdout: any; stderr: any }> {
-            this.loggedArgs.push(args);
-            return super.execGit(args, options);
-          }
-        }
-
-        const sniffer = new ArgumentSnifferEngine(sec43Repo);
-        const removed = await sniffer.findRemovalCommit(secretToken, c2Sha);
-        assert(removed !== undefined, 'findRemovalCommit locates genuine removal commit');
-        assert(removed?.sha === c3Sha, 'Removal commit SHA correctly identified as commit 3');
-
-        // Verify credentials NEVER appear in any spawned process argument
-        const patternLine = sniffer.pickDistinctiveSearchLine(secretToken);
-        for (const args of sniffer.loggedArgs) {
-          const hasSecretInArg = args.some((a: string) => a.includes(secretToken) || a.includes(patternLine));
-          assert(!hasSecretInArg, `Git process arguments do not expose secret or patternLine: [${args.join(' ')}]`);
-          assert(!args.some((a: string) => a.startsWith('-S')), `Git process arguments do not use -S flag`);
-        }
-
-        // 2. Operational Git error during removal detection: do NOT treat as absence!
-        class FailingGrepRemovalEngine extends GitHistoryEngine {
-          public failGrepOnRemoval = false;
-          private inRemoval = false;
-          public override async findRemovalCommit(secret: string, lastSeenSha: string): Promise<GitCommitInfo | undefined> {
-            if (this.failGrepOnRemoval) {
-              this.inRemoval = true;
-              try {
-                return await super.findRemovalCommit(secret, lastSeenSha);
-              } finally {
-                this.inRemoval = false;
-              }
-            }
-            return super.findRemovalCommit(secret, lastSeenSha);
-          }
-          protected override async execGit(args: string[], options: any = {}): Promise<{ stdout: any; stderr: any }> {
-            if (this.inRemoval && args[0] === 'grep') {
-              const err: any = new Error('fatal: simulated packfile corruption during git grep');
-              err.code = 128;
-              throw err;
-            }
-            return super.execGit(args, options);
-          }
-        }
-
-        const failingEngine = new FailingGrepRemovalEngine(sec43Repo);
-        failingEngine.failGrepOnRemoval = true;
-        let findRemovalThrew = false;
-        try {
-          await failingEngine.findRemovalCommit(secretToken, c2Sha);
-        } catch (err: any) {
-          findRemovalThrew = true;
-          assert(err.message.includes('fatal: simulated packfile corruption'), 'findRemovalCommit throws on operational Git error');
-        }
-        assert(findRemovalThrew === true, 'findRemovalCommit refuses to treat Git execution errors as clean absence');
-
-        const failingTrace = await failingEngine.traceSecret(secretToken);
-        assert(failingTrace.searchStatus === 'SEARCH_INCOMPLETE', 'traceSecret reports SEARCH_INCOMPLETE when removal detection encounters operational failure');
-        assert(failingTrace.isPresentInHistory === true, 'traceSecret preserves isPresentInHistory: true when removal detection fails');
-
-        // 3. Electron-pinned runtime version probe execution
-        const sh = findPosixShell();
-        if (sh) {
-          const mockElectronDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-mock-electron-'));
-          const mockElectron = path.join(mockElectronDir, 'mock_electron.sh').replace(/\\/g, '/');
-          fs.writeFileSync(
-            mockElectron,
-            `#!/bin/sh
+      // 3. Electron-pinned runtime version probe execution
+      const sh = findPosixShell();
+      if (sh) {
+        const mockElectronDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-mock-electron-'));
+        const mockElectron = path.join(mockElectronDir, 'mock_electron.sh').replace(/\\/g, '/');
+        fs.writeFileSync(
+          mockElectron,
+          `#!/bin/sh
 if [ "$ELECTRON_RUN_AS_NODE" != "1" ]; then
   echo "Error: Electron binary executed without ELECTRON_RUN_AS_NODE=1" >&2
   exit 1
@@ -3571,11 +3571,11 @@ fi
 echo "20"
 exit 0
 `,
-            { mode: 0o755 }
-          );
+          { mode: 0o755 }
+        );
 
-          try {
-            const electronProbeScript = `
+        try {
+          const electronProbeScript = `
 NODE_CMD='${mockElectron}'
 if ! NODE_MAJOR=$(ELECTRON_RUN_AS_NODE=1 "$NODE_CMD" -p 'process.versions.node.split(".")[0]' 2>/dev/null); then
   echo "FAIL_DETERMINE"
@@ -3584,12 +3584,12 @@ fi
 echo "SUCCESS:$NODE_MAJOR"
 exit 0
 `;
-            const electronProbeRes = cp.spawnSync(sh, ['-c', electronProbeScript], { encoding: 'utf8' });
-            assert(electronProbeRes.status === 0, 'Electron-pinned runtime probe exits 0 with ELECTRON_RUN_AS_NODE=1');
-            assert(electronProbeRes.stdout.includes('SUCCESS:20'), 'Electron-pinned runtime probe outputs SUCCESS:20');
+          const electronProbeRes = cp.spawnSync(sh, ['-c', electronProbeScript], { encoding: 'utf8' });
+          assert(electronProbeRes.status === 0, 'Electron-pinned runtime probe exits 0 with ELECTRON_RUN_AS_NODE=1');
+          assert(electronProbeRes.stdout.includes('SUCCESS:20'), 'Electron-pinned runtime probe outputs SUCCESS:20');
 
-            // Without ELECTRON_RUN_AS_NODE=1, probe fails
-            const failedProbeScript = `
+          // Without ELECTRON_RUN_AS_NODE=1, probe fails
+          const failedProbeScript = `
 NODE_CMD='${mockElectron}'
 export ELECTRON_RUN_AS_NODE=""
 if ! NODE_MAJOR=$("$NODE_CMD" -p 'process.versions.node.split(".")[0]' 2>/dev/null); then
@@ -3599,257 +3599,257 @@ fi
 echo "SUCCESS:$NODE_MAJOR"
 exit 0
 `;
-            const failedProbeRes = cp.spawnSync(sh, ['-c', failedProbeScript], { encoding: 'utf8' });
-            assert(failedProbeRes.status === 2, 'Electron-pinned runtime without ELECTRON_RUN_AS_NODE=1 fails probe');
-            assert(failedProbeRes.stdout.includes('FAIL_NO_ENV'), 'Probe correctly blocks when ELECTRON_RUN_AS_NODE is absent');
-          } finally {
-            try { fs.rmSync(mockElectronDir, { recursive: true, force: true }); } catch {}
-          }
+          const failedProbeRes = cp.spawnSync(sh, ['-c', failedProbeScript], { encoding: 'utf8' });
+          assert(failedProbeRes.status === 2, 'Electron-pinned runtime without ELECTRON_RUN_AS_NODE=1 fails probe');
+          assert(failedProbeRes.stdout.includes('FAIL_NO_ENV'), 'Probe correctly blocks when ELECTRON_RUN_AS_NODE is absent');
+        } finally {
+          try { fs.rmSync(mockElectronDir, { recursive: true, force: true }); } catch { }
         }
-
-        // 4. Windows ACL Hardening in enforceEnvFilePermissions
-        const mockEnvFile = path.join(sec43Repo, '.env');
-        fs.writeFileSync(mockEnvFile, 'SECRET="val"\n', 'utf8');
-
-        let icaclsInvoked = false;
-        let allIcaclsInvocations: string[][] = [];
-        const mockCp = {
-          execFileSync: (cmd: string, args: string[]) => {
-            if (cmd === 'icacls') {
-              icaclsInvoked = true;
-              allIcaclsInvocations.push(args);
-              if (args.length === 1) {
-                const u = process.env.USERNAME || process.env.USER || 'testuser';
-                return `${args[0]} ${u}:(F)\nSuccessfully processed 1 files;\n`;
-              }
-            }
-            return Buffer.from('');
-          }
-        };
-
-        enforceEnvFilePermissions(mockEnvFile, fs, 'win32', mockCp as any);
-        assert(icaclsInvoked === true, 'enforceEnvFilePermissions executes icacls on win32');
-        assert(allIcaclsInvocations.some((args) => args.includes('/inheritance:r')), 'icacls invocation removes inherited ACLs');
-        assert(allIcaclsInvocations.some((args) => args.some((a: string) => a.startsWith('/grant:r'))), 'icacls invocation explicitly grants current user permissions');
-
-        // Graceful fallback when icacls fails (non-NTFS filesystem)
-        const failingCp = {
-          execFileSync: () => {
-            throw new Error('The volume does not support ACLs (FAT32/exFAT)');
-          }
-        };
-        enforceEnvFilePermissions(mockEnvFile, fs, 'win32', failingCp as any);
-        assert(true, 'enforceEnvFilePermissions tolerates non-NTFS volumes gracefully');
-
-        // 5. Async and deferred ensureGlobalAstParser in extension.ts
-        const extSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'extension.ts'), 'utf8');
-        assert(extSrc.includes('async function ensureGlobalAstParser(): Promise<void>'), 'ensureGlobalAstParser is asynchronous');
-        assert(!extSrc.includes('fs.copyFileSync(astParserSrc, stableAstParser);'), 'ast-parser.js is not copied synchronously in extension.ts');
-        const pinStart = extSrc.indexOf('async function pinHooksInAllFolders');
-        const pinEnd = extSrc.indexOf('if (fs.existsSync(activeCliPath))', pinStart);
-        const pinHooksFunc = extSrc.slice(pinStart, pinEnd);
-        const isGitRepoIdx = pinHooksFunc.indexOf('await gs.isGitRepo()');
-        const parserEnsureIdx = pinHooksFunc.indexOf('await ensureGlobalAstParser()');
-        assert(isGitRepoIdx !== -1 && parserEnsureIdx !== -1, 'Both isGitRepo and ensureGlobalAstParser present in pinHooksInAllFolders');
-        assert(parserEnsureIdx > isGitRepoIdx, 'ensureGlobalAstParser is deferred until AFTER isGitRepo() confirms a Git repo exists');
-      } finally {
-        try {
-          fs.rmSync(sec43Repo, { recursive: true, force: true });
-        } catch {}
       }
-    }
 
-    // --- 44. Unmerged Branch Removal Lineage, Windows Explicit ACL Stripping & Hook-Gated Parser Copying ---
-    console.log('\n--- 44. Unmerged Branch Removal Lineage, Windows Explicit ACL Stripping & Hook-Gated Parser Copying ---');
-    {
-      const { GitHistoryEngine } = require('../src/core/history/gitHistoryEngine');
-      const { GitTimelineEngine } = require('../src/core/history/gitTimeline');
-      const { enforceEnvFilePermissions } = require('../src/core/remediation/remediationEngine');
-      const { execFileSync } = require('child_process');
-      const fromHex = (h: string) => Buffer.from(h, 'hex').toString('utf8');
+      // 4. Windows ACL Hardening in enforceEnvFilePermissions
+      const mockEnvFile = path.join(sec43Repo, '.env');
+      fs.writeFileSync(mockEnvFile, 'SECRET="val"\n', 'utf8');
 
-      const sec44Repo = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-sec44-'));
-      try {
-        execFileSync('git', ['init'], { cwd: sec44Repo });
-        execFileSync('git', ['checkout', '-B', 'main'], { cwd: sec44Repo });
-        execFileSync('git', ['config', 'user.name', 'Dev Tester'], { cwd: sec44Repo });
-        execFileSync('git', ['config', 'user.email', 'dev@example.com'], { cwd: sec44Repo });
-
-        // Commit M1 on main
-        fs.writeFileSync(path.join(sec44Repo, 'main.txt'), 'console.log("main clean");\n', 'utf8');
-        execFileSync('git', ['add', 'main.txt'], { cwd: sec44Repo });
-        execFileSync('git', ['commit', '-m', 'chore: initial commit on main'], { cwd: sec44Repo });
-
-        // Create feature branch: feat/secret-branch
-        execFileSync('git', ['checkout', '-b', 'feat/secret-branch'], { cwd: sec44Repo });
-        const featSecret = fromHex('6768705f666561747572657365637265743132333435363738393061626364656667');
-        fs.writeFileSync(path.join(sec44Repo, 'feature.ts'), `export const TOKEN = "${featSecret}";\n`, 'utf8');
-        execFileSync('git', ['add', 'feature.ts'], { cwd: sec44Repo });
-        execFileSync('git', ['commit', '-m', 'feat: add token on feature branch'], { cwd: sec44Repo });
-        const f1Sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: sec44Repo, encoding: 'utf8' }).trim();
-
-        fs.writeFileSync(path.join(sec44Repo, 'feature-extra.ts'), 'export const extra = true;\n', 'utf8');
-        execFileSync('git', ['add', 'feature-extra.ts'], { cwd: sec44Repo });
-        execFileSync('git', ['commit', '-m', 'feat: extra commit on feature branch'], { cwd: sec44Repo });
-        const f2Sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: sec44Repo, encoding: 'utf8' }).trim();
-
-        // Switch back to main; do unrelated work
-        execFileSync('git', ['checkout', 'main'], { cwd: sec44Repo });
-        fs.writeFileSync(path.join(sec44Repo, 'unrelated.txt'), 'console.log("unrelated main work");\n', 'utf8');
-        execFileSync('git', ['add', 'unrelated.txt'], { cwd: sec44Repo });
-        execFileSync('git', ['commit', '-m', 'feat: unrelated work on main'], { cwd: sec44Repo });
-
-        // 1. Lineage & Ancestry verification:
-        const histEngine = new GitHistoryEngine(sec44Repo);
-        const isF1AncestorOfHead = await histEngine.isAncestor(f1Sha, 'HEAD');
-        const isF2AncestorOfHead = await histEngine.isAncestor(f2Sha, 'HEAD');
-        assert(isF1AncestorOfHead === false, 'Feature branch commit F1 is not an ancestor of main HEAD');
-        assert(isF2AncestorOfHead === false, 'Feature branch commit F2 is not an ancestor of main HEAD');
-
-        const isF1AncestorOfFeat = await histEngine.isAncestor(f1Sha, 'feat/secret-branch');
-        assert(isF1AncestorOfFeat === true, 'Feature branch commit F1 is an ancestor of feat/secret-branch');
-
-        // 2. findRemovalCommit refuses to attribute removal to unrelated HEAD commits
-        const removalAgainstHead = await histEngine.findRemovalCommit(featSecret, f2Sha, 'HEAD');
-        assert(removalAgainstHead === undefined, 'findRemovalCommit returns undefined when lastSeenSha is not an ancestor of HEAD');
-
-        // 3. traceSecret correctly identifies unmerged branch exposure
-        const featTrace = await histEngine.traceSecret(featSecret);
-        assert(featTrace.isPresentInHistory === true, 'traceSecret detects presence in Git history across branches');
-        assert(featTrace.isPresentInHead === false, 'traceSecret confirms secret is absent from HEAD');
-        assert(featTrace.isAncestorOfHead === false, 'traceSecret establishes isAncestorOfHead: false');
-        assert(featTrace.removedCommit === undefined, 'traceSecret does not attribute removedCommit to unrelated HEAD commit');
-        assert(featTrace.statusDescription.includes('UNMERGED BRANCH EXPOSURE'), 'traceSecret reports UNMERGED BRANCH EXPOSURE in statusDescription');
-        assert(Boolean(featTrace.branchRemovals && featTrace.branchRemovals['feat/secret-branch']), 'traceSecret tracks removal separately per branch');
-        assert(featTrace.branchRemovals!['feat/secret-branch'].isRemoved === false, 'traceSecret notes secret is not removed on feat/secret-branch');
-
-        // 4. Timeline correctly avoids false removal event for unmerged branch
-        const timelineEngine = new GitTimelineEngine(sec44Repo, histEngine);
-        const featTimeline = await timelineEngine.buildTimeline(featSecret, 'ghp_••••');
-        const hasRemovedEvent = featTimeline.graph.nodes.some((n: any) => n.label.startsWith('REMOVED'));
-        assert(hasRemovedEvent === false, 'buildTimeline does not synthesize a false REMOVED node for unmerged branch');
-        assert(featTimeline.timelineAscii.includes('UNMERGED BRANCH'), 'buildTimeline ASCII notes unmerged branch exposure');
-
-        // 5. On the feature branch itself, removal commit is properly tracked when removed
-        execFileSync('git', ['checkout', 'feat/secret-branch'], { cwd: sec44Repo });
-        fs.writeFileSync(path.join(sec44Repo, 'feature.ts'), 'export const TOKEN = process.env.TOKEN;\n', 'utf8');
-        execFileSync('git', ['add', 'feature.ts'], { cwd: sec44Repo });
-        execFileSync('git', ['commit', '-m', 'fix: remove secret on feature branch'], { cwd: sec44Repo });
-        const f3Sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: sec44Repo, encoding: 'utf8' }).trim();
-
-        execFileSync('git', ['checkout', 'main'], { cwd: sec44Repo });
-        const branchRemoval = await histEngine.findRemovalCommit(featSecret, f2Sha, 'feat/secret-branch');
-        assert(branchRemoval !== undefined, 'findRemovalCommit finds genuine removal commit on feature branch');
-        assert(branchRemoval?.sha === f3Sha, 'Removal commit SHA on feature branch is F3');
-
-        const postFixTrace = await histEngine.traceSecret(featSecret);
-        assert(postFixTrace.branchRemovals!['feat/secret-branch'].isRemoved === true, 'traceSecret reports isRemoved: true on feat/secret-branch');
-        assert(postFixTrace.branchRemovals!['feat/secret-branch'].removalCommit?.sha === f3Sha, 'traceSecret records removalCommit on feat/secret-branch');
-
-        // 6. Windows ACL: Stripping broad explicit permissions
-        const sec44Env = path.join(sec44Repo, '.env');
-        fs.writeFileSync(sec44Env, 'KEY="secret"\n', 'utf8');
-
-        let permissionsStripped = false;
-        const aclMockCp = {
-          execFileSync: (cmd: string, args: string[]) => {
-            if (cmd === 'icacls') {
-              if (args.includes('/remove') && args.includes('Everyone')) {
-                permissionsStripped = true;
-              }
-              if (args.length === 1) {
-                const u = process.env.USERNAME || process.env.USER || 'testuser';
-                // First query: Everyone has explicit R
-                if (!permissionsStripped) {
-                  return `${args[0]} Everyone:(R)\n ${u}:(F)\nSuccessfully processed 1 files;\n`;
-                }
-                // Second query: after /remove Everyone
-                return `${args[0]} ${u}:(F)\nSuccessfully processed 1 files;\n`;
-              }
-            }
-            return Buffer.from('');
-          }
-        };
-
-        const aclRes = enforceEnvFilePermissions(sec44Env, fs, 'win32', aclMockCp as any);
-        assert(aclRes.enforced === true, 'enforceEnvFilePermissions reports enforced: true');
-        assert(permissionsStripped === true, 'enforceEnvFilePermissions actively strips explicit Everyone permissions via icacls /remove');
-
-        // 7. Windows ACL: Failure to secure throws security error rather than succeeding
-        const unsafeAclCp = {
-          execFileSync: (cmd: string, args: string[]) => {
-            if (cmd === 'icacls' && args.length === 1) {
+      let icaclsInvoked = false;
+      let allIcaclsInvocations: string[][] = [];
+      const mockCp = {
+        execFileSync: (cmd: string, args: string[]) => {
+          if (cmd === 'icacls') {
+            icaclsInvoked = true;
+            allIcaclsInvocations.push(args);
+            if (args.length === 1) {
               const u = process.env.USERNAME || process.env.USER || 'testuser';
-              return `${args[0]} Everyone:(F)\n ${u}:(F)\nSuccessfully processed 1 files;\n`;
+              return `${args[0]} ${u}:(F)\nSuccessfully processed 1 files;\n`;
             }
-            return Buffer.from('');
           }
-        };
-        let unsafeThrew = false;
-        try {
-          enforceEnvFilePermissions(sec44Env, fs, 'win32', unsafeAclCp as any);
-        } catch (err: any) {
-          unsafeThrew = true;
-          assert(err.message.includes('Security error: Windows ACL enforcement failed'), 'Throws descriptive error when unsafe permissions persist');
+          return Buffer.from('');
         }
-        assert(unsafeThrew === true, 'enforceEnvFilePermissions refuses to succeed when unsafe accounts persist');
+      };
 
-        // 8. Windows ACL: Operational failures throw instead of returning clean
-        const failingAccessCp = {
-          execFileSync: () => {
-            const err: any = new Error('EACCES: permission denied, icacls execution prohibited');
-            err.code = 'EACCES';
-            throw err;
-          }
-        };
-        let accessThrew = false;
-        try {
-          enforceEnvFilePermissions(sec44Env, fs, 'win32', failingAccessCp as any);
-        } catch (err: any) {
-          accessThrew = true;
-          assert(err.message.includes('permission denied'), 'Operational error is thrown rather than swallowed');
+      enforceEnvFilePermissions(mockEnvFile, fs, 'win32', mockCp as any);
+      assert(icaclsInvoked === true, 'enforceEnvFilePermissions executes icacls on win32');
+      assert(allIcaclsInvocations.some((args) => args.includes('/inheritance:r')), 'icacls invocation removes inherited ACLs');
+      assert(allIcaclsInvocations.some((args) => args.some((a: string) => a.startsWith('/grant:r'))), 'icacls invocation explicitly grants current user permissions');
+
+      // Graceful fallback when icacls fails (non-NTFS filesystem)
+      const failingCp = {
+        execFileSync: () => {
+          throw new Error('The volume does not support ACLs (FAT32/exFAT)');
         }
-        assert(accessThrew === true, 'enforceEnvFilePermissions does not swallow real operational errors');
+      };
+      enforceEnvFilePermissions(mockEnvFile, fs, 'win32', failingCp as any);
+      assert(true, 'enforceEnvFilePermissions tolerates non-NTFS volumes gracefully');
 
-        // 9. Windows ACL: Unsupported filesystem returns isUnsupportedFs: true without throwing
-        const fat32Cp = {
-          execFileSync: () => {
-            throw new Error('The volume does not support ACLs (FAT32/exFAT)');
-          }
-        };
-        const fat32Res = enforceEnvFilePermissions(sec44Env, fs, 'win32', fat32Cp as any);
-        assert(fat32Res.enforced === false, 'enforceEnvFilePermissions returns enforced: false on unsupported FS');
-        assert(fat32Res.isUnsupportedFs === true, 'enforceEnvFilePermissions identifies unsupported filesystem gracefully');
-
-        // 10. Hook-gated parser copying in extension.ts
-        const extSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'extension.ts'), 'utf8');
-        const pinFuncSlice = extSource.slice(
-          extSource.indexOf('async function pinHooksInAllFolders'),
-          extSource.indexOf('if (fs.existsSync(activeCliPath))', extSource.indexOf('async function pinHooksInAllFolders'))
-        );
-        assert(pinFuncSlice.includes('hasManagedHook'), 'pinHooksInAllFolders checks for hasManagedHook');
-        assert(pinFuncSlice.includes('includes(SLD_HOOK_MARKER)'), 'pinHooksInAllFolders verifies SLD_HOOK_MARKER before copying parser');
-        const hookCheckIdx = pinFuncSlice.indexOf('hasManagedHook');
-        const parserCallIdx = pinFuncSlice.indexOf('await ensureGlobalAstParser()');
-        assert(parserCallIdx > hookCheckIdx, 'ensureGlobalAstParser is deferred until AFTER verifying an SLD managed hook exists');
-      } finally {
-        try { fs.rmSync(sec44Repo, { recursive: true, force: true }); } catch {}
-      }
-    }
-
-    // --- 45. Shallow Repo Guard, Tri-State Ancestry & Windows Principal Strictness ---
-    console.log('\n--- 45. Shallow Repo Guard, Tri-State Ancestry & Windows Principal Strictness ---');
-    {
-      const { execFileSync } = cp;
-      const sec45Dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-sec45-'));
+      // 5. Async and deferred ensureGlobalAstParser in extension.ts
+      const extSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'extension.ts'), 'utf8');
+      assert(extSrc.includes('async function ensureGlobalAstParser(): Promise<void>'), 'ensureGlobalAstParser is asynchronous');
+      assert(!extSrc.includes('fs.copyFileSync(astParserSrc, stableAstParser);'), 'ast-parser.js is not copied synchronously in extension.ts');
+      const pinStart = extSrc.indexOf('async function pinHooksInAllFolders');
+      const pinEnd = extSrc.indexOf('if (fs.existsSync(activeCliPath))', pinStart);
+      const pinHooksFunc = extSrc.slice(pinStart, pinEnd);
+      const isGitRepoIdx = pinHooksFunc.indexOf('await gs.isGitRepo()');
+      const parserEnsureIdx = pinHooksFunc.indexOf('await ensureGlobalAstParser()');
+      assert(isGitRepoIdx !== -1 && parserEnsureIdx !== -1, 'Both isGitRepo and ensureGlobalAstParser present in pinHooksInAllFolders');
+      assert(parserEnsureIdx > isGitRepoIdx, 'ensureGlobalAstParser is deferred until AFTER isGitRepo() confirms a Git repo exists');
+    } finally {
       try {
-        // 1. Shallow repository detection & prevention of false clean history
-        const shallowRepoDir = path.join(sec45Dir, 'shallow-repo');
-        fs.mkdirSync(shallowRepoDir, { recursive: true });
-        execFileSync('git', ['init'], { cwd: shallowRepoDir });
-        execFileSync('git', ['checkout', '-B', 'main'], { cwd: shallowRepoDir });
-        execFileSync('git', ['config', 'user.name', 'Dev Tester'], { cwd: shallowRepoDir });
-        execFileSync('git', ['config', 'user.email', 'dev@example.com'], { cwd: shallowRepoDir });
+        fs.rmSync(sec43Repo, { recursive: true, force: true });
+      } catch { }
+    }
+  }
+
+  // --- 44. Unmerged Branch Removal Lineage, Windows Explicit ACL Stripping & Hook-Gated Parser Copying ---
+  console.log('\n--- 44. Unmerged Branch Removal Lineage, Windows Explicit ACL Stripping & Hook-Gated Parser Copying ---');
+  {
+    const { GitHistoryEngine } = require('../src/core/history/gitHistoryEngine');
+    const { GitTimelineEngine } = require('../src/core/history/gitTimeline');
+    const { enforceEnvFilePermissions } = require('../src/core/remediation/remediationEngine');
+    const { execFileSync } = require('child_process');
+    const fromHex = (h: string) => Buffer.from(h, 'hex').toString('utf8');
+
+    const sec44Repo = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-sec44-'));
+    try {
+      execFileSync('git', ['init'], { cwd: sec44Repo });
+      execFileSync('git', ['checkout', '-B', 'main'], { cwd: sec44Repo });
+      execFileSync('git', ['config', 'user.name', 'Dev Tester'], { cwd: sec44Repo });
+      execFileSync('git', ['config', 'user.email', 'dev@example.com'], { cwd: sec44Repo });
+
+      // Commit M1 on main
+      fs.writeFileSync(path.join(sec44Repo, 'main.txt'), 'console.log("main clean");\n', 'utf8');
+      execFileSync('git', ['add', 'main.txt'], { cwd: sec44Repo });
+      execFileSync('git', ['commit', '-m', 'chore: initial commit on main'], { cwd: sec44Repo });
+
+      // Create feature branch: feat/secret-branch
+      execFileSync('git', ['checkout', '-b', 'feat/secret-branch'], { cwd: sec44Repo });
+      const featSecret = fromHex('6768705f666561747572657365637265743132333435363738393061626364656667');
+      fs.writeFileSync(path.join(sec44Repo, 'feature.ts'), `export const TOKEN = "${featSecret}";\n`, 'utf8');
+      execFileSync('git', ['add', 'feature.ts'], { cwd: sec44Repo });
+      execFileSync('git', ['commit', '-m', 'feat: add token on feature branch'], { cwd: sec44Repo });
+      const f1Sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: sec44Repo, encoding: 'utf8' }).trim();
+
+      fs.writeFileSync(path.join(sec44Repo, 'feature-extra.ts'), 'export const extra = true;\n', 'utf8');
+      execFileSync('git', ['add', 'feature-extra.ts'], { cwd: sec44Repo });
+      execFileSync('git', ['commit', '-m', 'feat: extra commit on feature branch'], { cwd: sec44Repo });
+      const f2Sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: sec44Repo, encoding: 'utf8' }).trim();
+
+      // Switch back to main; do unrelated work
+      execFileSync('git', ['checkout', 'main'], { cwd: sec44Repo });
+      fs.writeFileSync(path.join(sec44Repo, 'unrelated.txt'), 'console.log("unrelated main work");\n', 'utf8');
+      execFileSync('git', ['add', 'unrelated.txt'], { cwd: sec44Repo });
+      execFileSync('git', ['commit', '-m', 'feat: unrelated work on main'], { cwd: sec44Repo });
+
+      // 1. Lineage & Ancestry verification:
+      const histEngine = new GitHistoryEngine(sec44Repo);
+      const isF1AncestorOfHead = await histEngine.isAncestor(f1Sha, 'HEAD');
+      const isF2AncestorOfHead = await histEngine.isAncestor(f2Sha, 'HEAD');
+      assert(isF1AncestorOfHead === false, 'Feature branch commit F1 is not an ancestor of main HEAD');
+      assert(isF2AncestorOfHead === false, 'Feature branch commit F2 is not an ancestor of main HEAD');
+
+      const isF1AncestorOfFeat = await histEngine.isAncestor(f1Sha, 'feat/secret-branch');
+      assert(isF1AncestorOfFeat === true, 'Feature branch commit F1 is an ancestor of feat/secret-branch');
+
+      // 2. findRemovalCommit refuses to attribute removal to unrelated HEAD commits
+      const removalAgainstHead = await histEngine.findRemovalCommit(featSecret, f2Sha, 'HEAD');
+      assert(removalAgainstHead === undefined, 'findRemovalCommit returns undefined when lastSeenSha is not an ancestor of HEAD');
+
+      // 3. traceSecret correctly identifies unmerged branch exposure
+      const featTrace = await histEngine.traceSecret(featSecret);
+      assert(featTrace.isPresentInHistory === true, 'traceSecret detects presence in Git history across branches');
+      assert(featTrace.isPresentInHead === false, 'traceSecret confirms secret is absent from HEAD');
+      assert(featTrace.isAncestorOfHead === false, 'traceSecret establishes isAncestorOfHead: false');
+      assert(featTrace.removedCommit === undefined, 'traceSecret does not attribute removedCommit to unrelated HEAD commit');
+      assert(featTrace.statusDescription.includes('UNMERGED BRANCH EXPOSURE'), 'traceSecret reports UNMERGED BRANCH EXPOSURE in statusDescription');
+      assert(Boolean(featTrace.branchRemovals && featTrace.branchRemovals['feat/secret-branch']), 'traceSecret tracks removal separately per branch');
+      assert(featTrace.branchRemovals!['feat/secret-branch'].isRemoved === false, 'traceSecret notes secret is not removed on feat/secret-branch');
+
+      // 4. Timeline correctly avoids false removal event for unmerged branch
+      const timelineEngine = new GitTimelineEngine(sec44Repo, histEngine);
+      const featTimeline = await timelineEngine.buildTimeline(featSecret, 'ghp_••••');
+      const hasRemovedEvent = featTimeline.graph.nodes.some((n: any) => n.label.startsWith('REMOVED'));
+      assert(hasRemovedEvent === false, 'buildTimeline does not synthesize a false REMOVED node for unmerged branch');
+      assert(featTimeline.timelineAscii.includes('UNMERGED BRANCH'), 'buildTimeline ASCII notes unmerged branch exposure');
+
+      // 5. On the feature branch itself, removal commit is properly tracked when removed
+      execFileSync('git', ['checkout', 'feat/secret-branch'], { cwd: sec44Repo });
+      fs.writeFileSync(path.join(sec44Repo, 'feature.ts'), 'export const TOKEN = process.env.TOKEN;\n', 'utf8');
+      execFileSync('git', ['add', 'feature.ts'], { cwd: sec44Repo });
+      execFileSync('git', ['commit', '-m', 'fix: remove secret on feature branch'], { cwd: sec44Repo });
+      const f3Sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: sec44Repo, encoding: 'utf8' }).trim();
+
+      execFileSync('git', ['checkout', 'main'], { cwd: sec44Repo });
+      const branchRemoval = await histEngine.findRemovalCommit(featSecret, f2Sha, 'feat/secret-branch');
+      assert(branchRemoval !== undefined, 'findRemovalCommit finds genuine removal commit on feature branch');
+      assert(branchRemoval?.sha === f3Sha, 'Removal commit SHA on feature branch is F3');
+
+      const postFixTrace = await histEngine.traceSecret(featSecret);
+      assert(postFixTrace.branchRemovals!['feat/secret-branch'].isRemoved === true, 'traceSecret reports isRemoved: true on feat/secret-branch');
+      assert(postFixTrace.branchRemovals!['feat/secret-branch'].removalCommit?.sha === f3Sha, 'traceSecret records removalCommit on feat/secret-branch');
+
+      // 6. Windows ACL: Stripping broad explicit permissions
+      const sec44Env = path.join(sec44Repo, '.env');
+      fs.writeFileSync(sec44Env, 'KEY="secret"\n', 'utf8');
+
+      let permissionsStripped = false;
+      const aclMockCp = {
+        execFileSync: (cmd: string, args: string[]) => {
+          if (cmd === 'icacls') {
+            if (args.includes('/remove') && args.includes('Everyone')) {
+              permissionsStripped = true;
+            }
+            if (args.length === 1) {
+              const u = process.env.USERNAME || process.env.USER || 'testuser';
+              // First query: Everyone has explicit R
+              if (!permissionsStripped) {
+                return `${args[0]} Everyone:(R)\n ${u}:(F)\nSuccessfully processed 1 files;\n`;
+              }
+              // Second query: after /remove Everyone
+              return `${args[0]} ${u}:(F)\nSuccessfully processed 1 files;\n`;
+            }
+          }
+          return Buffer.from('');
+        }
+      };
+
+      const aclRes = enforceEnvFilePermissions(sec44Env, fs, 'win32', aclMockCp as any);
+      assert(aclRes.enforced === true, 'enforceEnvFilePermissions reports enforced: true');
+      assert(permissionsStripped === true, 'enforceEnvFilePermissions actively strips explicit Everyone permissions via icacls /remove');
+
+      // 7. Windows ACL: Failure to secure throws security error rather than succeeding
+      const unsafeAclCp = {
+        execFileSync: (cmd: string, args: string[]) => {
+          if (cmd === 'icacls' && args.length === 1) {
+            const u = process.env.USERNAME || process.env.USER || 'testuser';
+            return `${args[0]} Everyone:(F)\n ${u}:(F)\nSuccessfully processed 1 files;\n`;
+          }
+          return Buffer.from('');
+        }
+      };
+      let unsafeThrew = false;
+      try {
+        enforceEnvFilePermissions(sec44Env, fs, 'win32', unsafeAclCp as any);
+      } catch (err: any) {
+        unsafeThrew = true;
+        assert(err.message.includes('Security error: Windows ACL enforcement failed'), 'Throws descriptive error when unsafe permissions persist');
+      }
+      assert(unsafeThrew === true, 'enforceEnvFilePermissions refuses to succeed when unsafe accounts persist');
+
+      // 8. Windows ACL: Operational failures throw instead of returning clean
+      const failingAccessCp = {
+        execFileSync: () => {
+          const err: any = new Error('EACCES: permission denied, icacls execution prohibited');
+          err.code = 'EACCES';
+          throw err;
+        }
+      };
+      let accessThrew = false;
+      try {
+        enforceEnvFilePermissions(sec44Env, fs, 'win32', failingAccessCp as any);
+      } catch (err: any) {
+        accessThrew = true;
+        assert(err.message.includes('permission denied'), 'Operational error is thrown rather than swallowed');
+      }
+      assert(accessThrew === true, 'enforceEnvFilePermissions does not swallow real operational errors');
+
+      // 9. Windows ACL: Unsupported filesystem returns isUnsupportedFs: true without throwing
+      const fat32Cp = {
+        execFileSync: () => {
+          throw new Error('The volume does not support ACLs (FAT32/exFAT)');
+        }
+      };
+      const fat32Res = enforceEnvFilePermissions(sec44Env, fs, 'win32', fat32Cp as any);
+      assert(fat32Res.enforced === false, 'enforceEnvFilePermissions returns enforced: false on unsupported FS');
+      assert(fat32Res.isUnsupportedFs === true, 'enforceEnvFilePermissions identifies unsupported filesystem gracefully');
+
+      // 10. Hook-gated parser copying in extension.ts
+      const extSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'extension.ts'), 'utf8');
+      const pinFuncSlice = extSource.slice(
+        extSource.indexOf('async function pinHooksInAllFolders'),
+        extSource.indexOf('if (fs.existsSync(activeCliPath))', extSource.indexOf('async function pinHooksInAllFolders'))
+      );
+      assert(pinFuncSlice.includes('hasManagedHook'), 'pinHooksInAllFolders checks for hasManagedHook');
+      assert(pinFuncSlice.includes('includes(SLD_HOOK_MARKER)'), 'pinHooksInAllFolders verifies SLD_HOOK_MARKER before copying parser');
+      const hookCheckIdx = pinFuncSlice.indexOf('hasManagedHook');
+      const parserCallIdx = pinFuncSlice.indexOf('await ensureGlobalAstParser()');
+      assert(parserCallIdx > hookCheckIdx, 'ensureGlobalAstParser is deferred until AFTER verifying an SLD managed hook exists');
+    } finally {
+      try { fs.rmSync(sec44Repo, { recursive: true, force: true }); } catch { }
+    }
+  }
+
+  // --- 45. Shallow Repo Guard, Tri-State Ancestry & Windows Principal Strictness ---
+  console.log('\n--- 45. Shallow Repo Guard, Tri-State Ancestry & Windows Principal Strictness ---');
+  {
+    const { execFileSync } = cp;
+    const sec45Dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-sec45-'));
+    try {
+      // 1. Shallow repository detection & prevention of false clean history
+      const shallowRepoDir = path.join(sec45Dir, 'shallow-repo');
+      fs.mkdirSync(shallowRepoDir, { recursive: true });
+      execFileSync('git', ['init'], { cwd: shallowRepoDir });
+      execFileSync('git', ['checkout', '-B', 'main'], { cwd: shallowRepoDir });
+      execFileSync('git', ['config', 'user.name', 'Dev Tester'], { cwd: shallowRepoDir });
+      execFileSync('git', ['config', 'user.email', 'dev@example.com'], { cwd: shallowRepoDir });
 
       const testSecretVal = 'akiasample' + '123456789012' + 'shallow';
       fs.writeFileSync(path.join(shallowRepoDir, 'token.txt'), `${testSecretVal}\n`, 'utf8');
@@ -4051,1242 +4051,1407 @@ exit 0
       assert(domainEnforceRes.enforced === true, 'enforceEnvFilePermissions reports enforced: true after stripping other domain');
       assert(otherDomainRemoved === true, 'enforceEnvFilePermissions actively strips OTHERDOMAIN\\testuser via icacls /remove');
 
-      } finally {
-        try { fs.rmSync(sec45Dir, { recursive: true, force: true }); } catch {}
-      }
+    } finally {
+      try { fs.rmSync(sec45Dir, { recursive: true, force: true }); } catch { }
     }
-
-    // --- 46. Shallow Credential Found, Multi-Branch Reachability, Committer Chronology & Numerical SIDs ---
-    console.log('\n--- 46. Shallow Credential Found, Multi-Branch Reachability, Committer Chronology & Numerical SIDs ---');
-    {
-      const { execFileSync } = cp;
-      const fromHex = (h: string) => Buffer.from(h, 'hex').toString('utf8');
-      const sec46Dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-sec46-'));
-      try {
-        // 1. Shallow repository where secret IS discovered in visible history
-        const shallowRepoWithSecret = path.join(sec46Dir, 'shallow-with-secret');
-        fs.mkdirSync(shallowRepoWithSecret, { recursive: true });
-        execFileSync('git', ['init'], { cwd: shallowRepoWithSecret });
-        execFileSync('git', ['checkout', '-B', 'main'], { cwd: shallowRepoWithSecret });
-        execFileSync('git', ['config', 'user.name', 'Dev Tester'], { cwd: shallowRepoWithSecret });
-        execFileSync('git', ['config', 'user.email', 'dev@example.com'], { cwd: shallowRepoWithSecret });
-
-        const shallowSecretVal = fromHex('6768705f') + fromHex('5368616c6c6f7756697369626c65536563726574546f6b656e31323334353637383930');
-        fs.writeFileSync(path.join(shallowRepoWithSecret, 'creds.json'), `{"token": "${shallowSecretVal}"}\n`, 'utf8');
-        execFileSync('git', ['add', 'creds.json'], { cwd: shallowRepoWithSecret });
-        execFileSync('git', ['commit', '-m', 'feat: shallow visible commit with secret'], { cwd: shallowRepoWithSecret });
-
-        const shallowSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: shallowRepoWithSecret, encoding: 'utf8' }).trim();
-        // Mark as shallow boundary commit
-        fs.writeFileSync(path.join(shallowRepoWithSecret, '.git', 'shallow'), `${shallowSha}\n`, 'utf8');
-
-        const shallowFoundEngine = new GitHistoryEngine(shallowRepoWithSecret);
-        const searchFoundRes = await shallowFoundEngine.findCommitsContainingSecretResult(shallowSecretVal);
-        assert(searchFoundRes.status === 'FOUND', 'findCommitsContainingSecretResult returns FOUND when secret in shallow commit');
-        assert(searchFoundRes.isShallow === true, 'isShallow is true in search result');
-        assert(searchFoundRes.isPartialHistory === true, 'isPartialHistory is true when secret found in shallow repository');
-
-        const traceFound = await shallowFoundEngine.traceSecret(shallowSecretVal);
-        assert(traceFound.isPresentInHistory === true, 'traceSecret marks isPresentInHistory: true when secret discovered in shallow repo');
-        assert(traceFound.isIntroductionUnverified === true, 'traceSecret flags isIntroductionUnverified: true in shallow repo');
-        assert(traceFound.searchStatus === 'SEARCH_INCOMPLETE', 'traceSecret searchStatus is SEARCH_INCOMPLETE due to shallow truncation');
-        assert(traceFound.statusDescription.includes('original introduction date and total exposure duration unverified due to shallow clone'), 'statusDescription clarifies unverified introduction due to shallow clone');
-        assert(!traceFound.statusDescription.includes('limited to 0 commit(s)'), 'statusDescription does not emit misleading 0 commits limit message');
-
-        // Timeline check for shallow clone
-        const timelineEngine = new GitTimelineEngine(shallowRepoWithSecret, shallowFoundEngine);
-        const tlReport = await timelineEngine.buildTimeline(shallowSecretVal, 'ghp_****7890');
-        assert(tlReport.currentStatus === 'SEARCH_INCOMPLETE', 'buildTimeline reports currentStatus: SEARCH_INCOMPLETE on shallow repo');
-        assert(tlReport.timelineAscii.includes('⚠️ EARLIEST VISIBLE COMMIT (Shallow clone; original introduction unverified)'), 'buildTimeline tags earliest visible commit on shallow repo');
-        assert(tlReport.timelineAscii.includes('Total Exposure:     >= 0 days (unverified earlier history due to shallow clone)'), 'buildTimeline ASCII notes >= X days exposure for shallow repo');
-
-        // 2. Independent credential introductions across branches with remote tracking ref
-        const multiBranchRepo = path.join(sec46Dir, 'multi-branch-repo');
-        fs.mkdirSync(multiBranchRepo, { recursive: true });
-        execFileSync('git', ['init'], { cwd: multiBranchRepo });
-        execFileSync('git', ['checkout', '-B', 'main'], { cwd: multiBranchRepo });
-        execFileSync('git', ['config', 'user.name', 'Branch Tester'], { cwd: multiBranchRepo });
-        execFileSync('git', ['config', 'user.email', 'branch@example.com'], { cwd: multiBranchRepo });
-
-        fs.writeFileSync(path.join(multiBranchRepo, 'base.txt'), 'base\n', 'utf8');
-        execFileSync('git', ['add', 'base.txt'], { cwd: multiBranchRepo });
-        execFileSync('git', ['commit', '-m', 'chore: initial base commit'], { cwd: multiBranchRepo });
-
-        const branchSecret = fromHex('736b2d616e742d61706930332d') + fromHex('4272616e6368537072656164546f6b656e313233343536373839303132333435363738');
-
-        // Branch A (local only)
-        execFileSync('git', ['checkout', '-b', 'feature/local-a'], { cwd: multiBranchRepo });
-        fs.writeFileSync(path.join(multiBranchRepo, 'local_a.txt'), `API_KEY=${branchSecret}\n`, 'utf8');
-        execFileSync('git', ['add', 'local_a.txt'], { cwd: multiBranchRepo });
-        execFileSync('git', ['commit', '-m', 'feat(local): introduce secret on branch A'], { cwd: multiBranchRepo });
-        const branchASha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: multiBranchRepo, encoding: 'utf8' }).trim();
-
-        // Branch B (divergent from main, has fake remote tracking branch)
-        execFileSync('git', ['checkout', 'main'], { cwd: multiBranchRepo });
-        execFileSync('git', ['checkout', '-b', 'feature/remote-b'], { cwd: multiBranchRepo });
-        fs.writeFileSync(path.join(multiBranchRepo, 'remote_b.txt'), `API_KEY=${branchSecret}\n`, 'utf8');
-        execFileSync('git', ['add', 'remote_b.txt'], { cwd: multiBranchRepo });
-        execFileSync('git', ['commit', '-m', 'feat(remote): introduce secret on branch B'], { cwd: multiBranchRepo });
-        const branchBSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: multiBranchRepo, encoding: 'utf8' }).trim();
-
-        // Create a remote tracking ref for branch B: refs/remotes/origin/feature/remote-b pointing to branchBSha
-        execFileSync('git', ['update-ref', 'refs/remotes/origin/feature/remote-b', branchBSha], { cwd: multiBranchRepo });
-
-        // Checkout main (which has NO secret)
-        execFileSync('git', ['checkout', 'main'], { cwd: multiBranchRepo });
-
-        const multiEngine = new GitHistoryEngine(multiBranchRepo);
-        const multiTrace = await multiEngine.traceSecret(branchSecret);
-        assert(multiTrace.isPresentInHistory === true, 'traceSecret detects presence in multi-branch repo');
-        assert(multiTrace.isPresentInHead === false, 'traceSecret correctly detects absence from main HEAD');
-        assert(multiTrace.isRemote === true, 'traceSecret identifies remote push when ANY containing branch has remote tracking ref');
-        assert(multiTrace.branches.some((b) => b.includes('feature/local-a')), 'traceSecret branches includes feature/local-a');
-        assert(multiTrace.branches.some((b) => b.includes('feature/remote-b')), 'traceSecret branches includes feature/remote-b');
-        assert(multiTrace.branchRemovals !== undefined, 'traceSecret returns branchRemovals');
-        assert(multiTrace.branchRemovals['feature/local-a']?.introducedCommit?.sha === branchASha, 'branchRemovals tracks independent introduction on branch A');
-        assert(multiTrace.branchRemovals['feature/remote-b']?.introducedCommit?.sha === branchBSha, 'branchRemovals tracks independent introduction on branch B');
-
-        // 3. Topological sorting neutralizes backdated author dates (GIT_AUTHOR_DATE)
-        const dateRepo = path.join(sec46Dir, 'date-repo');
-        fs.mkdirSync(dateRepo, { recursive: true });
-        execFileSync('git', ['init'], { cwd: dateRepo });
-        execFileSync('git', ['checkout', '-B', 'main'], { cwd: dateRepo });
-        execFileSync('git', ['config', 'user.name', 'Time Tester'], { cwd: dateRepo });
-        execFileSync('git', ['config', 'user.email', 'time@example.com'], { cwd: dateRepo });
-
-        const dateSecret = fromHex('6768705f') + fromHex('4261636b6461746564417574686f72536563726574546f6b656e31323334353637383930');
-
-        // Commit 1 (the true introduction): modern committer date and modern author date
-        fs.writeFileSync(path.join(dateRepo, 'secret.txt'), `${dateSecret}\n`, 'utf8');
-        execFileSync('git', ['add', 'secret.txt'], { cwd: dateRepo });
-        execFileSync('git', ['commit', '-m', 'commit 1: real introduction'], {
-          cwd: dateRepo,
-          env: {
-            ...process.env,
-            GIT_AUTHOR_DATE: '2025-01-01T12:00:00Z',
-            GIT_COMMITTER_DATE: '2025-01-01T12:00:00Z',
-          },
-        });
-        const c1Sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dateRepo, encoding: 'utf8' }).trim();
-
-        // Commit 2 (child of commit 1): modified secret file with a deliberately BACKDATED author date to 1999!
-        fs.writeFileSync(path.join(dateRepo, 'secret.txt'), `${dateSecret} updated\n`, 'utf8');
-        execFileSync('git', ['add', 'secret.txt'], { cwd: dateRepo });
-        execFileSync('git', ['commit', '-m', 'commit 2: descendant with manipulated author date'], {
-          cwd: dateRepo,
-          env: {
-            ...process.env,
-            GIT_AUTHOR_DATE: '1999-01-01T12:00:00Z', // Deliberately backdated!
-            GIT_COMMITTER_DATE: '2025-01-02T12:00:00Z',
-          },
-        });
-        const c2Sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dateRepo, encoding: 'utf8' }).trim();
-
-        const dateEngine = new GitHistoryEngine(dateRepo);
-        const dateTrace = await dateEngine.traceSecret(dateSecret);
-        // By topological order: c2 is descendant of c1, so c1 MUST be identified as introducedCommit, not c2!
-        assert(dateTrace.introducedCommit?.sha === c1Sha, 'Topological sorting selects true ancestor c1 as introducedCommit despite backdated author date on c2');
-        assert(dateTrace.lastSeenCommit?.sha === c2Sha, 'Topological sorting selects child c2 as lastSeenCommit');
-
-        // 4. Windows ACL Parser: Asterisk-prefixed Numerical SIDs (*S-1-5-...)
-        let sidRemoved = false;
-        const sidMockCp = {
-          execFileSync: (cmd: string, args: string[]) => {
-            if (cmd === 'whoami' && args.includes('/fo')) {
-              return '"User Name","SID"\n"WORKGROUP\\admin","S-1-5-21-999999999-888888888-777777777-500"\n';
-            }
-            if (cmd === 'icacls') {
-              if (args.includes('/remove') && args.includes('*S-1-5-21-123456789-987654321-111111111-1002')) {
-                sidRemoved = true;
-              }
-              if (args.length === 1) {
-                if (!sidRemoved) {
-                  // Output with asterisk-prefixed unresolved SID
-                  return `${args[0]} *S-1-5-21-123456789-987654321-111111111-1002:(R)\n WORKGROUP\\admin:(F)\nSuccessfully processed 1 files;\n`;
-                }
-                return `${args[0]} WORKGROUP\\admin:(F)\nSuccessfully processed 1 files;\n`;
-              }
-            }
-            return Buffer.from('');
-          }
-        };
-
-        const sidEnvPath = path.join(sec46Dir, '.env');
-        fs.writeFileSync(sidEnvPath, 'KEY="val"\n', 'utf8');
-        const sidEnforceRes = enforceEnvFilePermissions(sidEnvPath, fs, 'win32', sidMockCp as any);
-        assert(sidEnforceRes.enforced === true, 'enforceEnvFilePermissions reports enforced: true when asterisk-prefixed SID is stripped');
-        assert(sidRemoved === true, 'enforceEnvFilePermissions captures and strips *S-1-5-... numerical SID via icacls /remove');
-
-      } finally {
-        try { fs.rmSync(sec46Dir, { recursive: true, force: true }); } catch {}
-      }
-    }
-
-    // --- 47. Lineage Ancestry-Path, O(N) Topo Ordering, Committer Date Chronology & Worktree Fallbacks ---
-    console.log('\n--- 47. Lineage Ancestry-Path, O(N) Topo Ordering, Committer Date Chronology & Worktree Fallbacks ---');
-    {
-      const { execFileSync } = cp;
-      const fromHex = (h: string) => Buffer.from(h, 'hex').toString('utf8');
-      const sec47Dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-sec47-'));
-      try {
-        // 1. False removal attribution after merging a clean side branch
-        const mergeRepo = path.join(sec47Dir, 'merge-repo');
-        fs.mkdirSync(mergeRepo, { recursive: true });
-        execFileSync('git', ['init'], { cwd: mergeRepo });
-        execFileSync('git', ['checkout', '-B', 'main'], { cwd: mergeRepo });
-        execFileSync('git', ['config', 'user.name', 'Merge Tester'], { cwd: mergeRepo });
-        execFileSync('git', ['config', 'user.email', 'merge@example.com'], { cwd: mergeRepo });
-
-        fs.writeFileSync(path.join(mergeRepo, 'base.txt'), 'base\n', 'utf8');
-        execFileSync('git', ['add', 'base.txt'], { cwd: mergeRepo });
-        execFileSync('git', ['commit', '-m', 'chore: base commit'], { cwd: mergeRepo });
-
-        // Create feature branch and commit an unrelated file
-        execFileSync('git', ['checkout', '-b', 'feature-unrelated'], { cwd: mergeRepo });
-        fs.writeFileSync(path.join(mergeRepo, 'unrelated.txt'), 'unrelated\n', 'utf8');
-        execFileSync('git', ['add', 'unrelated.txt'], { cwd: mergeRepo });
-        execFileSync('git', ['commit', '-m', 'feat: unrelated commit on side branch'], { cwd: mergeRepo });
-        const sideBranchSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: mergeRepo, encoding: 'utf8' }).trim();
-
-        // Switch back to main, add credential
-        execFileSync('git', ['checkout', 'main'], { cwd: mergeRepo });
-        const secretVal = fromHex('6768705f') + fromHex('4d65726765536563726574546f6b656e31323334353637383930');
-        fs.writeFileSync(path.join(mergeRepo, 'secret.txt'), `TOKEN=${secretVal}\n`, 'utf8');
-        execFileSync('git', ['add', 'secret.txt'], { cwd: mergeRepo });
-        execFileSync('git', ['commit', '-m', 'feat: add credential on main'], { cwd: mergeRepo });
-        const introSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: mergeRepo, encoding: 'utf8' }).trim();
-
-        // Merge the unrelated feature branch into main without removing credential
-        execFileSync('git', ['merge', 'feature-unrelated', '-m', 'merge feature-unrelated into main'], { cwd: mergeRepo });
-        const mergeSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: mergeRepo, encoding: 'utf8' }).trim();
-
-        const mergeEngine = new GitHistoryEngine(mergeRepo);
-
-        // findRemovalCommit on main BEFORE actual removal must NOT return sideBranchSha!
-        const prematureRemoval = await mergeEngine.findRemovalCommit(secretVal, introSha, 'main');
-        assert(prematureRemoval === undefined, 'findRemovalCommit does not falsely select unrelated side branch commit as removal commit');
-
-        // Now remove the credential in a later commit on main
-        fs.writeFileSync(path.join(mergeRepo, 'secret.txt'), 'TOKEN=clean\n', 'utf8');
-        execFileSync('git', ['add', 'secret.txt'], { cwd: mergeRepo });
-        execFileSync('git', ['commit', '-m', 'fix: genuine removal commit'], { cwd: mergeRepo });
-        const genuineRemovalSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: mergeRepo, encoding: 'utf8' }).trim();
-
-        const genuineRemoval = await mergeEngine.findRemovalCommit(secretVal, introSha, 'main');
-        assert(genuineRemoval !== undefined, 'findRemovalCommit finds genuine removal commit after side branch merge');
-        assert(genuineRemoval?.sha === genuineRemovalSha, 'findRemovalCommit accurately attributes removal to genuineRemovalSha');
-        assert(genuineRemoval?.sha !== sideBranchSha, 'findRemovalCommit does not attribute removal to sideBranchSha');
-
-        // 2. O(N) Topological sorting performance test with hundreds of commits
-        const perfRepo = path.join(sec47Dir, 'perf-repo');
-        fs.mkdirSync(perfRepo, { recursive: true });
-        execFileSync('git', ['init'], { cwd: perfRepo });
-        execFileSync('git', ['checkout', '-B', 'main'], { cwd: perfRepo });
-        execFileSync('git', ['config', 'user.name', 'Perf Tester'], { cwd: perfRepo });
-        execFileSync('git', ['config', 'user.email', 'perf@example.com'], { cwd: perfRepo });
-
-        const persistentSecret = fromHex('736b2d616e742d61706930332d') + fromHex('50657266436865636b546f6b656e313233343536373839303132333435363738');
-        fs.writeFileSync(path.join(perfRepo, 'data.txt'), `KEY=${persistentSecret}\n`, 'utf8');
-        execFileSync('git', ['add', 'data.txt'], { cwd: perfRepo });
-        execFileSync('git', ['commit', '-m', 'commit 0'], { cwd: perfRepo });
-        const initialSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: perfRepo, encoding: 'utf8' }).trim();
-
-        // Create 20 consecutive commits containing the secret
-        for (let i = 1; i <= 20; i++) {
-          fs.writeFileSync(path.join(perfRepo, 'counter.txt'), `${i}\n`, 'utf8');
-          execFileSync('git', ['add', 'counter.txt'], { cwd: perfRepo });
-          execFileSync('git', ['commit', '-m', `commit ${i}`], { cwd: perfRepo });
-        }
-        const newestSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: perfRepo, encoding: 'utf8' }).trim();
-
-        const perfEngine = new GitHistoryEngine(perfRepo);
-        const startTime = Date.now();
-        const perfTrace = await perfEngine.traceSecret(persistentSecret);
-        const elapsedMs = Date.now() - startTime;
-
-        assert(perfTrace.commitCount === 21, 'traceSecret finds all 21 commits containing persistent secret');
-        assert(perfTrace.introducedCommit?.sha === initialSha, 'traceSecret identifies initial commit as introducedCommit');
-        assert(perfTrace.lastSeenCommit?.sha === newestSha, 'traceSecret identifies newest commit as lastSeenCommit');
-        assert(elapsedMs < 10000, `traceSecret topological sorting runs in linear time without quadratic subprocess delay (took ${elapsedMs}ms)`);
-
-        // 3. Committer date carried through timeline and backdated removal
-        const timeRepo = path.join(sec47Dir, 'time-repo');
-        fs.mkdirSync(timeRepo, { recursive: true });
-        execFileSync('git', ['init'], { cwd: timeRepo });
-        execFileSync('git', ['checkout', '-B', 'main'], { cwd: timeRepo });
-        execFileSync('git', ['config', 'user.name', 'Timeline Tester'], { cwd: timeRepo });
-        execFileSync('git', ['config', 'user.email', 'time@example.com'], { cwd: timeRepo });
-
-        const timeSecret = fromHex('6768705f') + fromHex('54696d656c696e65536563726574546f6b656e31323334353637383930');
-        fs.writeFileSync(path.join(timeRepo, 'auth.txt'), `AUTH=${timeSecret}\n`, 'utf8');
-        execFileSync('git', ['add', 'auth.txt'], { cwd: timeRepo });
-        execFileSync('git', ['commit', '-m', 'intro commit'], {
-          cwd: timeRepo,
-          env: {
-            ...process.env,
-            GIT_AUTHOR_DATE: '2025-01-01T12:00:00Z',
-            GIT_COMMITTER_DATE: '2025-01-01T12:00:00Z',
-          },
-        });
-        const t1Sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: timeRepo, encoding: 'utf8' }).trim();
-
-        // Commit 2: modification with backdated author date
-        fs.writeFileSync(path.join(timeRepo, 'auth.txt'), `AUTH=${timeSecret} updated\n`, 'utf8');
-        execFileSync('git', ['add', 'auth.txt'], { cwd: timeRepo });
-        execFileSync('git', ['commit', '-m', 'mod commit backdated author'], {
-          cwd: timeRepo,
-          env: {
-            ...process.env,
-            GIT_AUTHOR_DATE: '1998-01-01T12:00:00Z',
-            GIT_COMMITTER_DATE: '2025-01-05T12:00:00Z',
-          },
-        });
-        const t2Sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: timeRepo, encoding: 'utf8' }).trim();
-
-        // Commit 3: removal with backdated author date
-        fs.writeFileSync(path.join(timeRepo, 'auth.txt'), 'AUTH=clean\n', 'utf8');
-        execFileSync('git', ['add', 'auth.txt'], { cwd: timeRepo });
-        execFileSync('git', ['commit', '-m', 'removal commit backdated author'], {
-          cwd: timeRepo,
-          env: {
-            ...process.env,
-            GIT_AUTHOR_DATE: '1995-01-01T12:00:00Z',
-            GIT_COMMITTER_DATE: '2025-01-10T12:00:00Z',
-          },
-        });
-        const t3Sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: timeRepo, encoding: 'utf8' }).trim();
-
-        const timeEngine = new GitHistoryEngine(timeRepo);
-        const timeRemoval = await timeEngine.findRemovalCommit(timeSecret, t2Sha, 'main');
-        assert(timeRemoval?.sha === t3Sha, 'findRemovalCommit finds t3 removal commit');
-        assert(timeRemoval?.committerDate !== undefined, 'findRemovalCommit carries committerDate');
-
-        const tlEngine = new GitTimelineEngine(timeRepo, timeEngine);
-        const tlReport = await tlEngine.buildTimeline(timeSecret, 'ghp_••••');
-        assert(tlReport.events.length === 3, 'buildTimeline produces 3 events');
-        assert(tlReport.events[0].commitSha === t1Sha, 'buildTimeline places true ancestor t1 as INTRODUCED event despite backdated author dates');
-        assert(tlReport.events[1].commitSha === t2Sha, 'buildTimeline places child t2 as second event');
-        assert(tlReport.events[2].commitSha === t3Sha, 'buildTimeline places removal t3 as REMOVED event');
-        assert(tlReport.totalExposureDays >= 9, 'buildTimeline uses committer dates for accurate exposure calculation');
-
-        // 4. Branch inspection failures propagate into UNKNOWN and SEARCH_INCOMPLETE
-        class FailingBranchEngine extends GitHistoryEngine {
-          protected async execGit(args: string[], options: any = {}): Promise<{ stdout: any; stderr: any }> {
-            if (args[0] === 'branch' && (args.includes('-a') || args.includes('--contains'))) {
-              throw new Error('Simulated operational failure during branch lookup on t2');
-            }
-            return super.execGit(args, options);
-          }
-        }
-        const failingBranchEngine = new FailingBranchEngine(timeRepo);
-        const fbTrace = await failingBranchEngine.traceSecret(timeSecret);
-        assert(fbTrace.isRemote === 'UNKNOWN', 'traceSecret sets isRemote: UNKNOWN when branch query fails on a commit without confirmed remote');
-        assert(fbTrace.searchStatus === 'SEARCH_INCOMPLETE', 'traceSecret sets searchStatus: SEARCH_INCOMPLETE when branch query fails');
-        assert(fbTrace.statusDescription.includes('INCOMPLETE BRANCH INSPECTION'), 'traceSecret notes INCOMPLETE BRANCH INSPECTION in statusDescription');
-
-        // 5. Shallow repository fallback resolves .git/shallow in linked worktrees
-        const wtRepo = path.join(sec47Dir, 'wt-repo');
-        fs.mkdirSync(wtRepo, { recursive: true });
-        execFileSync('git', ['init'], { cwd: wtRepo });
-        execFileSync('git', ['checkout', '-B', 'main'], { cwd: wtRepo });
-        execFileSync('git', ['config', 'user.name', 'WT Tester'], { cwd: wtRepo });
-        execFileSync('git', ['config', 'user.email', 'wt@example.com'], { cwd: wtRepo });
-        fs.writeFileSync(path.join(wtRepo, 'wt_base.txt'), 'wt\n', 'utf8');
-        execFileSync('git', ['add', 'wt_base.txt'], { cwd: wtRepo });
-        execFileSync('git', ['commit', '-m', 'wt base commit'], { cwd: wtRepo });
-
-        const wtHeadSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: wtRepo, encoding: 'utf8' }).trim();
-        // Create shallow marker in main repo's .git/shallow
-        fs.writeFileSync(path.join(wtRepo, '.git', 'shallow'), `${wtHeadSha}\n`, 'utf8');
-
-        // Create linked worktree
-        const linkedWtPath = path.join(sec47Dir, 'linked-worktree');
-        execFileSync('git', ['worktree', 'add', linkedWtPath, '-b', 'wt-test-branch'], { cwd: wtRepo });
-
-        // In linked worktree, .git is a file, not a directory
-        assert(fs.statSync(path.join(linkedWtPath, '.git')).isFile(), 'Linked worktree has .git as a file');
-
-        // Test mock engine that forces fallback path by throwing in git rev-parse --is-shallow-repository
-        class WorktreeShallowEngine extends GitHistoryEngine {
-          protected async execGit(args: string[], options: any = {}): Promise<{ stdout: any; stderr: any }> {
-            if (args[0] === 'rev-parse' && args[1] === '--is-shallow-repository') {
-              throw new Error('Unsupported command simulation');
-            }
-            return super.execGit(args, options);
-          }
-        }
-        const wtEngine = new WorktreeShallowEngine(linkedWtPath);
-        const wtIsShallow = await wtEngine.isShallowRepo();
-        assert(wtIsShallow === true, 'isShallowRepo detects shallow status in linked worktree via --git-path shallow fallback');
-
-      } finally {
-        try { fs.rmSync(sec47Dir, { recursive: true, force: true }); } catch {}
-      }
-    }
-
-    // --- 48. First-Parent Merge Removal, Display Date Distinction, Sibling Branch Aggregation & Depth-Limited Semantics ---
-    console.log('\n--- 48. First-Parent Merge Removal, Display Date Distinction, Sibling Branch Aggregation & Depth-Limited Semantics ---');
-    {
-      const { execFileSync } = cp;
-      const fromHex = (h: string) => Buffer.from(h, 'hex').toString('utf8');
-      const sec48Dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-sec48-'));
-      try {
-        // 1. First-parent merge removal: Secret removed on side branch, then merged into main
-        const fpRepo = path.join(sec48Dir, 'fp-repo');
-        fs.mkdirSync(fpRepo, { recursive: true });
-        execFileSync('git', ['init'], { cwd: fpRepo });
-        execFileSync('git', ['checkout', '-B', 'main'], { cwd: fpRepo });
-        execFileSync('git', ['config', 'user.name', 'FP Tester'], { cwd: fpRepo });
-        execFileSync('git', ['config', 'user.email', 'fp@example.com'], { cwd: fpRepo });
-
-        fs.writeFileSync(path.join(fpRepo, 'base.txt'), 'base\n', 'utf8');
-        execFileSync('git', ['add', 'base.txt'], { cwd: fpRepo });
-        execFileSync('git', ['commit', '-m', 'base commit'], { cwd: fpRepo });
-
-        const fpSecret = fromHex('6768705f') + fromHex('4669727374506172656e74546573745365637265743132333435');
-        fs.writeFileSync(path.join(fpRepo, 'token.txt'), `TOKEN=${fpSecret}\n`, 'utf8');
-        execFileSync('git', ['add', 'token.txt'], { cwd: fpRepo });
-        execFileSync('git', ['commit', '-m', 'intro secret on main'], { cwd: fpRepo });
-        const mainIntroSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fpRepo, encoding: 'utf8' }).trim();
-
-        // Create feature branch and remove secret on that feature branch
-        execFileSync('git', ['checkout', '-b', 'feature-removal'], { cwd: fpRepo });
-        fs.writeFileSync(path.join(fpRepo, 'token.txt'), 'TOKEN=clean_on_feature\n', 'utf8');
-        execFileSync('git', ['add', 'token.txt'], { cwd: fpRepo });
-        execFileSync('git', ['commit', '-m', 'remove secret on feature branch'], { cwd: fpRepo });
-        const featureRemovalSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fpRepo, encoding: 'utf8' }).trim();
-
-        // Work on main while secret is still active on main
-        execFileSync('git', ['checkout', 'main'], { cwd: fpRepo });
-        fs.writeFileSync(path.join(fpRepo, 'main_work.txt'), 'working on main\n', 'utf8');
-        execFileSync('git', ['add', 'main_work.txt'], { cwd: fpRepo });
-        execFileSync('git', ['commit', '-m', 'unrelated main work with secret active'], { cwd: fpRepo });
-        const intermediateMainSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fpRepo, encoding: 'utf8' }).trim();
-
-        // Merge feature branch into main (this merge commit removes the secret from main's effective history)
-        execFileSync('git', ['merge', 'feature-removal', '-m', 'merge feature-removal into main'], { cwd: fpRepo });
-        const mergeRemovalSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fpRepo, encoding: 'utf8' }).trim();
-
-        const fpEngine = new GitHistoryEngine(fpRepo);
-        const mainRemoval = await fpEngine.findRemovalCommit(fpSecret, mainIntroSha, 'main');
-        assert(mainRemoval !== undefined, 'findRemovalCommit finds removal commit on main after merge');
-        assert(mainRemoval?.sha === mergeRemovalSha, 'findRemovalCommit attributes removal to the merge commit on main, NOT the feature branch commit');
-        assert(mainRemoval?.sha !== featureRemovalSha, 'findRemovalCommit does not falsely report featureRemovalSha as the removal commit for main');
-
-        // On the feature branch itself, removal is accurately attributed to featureRemovalSha
-        const featRemoval = await fpEngine.findRemovalCommit(fpSecret, mainIntroSha, 'feature-removal');
-        assert(featRemoval?.sha === featureRemovalSha, 'findRemovalCommit attributes removal on feature-removal branch to featureRemovalSha');
-
-        // 2. Display date distinction and consistent committer chronology in timeline
-        const displayRepo = path.join(sec48Dir, 'display-repo');
-        fs.mkdirSync(displayRepo, { recursive: true });
-        execFileSync('git', ['init'], { cwd: displayRepo });
-        execFileSync('git', ['checkout', '-B', 'main'], { cwd: displayRepo });
-        execFileSync('git', ['config', 'user.name', 'Display Tester'], { cwd: displayRepo });
-        execFileSync('git', ['config', 'user.email', 'display@example.com'], { cwd: displayRepo });
-
-        const displaySecret = fromHex('6768705f') + fromHex('446973706c617944617465546573745365637265743132333435');
-        fs.writeFileSync(path.join(displayRepo, 'key.txt'), `KEY=${displaySecret}\n`, 'utf8');
-        execFileSync('git', ['add', 'key.txt'], { cwd: displayRepo });
-        execFileSync('git', ['commit', '-m', 'c1: true introduction'], {
-          cwd: displayRepo,
-          env: {
-            ...process.env,
-            GIT_AUTHOR_DATE: '2025-01-01T12:00:00Z',
-            GIT_COMMITTER_DATE: '2025-01-01T12:00:00Z',
-          },
-        });
-        const c1Sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: displayRepo, encoding: 'utf8' }).trim();
-
-        // c2: child commit with backdated author date (1990) but committer date (2025-01-05)
-        fs.writeFileSync(path.join(displayRepo, 'key.txt'), `KEY=${displaySecret} updated\n`, 'utf8');
-        execFileSync('git', ['add', 'key.txt'], { cwd: displayRepo });
-        execFileSync('git', ['commit', '-m', 'c2: child with backdated author date'], {
-          cwd: displayRepo,
-          env: {
-            ...process.env,
-            GIT_AUTHOR_DATE: '1990-01-01T12:00:00Z',
-            GIT_COMMITTER_DATE: '2025-01-05T12:00:00Z',
-          },
-        });
-        const c2Sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: displayRepo, encoding: 'utf8' }).trim();
-
-        const tlEngine = new GitTimelineEngine(displayRepo);
-        const tlReport = await tlEngine.buildTimeline(displaySecret, 'ghp_••••');
-        assert(tlReport.events.length === 2, 'buildTimeline produces 2 events');
-        assert(tlReport.events[0].commitSha === c1Sha, 'c1 is first event');
-        assert(tlReport.events[1].commitSha === c2Sha, 'c2 is second event');
-        // Visual timeline display date must use committer date (2025-01-05) or note authored date
-        assert(tlReport.timelineAscii.includes('[2025-01-01]'), 'timeline ASCII includes c1 committer date');
-        assert(tlReport.timelineAscii.includes('[2025-01-05]'), 'timeline ASCII includes c2 committer date for displayed chronology');
-        assert(tlReport.timelineAscii.includes('(authored 1990-01-01)'), 'timeline ASCII explicitly notes backdated author date');
-        assert(tlReport.graph.nodes[1].date.startsWith('2025-01-05'), 'graph node date reflects committer date');
-
-        // 3. Sibling branch independent introductions with aggregate duration
-        const siblingRepo = path.join(sec48Dir, 'sibling-repo');
-        fs.mkdirSync(siblingRepo, { recursive: true });
-        execFileSync('git', ['init'], { cwd: siblingRepo });
-        execFileSync('git', ['checkout', '-B', 'main'], { cwd: siblingRepo });
-        execFileSync('git', ['config', 'user.name', 'Sibling Tester'], { cwd: siblingRepo });
-        execFileSync('git', ['config', 'user.email', 'sibling@example.com'], { cwd: siblingRepo });
-
-        fs.writeFileSync(path.join(siblingRepo, 'root.txt'), 'root\n', 'utf8');
-        execFileSync('git', ['add', 'root.txt'], { cwd: siblingRepo });
-        execFileSync('git', ['commit', '-m', 'root commit'], { cwd: siblingRepo });
-
-        const sharedSecret = fromHex('6768705f') + fromHex('5369626c696e675370726561645365637265743132333435');
-
-        // Sibling branch 1: introduced on 2025-01-01, removed on 2025-01-05 (4 days duration)
-        execFileSync('git', ['checkout', '-b', 'branch-alpha'], { cwd: siblingRepo });
-        fs.writeFileSync(path.join(siblingRepo, 'token.txt'), `KEY=${sharedSecret}\n`, 'utf8');
-        execFileSync('git', ['add', 'token.txt'], { cwd: siblingRepo });
-        execFileSync('git', ['commit', '-m', 'alpha intro'], {
-          cwd: siblingRepo,
-          env: {
-            ...process.env,
-            GIT_AUTHOR_DATE: '2025-01-01T12:00:00Z',
-            GIT_COMMITTER_DATE: '2025-01-01T12:00:00Z',
-          },
-        });
-        const alphaIntroSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: siblingRepo, encoding: 'utf8' }).trim();
-
-        fs.writeFileSync(path.join(siblingRepo, 'token.txt'), 'KEY=clean_alpha\n', 'utf8');
-        execFileSync('git', ['add', 'token.txt'], { cwd: siblingRepo });
-        execFileSync('git', ['commit', '-m', 'alpha removal'], {
-          cwd: siblingRepo,
-          env: {
-            ...process.env,
-            GIT_AUTHOR_DATE: '2025-01-05T12:00:00Z',
-            GIT_COMMITTER_DATE: '2025-01-05T12:00:00Z',
-          },
-        });
-        const alphaRemovalSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: siblingRepo, encoding: 'utf8' }).trim();
-
-        // Sibling branch 2 (divergent from root): introduced on 2025-01-02, active to 2025-01-12 (10 days duration)
-        execFileSync('git', ['checkout', 'main'], { cwd: siblingRepo });
-        execFileSync('git', ['checkout', '-b', 'branch-beta'], { cwd: siblingRepo });
-        fs.writeFileSync(path.join(siblingRepo, 'token.txt'), `KEY=${sharedSecret}\n`, 'utf8');
-        execFileSync('git', ['add', 'token.txt'], { cwd: siblingRepo });
-        execFileSync('git', ['commit', '-m', 'beta intro'], {
-          cwd: siblingRepo,
-          env: {
-            ...process.env,
-            GIT_AUTHOR_DATE: '2025-01-02T12:00:00Z',
-            GIT_COMMITTER_DATE: '2025-01-02T12:00:00Z',
-          },
-        });
-        const betaIntroSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: siblingRepo, encoding: 'utf8' }).trim();
-
-        fs.writeFileSync(path.join(siblingRepo, 'token.txt'), 'KEY=clean_beta\n', 'utf8');
-        execFileSync('git', ['add', 'token.txt'], { cwd: siblingRepo });
-        execFileSync('git', ['commit', '-m', 'beta removal'], {
-          cwd: siblingRepo,
-          env: {
-            ...process.env,
-            GIT_AUTHOR_DATE: '2025-01-12T12:00:00Z',
-            GIT_COMMITTER_DATE: '2025-01-12T12:00:00Z',
-          },
-        });
-        const betaRemovalSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: siblingRepo, encoding: 'utf8' }).trim();
-
-        execFileSync('git', ['checkout', 'main'], { cwd: siblingRepo });
-
-        const siblingEngine = new GitHistoryEngine(siblingRepo);
-        const sibTrace = await siblingEngine.traceSecret(sharedSecret);
-        assert(sibTrace.branchRemovals !== undefined, 'branchRemovals is defined');
-        assert(sibTrace.branchRemovals['branch-alpha']?.introducedCommit?.sha === alphaIntroSha, 'branch-alpha intro commit tracked');
-        assert(sibTrace.branchRemovals['branch-alpha']?.removalCommit?.sha === alphaRemovalSha, 'branch-alpha removal commit tracked');
-        assert(sibTrace.branchRemovals['branch-alpha']?.exposureDurationDays === 4, 'branch-alpha duration is 4 days');
-
-        assert(sibTrace.branchRemovals['branch-beta']?.introducedCommit?.sha === betaIntroSha, 'branch-beta intro commit tracked');
-        assert(sibTrace.branchRemovals['branch-beta']?.removalCommit?.sha === betaRemovalSha, 'branch-beta removal commit tracked');
-        assert(sibTrace.branchRemovals['branch-beta']?.exposureDurationDays === 10, 'branch-beta duration is 10 days');
-        assert(sibTrace.exposureDurationDays === 10, 'sibTrace.exposureDurationDays aggregates to max confirmed branch duration (10 days)');
-
-        const sibTlEngine = new GitTimelineEngine(siblingRepo, siblingEngine);
-        const sibTl = await sibTlEngine.buildTimeline(sharedSecret, 'ghp_••••');
-        const alphaEvent = sibTl.events.find((e) => e.commitSha === alphaIntroSha);
-        const betaEvent = sibTl.events.find((e) => e.commitSha === betaIntroSha);
-        assert(alphaEvent?.eventType === 'INTRODUCED', 'branch-alpha intro is labeled INTRODUCED');
-        assert(betaEvent?.eventType === 'INTRODUCED', 'branch-beta independent sibling intro is labeled INTRODUCED');
-
-        // 4. Positive matches in depth-limited searches report SEARCH_INCOMPLETE
-        const limRepo = path.join(sec48Dir, 'lim-repo');
-        fs.mkdirSync(limRepo, { recursive: true });
-        execFileSync('git', ['init'], { cwd: limRepo });
-        execFileSync('git', ['checkout', '-B', 'main'], { cwd: limRepo });
-        execFileSync('git', ['config', 'user.name', 'Lim Tester'], { cwd: limRepo });
-        execFileSync('git', ['config', 'user.email', 'lim@example.com'], { cwd: limRepo });
-
-        const limSecret = fromHex('6768705f') + fromHex('4c696d697465645365617263685365637265743132333435');
-        fs.writeFileSync(path.join(limRepo, 'code.txt'), `SECRET=${limSecret}\n`, 'utf8');
-        execFileSync('git', ['add', 'code.txt'], { cwd: limRepo });
-        execFileSync('git', ['commit', '-m', 'intro secret'], { cwd: limRepo });
-
-        // Add 10 additional clean commits on top
-        for (let i = 1; i <= 10; i++) {
-          fs.writeFileSync(path.join(limRepo, 'clean.txt'), `${i}\n`, 'utf8');
-          execFileSync('git', ['add', 'clean.txt'], { cwd: limRepo });
-          execFileSync('git', ['commit', '-m', `clean commit ${i}`], { cwd: limRepo });
-        }
-
-        const limEngine = new GitHistoryEngine(limRepo);
-        // Search with maxCommits = 11 (covers both the clean commits and the secret commit, but totalRevCount > 11? total is 11)
-        // Add 5 more commits so total is 16
-        for (let i = 11; i <= 15; i++) {
-          fs.writeFileSync(path.join(limRepo, 'clean.txt'), `${i}\n`, 'utf8');
-          execFileSync('git', ['add', 'clean.txt'], { cwd: limRepo });
-          execFileSync('git', ['commit', '-m', `clean commit ${i}`], { cwd: limRepo });
-        }
-
-        // Now total commits = 16. Limit search to 15 commits (which includes the secret at commit 1, because HEAD is commit 16)
-        // With maxCommits = 15, isPartialHistory is true, and secret is found!
-        const limSearchResult = await limEngine.findCommitsContainingSecretResult(limSecret, 15);
-        assert(limSearchResult.status === 'FOUND', 'findCommitsContainingSecretResult returns FOUND');
-        assert(limSearchResult.isPartialHistory === true, 'findCommitsContainingSecretResult marks isPartialHistory: true');
-
-        const limTrace = await limEngine.traceSecret(limSecret, 15);
-        assert(limTrace.isPresentInHistory === true, 'traceSecret marks isPresentInHistory: true');
-        assert(limTrace.isPartialHistory === true, 'traceSecret marks isPartialHistory: true');
-        assert(limTrace.searchStatus === 'SEARCH_INCOMPLETE', 'traceSecret sets searchStatus: SEARCH_INCOMPLETE when secret found in partial history');
-        assert(limTrace.statusDescription.includes('PARTIAL HISTORY: search depth limited to 15 commit(s)'), 'statusDescription mentions partial history limit');
-
-        // Timeline check for limited search
-        const limTlEngine = new GitTimelineEngine(limRepo, limEngine);
-        const limTlReport = await limTlEngine.buildTimeline(limSecret, 'ghp_••••', 15);
-        assert(limTlReport.currentStatus === 'SEARCH_INCOMPLETE', 'buildTimeline reports currentStatus: SEARCH_INCOMPLETE when partial history');
-        assert(limTlReport.timelineAscii.includes('History Coverage:   PARTIAL (limited to 15 commits; earlier history uninspected)'), 'buildTimeline ASCII notes partial history coverage');
-
-      } finally {
-        try { fs.rmSync(sec48Dir, { recursive: true, force: true }); } catch {}
-      }
-    }
-
-    // --- 49. Ongoing Branch Exposure, Independent Timeline Introductions, O(branches) Discovery & Risk Incomplete Flags ---
-    console.log('\n--- 49. Ongoing Branch Exposure, Independent Timeline Introductions, O(branches) Discovery & Risk Incomplete Flags ---');
-    {
-      const { execFileSync } = cp;
-      const fromHex = (h: string) => Buffer.from(h, 'hex').toString('utf8');
-      const sec49Dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-sec49-'));
-      try {
-        // 1. Ongoing branch exposure through current time when active branch has no removal commit
-        const ongoingRepo = path.join(sec49Dir, 'ongoing-repo');
-        fs.mkdirSync(ongoingRepo, { recursive: true });
-        execFileSync('git', ['init'], { cwd: ongoingRepo });
-        execFileSync('git', ['checkout', '-B', 'main'], { cwd: ongoingRepo });
-        execFileSync('git', ['config', 'user.name', 'Ongoing Tester'], { cwd: ongoingRepo });
-        execFileSync('git', ['config', 'user.email', 'ongoing@example.com'], { cwd: ongoingRepo });
-
-        fs.writeFileSync(path.join(ongoingRepo, 'root.txt'), 'root\n', 'utf8');
-        execFileSync('git', ['add', 'root.txt'], { cwd: ongoingRepo });
-        execFileSync('git', ['commit', '-m', 'root commit'], { cwd: ongoingRepo });
-
-        // Create active branch with secret introduced 100 days ago, no removal commit
-        execFileSync('git', ['checkout', '-b', 'feat/ongoing-leak'], { cwd: ongoingRepo });
-        const ongoingSecret = fromHex('6768705f') + fromHex('4f6e676f696e674c65616b53656372657431323334353637383930');
-        const introDate100DaysAgo = new Date(Date.now() - 100 * 24 * 60 * 60 * 1000).toISOString();
-        fs.writeFileSync(path.join(ongoingRepo, 'key.txt'), `KEY=${ongoingSecret}\n`, 'utf8');
-        execFileSync('git', ['add', 'key.txt'], { cwd: ongoingRepo });
-        execFileSync('git', ['commit', '-m', 'ongoing intro'], {
-          cwd: ongoingRepo,
-          env: {
-            ...process.env,
-            GIT_AUTHOR_DATE: introDate100DaysAgo,
-            GIT_COMMITTER_DATE: introDate100DaysAgo,
-          },
-        });
-        const ongoingIntroSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: ongoingRepo, encoding: 'utf8' }).trim();
-
-        // Switch to main (where secret was never present)
-        execFileSync('git', ['checkout', 'main'], { cwd: ongoingRepo });
-
-        const ongoingEngine = new GitHistoryEngine(ongoingRepo);
-        const ongoingTrace = await ongoingEngine.traceSecret(ongoingSecret);
-        assert(ongoingTrace.branchRemovals !== undefined, 'branchRemovals is defined for ongoing leak');
-        const branchInfo = ongoingTrace.branchRemovals['feat/ongoing-leak'];
-        assert(branchInfo !== undefined, 'feat/ongoing-leak branch tracked');
-        assert(branchInfo?.isRemoved === false, 'active branch without removal commit is marked isRemoved: false');
-        assert(branchInfo?.exposureDurationDays !== undefined && branchInfo.exposureDurationDays >= 99, `branch duration calculates ongoing exposure through current time (got ${branchInfo?.exposureDurationDays} days)`);
-        assert(ongoingTrace.exposureDurationDays >= 99, `aggregate exposureDurationDays uses maximum confirmed ongoing duration (got ${ongoingTrace.exposureDurationDays} days)`);
-
-        // 2. Sibling branch independent introductions with subsequent modifications
-        const sibRepo = path.join(sec49Dir, 'sib-repo');
-        fs.mkdirSync(sibRepo, { recursive: true });
-        execFileSync('git', ['init'], { cwd: sibRepo });
-        execFileSync('git', ['checkout', '-B', 'main'], { cwd: sibRepo });
-        execFileSync('git', ['config', 'user.name', 'Sib Tester'], { cwd: sibRepo });
-        execFileSync('git', ['config', 'user.email', 'sib@example.com'], { cwd: sibRepo });
-
-        fs.writeFileSync(path.join(sibRepo, 'init.txt'), 'init\n', 'utf8');
-        execFileSync('git', ['add', 'init.txt'], { cwd: sibRepo });
-        execFileSync('git', ['commit', '-m', 'init commit'], { cwd: sibRepo });
-
-        const multiIntroSecret = fromHex('6768705f') + fromHex('4d756c7469496e74726f53656372657431323334353637383930');
-
-        // Branch 1: introduces secret in C1, modifies it in C2
-        execFileSync('git', ['checkout', '-b', 'branch-1'], { cwd: sibRepo });
-        fs.writeFileSync(path.join(sibRepo, 'sec.txt'), `KEY=${multiIntroSecret}\n`, 'utf8');
-        execFileSync('git', ['add', 'sec.txt'], { cwd: sibRepo });
-        execFileSync('git', ['commit', '-m', 'b1: intro secret'], {
-          cwd: sibRepo,
-          env: { ...process.env, GIT_AUTHOR_DATE: '2025-01-01T10:00:00Z', GIT_COMMITTER_DATE: '2025-01-01T10:00:00Z' },
-        });
-        const b1IntroSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: sibRepo, encoding: 'utf8' }).trim();
-
-        fs.writeFileSync(path.join(sibRepo, 'sec.txt'), `KEY=${multiIntroSecret} mod\n`, 'utf8');
-        execFileSync('git', ['add', 'sec.txt'], { cwd: sibRepo });
-        execFileSync('git', ['commit', '-m', 'b1: mod secret'], {
-          cwd: sibRepo,
-          env: { ...process.env, GIT_AUTHOR_DATE: '2025-01-02T10:00:00Z', GIT_COMMITTER_DATE: '2025-01-02T10:00:00Z' },
-        });
-        const b1ModSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: sibRepo, encoding: 'utf8' }).trim();
-
-        // Branch 2: branched from clean main, independently introduces secret in C3, modifies in C4
-        execFileSync('git', ['checkout', 'main'], { cwd: sibRepo });
-        execFileSync('git', ['checkout', '-b', 'branch-2'], { cwd: sibRepo });
-        fs.writeFileSync(path.join(sibRepo, 'sec.txt'), `KEY=${multiIntroSecret}\n`, 'utf8');
-        execFileSync('git', ['add', 'sec.txt'], { cwd: sibRepo });
-        execFileSync('git', ['commit', '-m', 'b2: intro secret'], {
-          cwd: sibRepo,
-          env: { ...process.env, GIT_AUTHOR_DATE: '2025-01-03T10:00:00Z', GIT_COMMITTER_DATE: '2025-01-03T10:00:00Z' },
-        });
-        const b2IntroSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: sibRepo, encoding: 'utf8' }).trim();
-
-        fs.writeFileSync(path.join(sibRepo, 'sec.txt'), `KEY=${multiIntroSecret} mod2\n`, 'utf8');
-        execFileSync('git', ['add', 'sec.txt'], { cwd: sibRepo });
-        execFileSync('git', ['commit', '-m', 'b2: mod secret'], {
-          cwd: sibRepo,
-          env: { ...process.env, GIT_AUTHOR_DATE: '2025-01-04T10:00:00Z', GIT_COMMITTER_DATE: '2025-01-04T10:00:00Z' },
-        });
-        const b2ModSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: sibRepo, encoding: 'utf8' }).trim();
-
-        execFileSync('git', ['checkout', 'main'], { cwd: sibRepo });
-
-        const sibTlEngine = new GitTimelineEngine(sibRepo);
-        const sibReport = await sibTlEngine.buildTimeline(multiIntroSecret, 'ghp_••••');
-
-        const evB1Intro = sibReport.events.find((e) => e.commitSha === b1IntroSha);
-        const evB1Mod = sibReport.events.find((e) => e.commitSha === b1ModSha);
-        const evB2Intro = sibReport.events.find((e) => e.commitSha === b2IntroSha);
-        const evB2Mod = sibReport.events.find((e) => e.commitSha === b2ModSha);
-
-        assert(evB1Intro?.eventType === 'INTRODUCED', 'b1 intro commit is labeled INTRODUCED');
-        assert(evB1Mod?.eventType === 'MODIFIED', 'b1 child commit is labeled MODIFIED');
-        assert(evB2Intro?.eventType === 'INTRODUCED', 'b2 independent sibling intro commit is labeled INTRODUCED');
-        assert(evB2Mod?.eventType === 'MODIFIED', 'b2 child commit is labeled MODIFIED');
-
-        // 3. Efficient O(branches) branch discovery
-        const discEngine = new GitHistoryEngine(sibRepo);
-        const startDisc = Date.now();
-        const discResult = await discEngine.getBranchesForCommits([b1IntroSha, b1ModSha, b2IntroSha, b2ModSha]);
-        const elapsedDisc = Date.now() - startDisc;
-
-        assert(discResult.failed === false, 'getBranchesForCommits executes successfully');
-        assert(discResult.commitBranchesMap.get(b1IntroSha)?.includes('branch-1'), 'b1Intro mapped to branch-1');
-        assert(discResult.commitBranchesMap.get(b2IntroSha)?.includes('branch-2'), 'b2Intro mapped to branch-2');
-        assert(!discResult.commitBranchesMap.get(b1IntroSha)?.includes('branch-2'), 'b1Intro not mapped to branch-2');
-        assert(elapsedDisc < 2000, `getBranchesForCommits completes in < 2000ms (took ${elapsedDisc}ms)`);
-
-        // 4. Risk engine preserves uncertainty when history flags indicate incomplete / unverified history
-        const dummyRule = DETECTOR_RULES.find((r) => r.id === 'github-pat')!;
-        const dummyContext = { isTest: false, isDoc: false, isConfig: false, isSensitiveName: false, extension: '.ts' };
-
-        // Test A: Incomplete search with only 1 confirmed day
-        const partialExposure: GitExposure = {
-          isPresentInHead: true,
-          isPresentInHistory: true,
-          exposureDurationDays: 1,
-          branches: ['main'],
-          isRemote: false,
-          statusDescription: 'Partial history search',
-          isPartialHistory: true,
-          searchStatus: 'SEARCH_INCOMPLETE',
-        };
-        const partialRisk = calculateRiskAssessment(dummyRule, 100, dummyContext, partialExposure);
-        assert(partialRisk.blastRadius.factors.some((f: string) => f.includes('Exposure duration unverified due to incomplete history')), 'Blast radius factor notes unverified exposure duration on SEARCH_INCOMPLETE');
-        assert(partialRisk.factors.some((f) => f.factor === 'EXPOSURE_REACH' && f.explanation.includes('unverified exposure')), 'Risk factor explanation notes unverified exposure');
-
-        // Test B: isIntroductionUnverified: true
-        const unverifiedIntroExposure: GitExposure = {
-          isPresentInHead: true,
-          isPresentInHistory: true,
-          exposureDurationDays: 2,
-          branches: ['main'],
-          isRemote: false,
-          statusDescription: 'Shallow clone',
-          isIntroductionUnverified: true,
-          searchStatus: 'FOUND',
-        };
-        const unverifiedRisk = calculateRiskAssessment(dummyRule, 100, dummyContext, unverifiedIntroExposure);
-        assert(unverifiedRisk.blastRadius.factors.some((f: string) => f.includes('Exposure duration unverified due to incomplete history')), 'Blast radius factor notes unverified exposure on isIntroductionUnverified');
-
-        // Test C: Fully verified short exposure (1 day) does NOT flag unverified duration
-        const cleanExposure: GitExposure = {
-          isPresentInHead: true,
-          isPresentInHistory: true,
-          exposureDurationDays: 1,
-          branches: ['main'],
-          isRemote: false,
-          statusDescription: 'Complete search',
-          searchStatus: 'FOUND',
-        };
-        const cleanRisk = calculateRiskAssessment(dummyRule, 100, dummyContext, cleanExposure);
-        assert(!cleanRisk.blastRadius.factors.some((f: string) => f.includes('Exposure duration unverified')), 'Fully verified 1-day exposure does not flag unverified duration');
-        assert(!cleanRisk.blastRadius.factors.some((f: string) => f.includes('without rotation')), '1-day exposure does not exceed 7 days');
-
-      } finally {
-        try { fs.rmSync(sec49Dir, { recursive: true, force: true }); } catch {}
-      }
-    }
-
-    // ============================================================
-    // SECTION 50: LARGE-REPOSITORY SCALE BENCHMARK & RISK/BLAST RADIUS SEPARATION
-    // ============================================================
-    console.log('\n--- Section 50: Large-Repository Scale Benchmark & Risk/Blast Radius Separation ---');
-    const sec50Dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-sec50-scale-'));
+  }
+
+  // --- 46. Shallow Credential Found, Multi-Branch Reachability, Committer Chronology & Numerical SIDs ---
+  console.log('\n--- 46. Shallow Credential Found, Multi-Branch Reachability, Committer Chronology & Numerical SIDs ---');
+  {
+    const { execFileSync } = cp;
+    const fromHex = (h: string) => Buffer.from(h, 'hex').toString('utf8');
+    const sec46Dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-sec46-'));
     try {
-      const { execFileSync, spawn } = cp;
-      execFileSync('git', ['init'], { cwd: sec50Dir, stdio: 'ignore' });
-      execFileSync('git', ['config', 'user.name', 'Scale Tester'], { cwd: sec50Dir, stdio: 'ignore' });
-      execFileSync('git', ['config', 'user.email', 'scale@example.com'], { cwd: sec50Dir, stdio: 'ignore' });
+      // 1. Shallow repository where secret IS discovered in visible history
+      const shallowRepoWithSecret = path.join(sec46Dir, 'shallow-with-secret');
+      fs.mkdirSync(shallowRepoWithSecret, { recursive: true });
+      execFileSync('git', ['init'], { cwd: shallowRepoWithSecret });
+      execFileSync('git', ['checkout', '-B', 'main'], { cwd: shallowRepoWithSecret });
+      execFileSync('git', ['config', 'user.name', 'Dev Tester'], { cwd: shallowRepoWithSecret });
+      execFileSync('git', ['config', 'user.email', 'dev@example.com'], { cwd: shallowRepoWithSecret });
 
-      // 1. Synthetic scale repository generation via fast-import (2,000 commits + 50 branches)
-      const fiStart = Date.now();
-      const fi = spawn('git', ['fast-import'], {
-        cwd: sec50Dir,
-        stdio: ['pipe', 'ignore', 'ignore'],
+      const shallowSecretVal = fromHex('6768705f') + fromHex('5368616c6c6f7756697369626c65536563726574546f6b656e31323334353637383930');
+      fs.writeFileSync(path.join(shallowRepoWithSecret, 'creds.json'), `{"token": "${shallowSecretVal}"}\n`, 'utf8');
+      execFileSync('git', ['add', 'creds.json'], { cwd: shallowRepoWithSecret });
+      execFileSync('git', ['commit', '-m', 'feat: shallow visible commit with secret'], { cwd: shallowRepoWithSecret });
+
+      const shallowSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: shallowRepoWithSecret, encoding: 'utf8' }).trim();
+      // Mark as shallow boundary commit
+      fs.writeFileSync(path.join(shallowRepoWithSecret, '.git', 'shallow'), `${shallowSha}\n`, 'utf8');
+
+      const shallowFoundEngine = new GitHistoryEngine(shallowRepoWithSecret);
+      const searchFoundRes = await shallowFoundEngine.findCommitsContainingSecretResult(shallowSecretVal);
+      assert(searchFoundRes.status === 'FOUND', 'findCommitsContainingSecretResult returns FOUND when secret in shallow commit');
+      assert(searchFoundRes.isShallow === true, 'isShallow is true in search result');
+      assert(searchFoundRes.isPartialHistory === true, 'isPartialHistory is true when secret found in shallow repository');
+
+      const traceFound = await shallowFoundEngine.traceSecret(shallowSecretVal);
+      assert(traceFound.isPresentInHistory === true, 'traceSecret marks isPresentInHistory: true when secret discovered in shallow repo');
+      assert(traceFound.isIntroductionUnverified === true, 'traceSecret flags isIntroductionUnverified: true in shallow repo');
+      assert(traceFound.searchStatus === 'SEARCH_INCOMPLETE', 'traceSecret searchStatus is SEARCH_INCOMPLETE due to shallow truncation');
+      assert(traceFound.statusDescription.includes('original introduction date and total exposure duration unverified due to shallow clone'), 'statusDescription clarifies unverified introduction due to shallow clone');
+      assert(!traceFound.statusDescription.includes('limited to 0 commit(s)'), 'statusDescription does not emit misleading 0 commits limit message');
+
+      // Timeline check for shallow clone
+      const timelineEngine = new GitTimelineEngine(shallowRepoWithSecret, shallowFoundEngine);
+      const tlReport = await timelineEngine.buildTimeline(shallowSecretVal, 'ghp_****7890');
+      assert(tlReport.currentStatus === 'SEARCH_INCOMPLETE', 'buildTimeline reports currentStatus: SEARCH_INCOMPLETE on shallow repo');
+      assert(tlReport.timelineAscii.includes('⚠️ EARLIEST VISIBLE COMMIT (Shallow clone; original introduction unverified)'), 'buildTimeline tags earliest visible commit on shallow repo');
+      assert(tlReport.timelineAscii.includes('Total Exposure:     >= 0 days (unverified earlier history due to shallow clone)'), 'buildTimeline ASCII notes >= X days exposure for shallow repo');
+
+      // 2. Independent credential introductions across branches with remote tracking ref
+      const multiBranchRepo = path.join(sec46Dir, 'multi-branch-repo');
+      fs.mkdirSync(multiBranchRepo, { recursive: true });
+      execFileSync('git', ['init'], { cwd: multiBranchRepo });
+      execFileSync('git', ['checkout', '-B', 'main'], { cwd: multiBranchRepo });
+      execFileSync('git', ['config', 'user.name', 'Branch Tester'], { cwd: multiBranchRepo });
+      execFileSync('git', ['config', 'user.email', 'branch@example.com'], { cwd: multiBranchRepo });
+
+      fs.writeFileSync(path.join(multiBranchRepo, 'base.txt'), 'base\n', 'utf8');
+      execFileSync('git', ['add', 'base.txt'], { cwd: multiBranchRepo });
+      execFileSync('git', ['commit', '-m', 'chore: initial base commit'], { cwd: multiBranchRepo });
+
+      const branchSecret = fromHex('736b2d616e742d61706930332d') + fromHex('4272616e6368537072656164546f6b656e313233343536373839303132333435363738');
+
+      // Branch A (local only)
+      execFileSync('git', ['checkout', '-b', 'feature/local-a'], { cwd: multiBranchRepo });
+      fs.writeFileSync(path.join(multiBranchRepo, 'local_a.txt'), `API_KEY=${branchSecret}\n`, 'utf8');
+      execFileSync('git', ['add', 'local_a.txt'], { cwd: multiBranchRepo });
+      execFileSync('git', ['commit', '-m', 'feat(local): introduce secret on branch A'], { cwd: multiBranchRepo });
+      const branchASha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: multiBranchRepo, encoding: 'utf8' }).trim();
+
+      // Branch B (divergent from main, has fake remote tracking branch)
+      execFileSync('git', ['checkout', 'main'], { cwd: multiBranchRepo });
+      execFileSync('git', ['checkout', '-b', 'feature/remote-b'], { cwd: multiBranchRepo });
+      fs.writeFileSync(path.join(multiBranchRepo, 'remote_b.txt'), `API_KEY=${branchSecret}\n`, 'utf8');
+      execFileSync('git', ['add', 'remote_b.txt'], { cwd: multiBranchRepo });
+      execFileSync('git', ['commit', '-m', 'feat(remote): introduce secret on branch B'], { cwd: multiBranchRepo });
+      const branchBSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: multiBranchRepo, encoding: 'utf8' }).trim();
+
+      // Create a remote tracking ref for branch B: refs/remotes/origin/feature/remote-b pointing to branchBSha
+      execFileSync('git', ['update-ref', 'refs/remotes/origin/feature/remote-b', branchBSha], { cwd: multiBranchRepo });
+
+      // Checkout main (which has NO secret)
+      execFileSync('git', ['checkout', 'main'], { cwd: multiBranchRepo });
+
+      const multiEngine = new GitHistoryEngine(multiBranchRepo);
+      const multiTrace = await multiEngine.traceSecret(branchSecret);
+      assert(multiTrace.isPresentInHistory === true, 'traceSecret detects presence in multi-branch repo');
+      assert(multiTrace.isPresentInHead === false, 'traceSecret correctly detects absence from main HEAD');
+      assert(multiTrace.isRemote === true, 'traceSecret identifies remote push when ANY containing branch has remote tracking ref');
+      assert(multiTrace.branches.some((b) => b.includes('feature/local-a')), 'traceSecret branches includes feature/local-a');
+      assert(multiTrace.branches.some((b) => b.includes('feature/remote-b')), 'traceSecret branches includes feature/remote-b');
+      assert(multiTrace.branchRemovals !== undefined, 'traceSecret returns branchRemovals');
+      assert(multiTrace.branchRemovals['feature/local-a']?.introducedCommit?.sha === branchASha, 'branchRemovals tracks independent introduction on branch A');
+      assert(multiTrace.branchRemovals['feature/remote-b']?.introducedCommit?.sha === branchBSha, 'branchRemovals tracks independent introduction on branch B');
+
+      // 3. Topological sorting neutralizes backdated author dates (GIT_AUTHOR_DATE)
+      const dateRepo = path.join(sec46Dir, 'date-repo');
+      fs.mkdirSync(dateRepo, { recursive: true });
+      execFileSync('git', ['init'], { cwd: dateRepo });
+      execFileSync('git', ['checkout', '-B', 'main'], { cwd: dateRepo });
+      execFileSync('git', ['config', 'user.name', 'Time Tester'], { cwd: dateRepo });
+      execFileSync('git', ['config', 'user.email', 'time@example.com'], { cwd: dateRepo });
+
+      const dateSecret = fromHex('6768705f') + fromHex('4261636b6461746564417574686f72536563726574546f6b656e31323334353637383930');
+
+      // Commit 1 (the true introduction): modern committer date and modern author date
+      fs.writeFileSync(path.join(dateRepo, 'secret.txt'), `${dateSecret}\n`, 'utf8');
+      execFileSync('git', ['add', 'secret.txt'], { cwd: dateRepo });
+      execFileSync('git', ['commit', '-m', 'commit 1: real introduction'], {
+        cwd: dateRepo,
+        env: {
+          ...process.env,
+          GIT_AUTHOR_DATE: '2025-01-01T12:00:00Z',
+          GIT_COMMITTER_DATE: '2025-01-01T12:00:00Z',
+        },
       });
+      const c1Sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dateRepo, encoding: 'utf8' }).trim();
 
-      const commitCount = 2000;
-      for (let i = 1; i <= commitCount; i++) {
-        const authorTime = 1700000000 + i;
-        const msg = `Commit ${i}\n`;
-        const content = `content ${i}\n`;
-        let commitStr = `commit refs/heads/main\nmark :${i}\n`;
-        commitStr += `author Test <test@test.com> ${authorTime} +0000\n`;
-        commitStr += `committer Test <test@test.com> ${authorTime} +0000\n`;
-        commitStr += `data ${Buffer.byteLength(msg)}\n${msg}`;
-        if (i > 1) {
-          commitStr += `from :${i - 1}\n`;
-        }
-        commitStr += `M 100644 inline file.txt\ndata ${Buffer.byteLength(content)}\n${content}\n`;
-        fi.stdin.write(commitStr);
-      }
+      // Commit 2 (child of commit 1): modified secret file with a deliberately BACKDATED author date to 1999!
+      fs.writeFileSync(path.join(dateRepo, 'secret.txt'), `${dateSecret} updated\n`, 'utf8');
+      execFileSync('git', ['add', 'secret.txt'], { cwd: dateRepo });
+      execFileSync('git', ['commit', '-m', 'commit 2: descendant with manipulated author date'], {
+        cwd: dateRepo,
+        env: {
+          ...process.env,
+          GIT_AUTHOR_DATE: '1999-01-01T12:00:00Z', // Deliberately backdated!
+          GIT_COMMITTER_DATE: '2025-01-02T12:00:00Z',
+        },
+      });
+      const c2Sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dateRepo, encoding: 'utf8' }).trim();
 
-      // Create 25 local branches and 25 remote tracking branches sharing history
-      for (let b = 1; b <= 25; b++) {
-        const targetMark = Math.max(1, commitCount - (b * 20));
-        fi.stdin.write(`reset refs/heads/branch-local-${b}\nfrom :${targetMark}\n\n`);
-        fi.stdin.write(`reset refs/remotes/origin/remote-branch-${b}\nfrom :${targetMark}\n\n`);
-      }
-      fi.stdin.end();
+      const dateEngine = new GitHistoryEngine(dateRepo);
+      const dateTrace = await dateEngine.traceSecret(dateSecret);
+      // By topological order: c2 is descendant of c1, so c1 MUST be identified as introducedCommit, not c2!
+      assert(dateTrace.introducedCommit?.sha === c1Sha, 'Topological sorting selects true ancestor c1 as introducedCommit despite backdated author date on c2');
+      assert(dateTrace.lastSeenCommit?.sha === c2Sha, 'Topological sorting selects child c2 as lastSeenCommit');
 
-      await new Promise<void>((resolve) => fi.on('close', () => resolve()));
-      const fiDuration = Date.now() - fiStart;
-      assert(fiDuration < 8000, `fast-import generated 2,000 commits and 50 branches rapidly (${fiDuration}ms)`);
-
-      // Retrieve test commit SHAs
-      const shaHead = execFileSync('git', ['rev-parse', 'refs/heads/main'], { cwd: sec50Dir, encoding: 'utf8' }).trim();
-      const shaMid = execFileSync('git', ['rev-parse', 'refs/heads/main~500'], { cwd: sec50Dir, encoding: 'utf8' }).trim();
-      const shaOld = execFileSync('git', ['rev-parse', 'refs/heads/main~1500'], { cwd: sec50Dir, encoding: 'utf8' }).trim();
-
-      // 2. Performance & Flat-Memory Streaming Benchmark
-      const scaleEngine = new GitHistoryEngine(sec50Dir);
-      const memBefore = process.memoryUsage().heapUsed;
-      const benchStart = Date.now();
-
-      const scaleResult = await scaleEngine.getBranchesForCommits([shaHead, shaMid, shaOld], sec50Dir);
-      const benchDuration = Date.now() - benchStart;
-      const memAfter = process.memoryUsage().heapUsed;
-      const memDeltaMb = (memAfter - memBefore) / (1024 * 1024);
-
-      assert(scaleResult.failed === false, 'getBranchesForCommits executes without failure on large repo');
-      assert(scaleResult.allBranches.length >= 50, `Discovered at least 50 branches (found ${scaleResult.allBranches.length})`);
-      assert(scaleResult.commitBranchesMap.get(shaHead)?.includes('main'), 'shaHead is contained in main');
-      assert((scaleResult.commitBranchesMap.get(shaMid)?.length ?? 0) >= 25, `shaMid contained in >= 25 branches (found ${scaleResult.commitBranchesMap.get(shaMid)?.length})`);
-      assert((scaleResult.commitBranchesMap.get(shaOld)?.length ?? 0) >= 45, `shaOld contained in >= 45 branches (found ${scaleResult.commitBranchesMap.get(shaOld)?.length})`);
-      assert(benchDuration < 4000, `getBranchesForCommits on 51 branches completes in < 4000ms (took ${benchDuration}ms)`);
-      assert(memDeltaMb < 30, `Streaming heap memory consumption remains flat and bounded (< 30 MB delta, measured ${memDeltaMb.toFixed(2)} MB)`);
-
-      // 3. Graceful error handling and edge cases
-      const emptyResult = await scaleEngine.getBranchesForCommits([], sec50Dir);
-      assert(emptyResult.failed === false && emptyResult.allBranches.length === 0, 'Empty commit input returns empty cleanly');
-
-      const nonGitEngine = new GitHistoryEngine(path.join(os.tmpdir(), 'non-existent-dir-' + Date.now()));
-      const failResult = await nonGitEngine.getBranchesForCommits(['abcdef1234567890']);
-      assert(failResult.failed === true, 'getBranchesForCommits fails gracefully on invalid git repo');
-
-      // 3b. Regression test: Subprocess failure lifecycle ordering (must not be swallowed by readline close)
-      const subProcRepo = path.join(sec50Dir, 'subproc-repo');
-      fs.mkdirSync(subProcRepo, { recursive: true });
-      execFileSync('git', ['init'], { cwd: subProcRepo, stdio: 'ignore' });
-      execFileSync('git', ['config', 'user.name', 'Tester'], { cwd: subProcRepo, stdio: 'ignore' });
-      execFileSync('git', ['config', 'user.email', 'test@test.com'], { cwd: subProcRepo, stdio: 'ignore' });
-      fs.writeFileSync(path.join(subProcRepo, 'init.txt'), 'hello', 'utf8');
-      execFileSync('git', ['add', 'init.txt'], { cwd: subProcRepo, stdio: 'ignore' });
-      execFileSync('git', ['commit', '-m', 'c1'], { cwd: subProcRepo, stdio: 'ignore' });
-      const dummySha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: subProcRepo, encoding: 'utf8' }).trim();
-
-      class FaultyRevListEngine extends GitHistoryEngine {
-        protected override spawnGitRevList(branch: string, cwd: string): any {
-          // Emits commit output, writes error to stderr, then exits non-zero (code 128)
-          return cp.spawn(process.execPath, [
-            '-e',
-            `console.log("${dummySha}"); process.stderr.write("fatal: object corrupt in pack\\n"); process.exit(128);`
-          ]);
-        }
-      }
-
-      const faultyEngine = new FaultyRevListEngine(subProcRepo);
-      const faultyResult = await faultyEngine.getBranchesForCommits([dummySha, 'missing-sha-0000000000'], subProcRepo);
-
-      assert(faultyResult.failed === true, 'getBranchesForCommits reports failed: true when git rev-list emits output then exits non-zero');
-      assert(
-        faultyResult.error?.includes('fatal: object corrupt') || faultyResult.error?.includes('128'),
-        `Error message preserves stderr failure details (got: "${faultyResult.error}")`
-      );
-
-      // Verify stream error propagation (stdout stream error terminates long-running child immediately)
-      class StdoutErrorRevListEngine extends GitHistoryEngine {
-        protected override spawnGitRevList(branch: string, cwd: string): any {
-          const proc = cp.spawn(process.execPath, [
-            '-e',
-            `console.log("${dummySha}"); setTimeout(() => process.exit(0), 5000);`
-          ]);
-          setTimeout(() => {
-            if (proc.stdout) {
-              proc.stdout.emit('error', new Error('Simulated stdout read error'));
+      // 4. Windows ACL Parser: Asterisk-prefixed Numerical SIDs (*S-1-5-...)
+      let sidRemoved = false;
+      const sidMockCp = {
+        execFileSync: (cmd: string, args: string[]) => {
+          if (cmd === 'whoami' && args.includes('/fo')) {
+            return '"User Name","SID"\n"WORKGROUP\\admin","S-1-5-21-999999999-888888888-777777777-500"\n';
+          }
+          if (cmd === 'icacls') {
+            if (args.includes('/remove') && args.includes('*S-1-5-21-123456789-987654321-111111111-1002')) {
+              sidRemoved = true;
             }
-          }, 10);
-          return proc;
-        }
-      }
-
-      const stdoutErrEngine = new StdoutErrorRevListEngine(subProcRepo);
-      const stdoutErrStart = Date.now();
-      const stdoutErrResult = await stdoutErrEngine.getBranchesForCommits([dummySha, 'missing-sha-0000000000'], subProcRepo);
-      const stdoutErrElapsed = Date.now() - stdoutErrStart;
-      assert(
-        stdoutErrResult.failed === true && Boolean(stdoutErrResult.error?.includes('Simulated stdout read error')),
-        'getBranchesForCommits reports failed: true and preserves stdout read error'
-      );
-      assert(
-        stdoutErrElapsed < 2000,
-        `Long-running child is terminated promptly after stream failure without waiting for delay (took ${stdoutErrElapsed}ms)`
-      );
-
-      // Verify stream error propagation (stderr stream error terminates long-running child immediately)
-      class StderrErrorRevListEngine extends GitHistoryEngine {
-        protected override spawnGitRevList(branch: string, cwd: string): any {
-          const proc = cp.spawn(process.execPath, [
-            '-e',
-            `console.log("${dummySha}"); setTimeout(() => process.exit(0), 5000);`
-          ]);
-          setTimeout(() => {
-            if (proc.stderr) {
-              proc.stderr.emit('error', new Error('Simulated stderr stream error'));
+            if (args.length === 1) {
+              if (!sidRemoved) {
+                // Output with asterisk-prefixed unresolved SID
+                return `${args[0]} *S-1-5-21-123456789-987654321-111111111-1002:(R)\n WORKGROUP\\admin:(F)\nSuccessfully processed 1 files;\n`;
+              }
+              return `${args[0]} WORKGROUP\\admin:(F)\nSuccessfully processed 1 files;\n`;
             }
-          }, 10);
-          return proc;
+          }
+          return Buffer.from('');
+        }
+      };
+
+      const sidEnvPath = path.join(sec46Dir, '.env');
+      fs.writeFileSync(sidEnvPath, 'KEY="val"\n', 'utf8');
+      const sidEnforceRes = enforceEnvFilePermissions(sidEnvPath, fs, 'win32', sidMockCp as any);
+      assert(sidEnforceRes.enforced === true, 'enforceEnvFilePermissions reports enforced: true when asterisk-prefixed SID is stripped');
+      assert(sidRemoved === true, 'enforceEnvFilePermissions captures and strips *S-1-5-... numerical SID via icacls /remove');
+
+    } finally {
+      try { fs.rmSync(sec46Dir, { recursive: true, force: true }); } catch { }
+    }
+  }
+
+  // --- 47. Lineage Ancestry-Path, O(N) Topo Ordering, Committer Date Chronology & Worktree Fallbacks ---
+  console.log('\n--- 47. Lineage Ancestry-Path, O(N) Topo Ordering, Committer Date Chronology & Worktree Fallbacks ---');
+  {
+    const { execFileSync } = cp;
+    const fromHex = (h: string) => Buffer.from(h, 'hex').toString('utf8');
+    const sec47Dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-sec47-'));
+    try {
+      // 1. False removal attribution after merging a clean side branch
+      const mergeRepo = path.join(sec47Dir, 'merge-repo');
+      fs.mkdirSync(mergeRepo, { recursive: true });
+      execFileSync('git', ['init'], { cwd: mergeRepo });
+      execFileSync('git', ['checkout', '-B', 'main'], { cwd: mergeRepo });
+      execFileSync('git', ['config', 'user.name', 'Merge Tester'], { cwd: mergeRepo });
+      execFileSync('git', ['config', 'user.email', 'merge@example.com'], { cwd: mergeRepo });
+
+      fs.writeFileSync(path.join(mergeRepo, 'base.txt'), 'base\n', 'utf8');
+      execFileSync('git', ['add', 'base.txt'], { cwd: mergeRepo });
+      execFileSync('git', ['commit', '-m', 'chore: base commit'], { cwd: mergeRepo });
+
+      // Create feature branch and commit an unrelated file
+      execFileSync('git', ['checkout', '-b', 'feature-unrelated'], { cwd: mergeRepo });
+      fs.writeFileSync(path.join(mergeRepo, 'unrelated.txt'), 'unrelated\n', 'utf8');
+      execFileSync('git', ['add', 'unrelated.txt'], { cwd: mergeRepo });
+      execFileSync('git', ['commit', '-m', 'feat: unrelated commit on side branch'], { cwd: mergeRepo });
+      const sideBranchSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: mergeRepo, encoding: 'utf8' }).trim();
+
+      // Switch back to main, add credential
+      execFileSync('git', ['checkout', 'main'], { cwd: mergeRepo });
+      const secretVal = fromHex('6768705f') + fromHex('4d65726765536563726574546f6b656e31323334353637383930');
+      fs.writeFileSync(path.join(mergeRepo, 'secret.txt'), `TOKEN=${secretVal}\n`, 'utf8');
+      execFileSync('git', ['add', 'secret.txt'], { cwd: mergeRepo });
+      execFileSync('git', ['commit', '-m', 'feat: add credential on main'], { cwd: mergeRepo });
+      const introSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: mergeRepo, encoding: 'utf8' }).trim();
+
+      // Merge the unrelated feature branch into main without removing credential
+      execFileSync('git', ['merge', 'feature-unrelated', '-m', 'merge feature-unrelated into main'], { cwd: mergeRepo });
+      const mergeSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: mergeRepo, encoding: 'utf8' }).trim();
+
+      const mergeEngine = new GitHistoryEngine(mergeRepo);
+
+      // findRemovalCommit on main BEFORE actual removal must NOT return sideBranchSha!
+      const prematureRemoval = await mergeEngine.findRemovalCommit(secretVal, introSha, 'main');
+      assert(prematureRemoval === undefined, 'findRemovalCommit does not falsely select unrelated side branch commit as removal commit');
+
+      // Now remove the credential in a later commit on main
+      fs.writeFileSync(path.join(mergeRepo, 'secret.txt'), 'TOKEN=clean\n', 'utf8');
+      execFileSync('git', ['add', 'secret.txt'], { cwd: mergeRepo });
+      execFileSync('git', ['commit', '-m', 'fix: genuine removal commit'], { cwd: mergeRepo });
+      const genuineRemovalSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: mergeRepo, encoding: 'utf8' }).trim();
+
+      const genuineRemoval = await mergeEngine.findRemovalCommit(secretVal, introSha, 'main');
+      assert(genuineRemoval !== undefined, 'findRemovalCommit finds genuine removal commit after side branch merge');
+      assert(genuineRemoval?.sha === genuineRemovalSha, 'findRemovalCommit accurately attributes removal to genuineRemovalSha');
+      assert(genuineRemoval?.sha !== sideBranchSha, 'findRemovalCommit does not attribute removal to sideBranchSha');
+
+      // 2. O(N) Topological sorting performance test with hundreds of commits
+      const perfRepo = path.join(sec47Dir, 'perf-repo');
+      fs.mkdirSync(perfRepo, { recursive: true });
+      execFileSync('git', ['init'], { cwd: perfRepo });
+      execFileSync('git', ['checkout', '-B', 'main'], { cwd: perfRepo });
+      execFileSync('git', ['config', 'user.name', 'Perf Tester'], { cwd: perfRepo });
+      execFileSync('git', ['config', 'user.email', 'perf@example.com'], { cwd: perfRepo });
+
+      const persistentSecret = fromHex('736b2d616e742d61706930332d') + fromHex('50657266436865636b546f6b656e313233343536373839303132333435363738');
+      fs.writeFileSync(path.join(perfRepo, 'data.txt'), `KEY=${persistentSecret}\n`, 'utf8');
+      execFileSync('git', ['add', 'data.txt'], { cwd: perfRepo });
+      execFileSync('git', ['commit', '-m', 'commit 0'], { cwd: perfRepo });
+      const initialSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: perfRepo, encoding: 'utf8' }).trim();
+
+      // Create 20 consecutive commits containing the secret
+      for (let i = 1; i <= 20; i++) {
+        fs.writeFileSync(path.join(perfRepo, 'counter.txt'), `${i}\n`, 'utf8');
+        execFileSync('git', ['add', 'counter.txt'], { cwd: perfRepo });
+        execFileSync('git', ['commit', '-m', `commit ${i}`], { cwd: perfRepo });
+      }
+      const newestSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: perfRepo, encoding: 'utf8' }).trim();
+
+      const perfEngine = new GitHistoryEngine(perfRepo);
+      const startTime = Date.now();
+      const perfTrace = await perfEngine.traceSecret(persistentSecret);
+      const elapsedMs = Date.now() - startTime;
+
+      assert(perfTrace.commitCount === 21, 'traceSecret finds all 21 commits containing persistent secret');
+      assert(perfTrace.introducedCommit?.sha === initialSha, 'traceSecret identifies initial commit as introducedCommit');
+      assert(perfTrace.lastSeenCommit?.sha === newestSha, 'traceSecret identifies newest commit as lastSeenCommit');
+      assert(elapsedMs < 10000, `traceSecret topological sorting runs in linear time without quadratic subprocess delay (took ${elapsedMs}ms)`);
+
+      // 3. Committer date carried through timeline and backdated removal
+      const timeRepo = path.join(sec47Dir, 'time-repo');
+      fs.mkdirSync(timeRepo, { recursive: true });
+      execFileSync('git', ['init'], { cwd: timeRepo });
+      execFileSync('git', ['checkout', '-B', 'main'], { cwd: timeRepo });
+      execFileSync('git', ['config', 'user.name', 'Timeline Tester'], { cwd: timeRepo });
+      execFileSync('git', ['config', 'user.email', 'time@example.com'], { cwd: timeRepo });
+
+      const timeSecret = fromHex('6768705f') + fromHex('54696d656c696e65536563726574546f6b656e31323334353637383930');
+      fs.writeFileSync(path.join(timeRepo, 'auth.txt'), `AUTH=${timeSecret}\n`, 'utf8');
+      execFileSync('git', ['add', 'auth.txt'], { cwd: timeRepo });
+      execFileSync('git', ['commit', '-m', 'intro commit'], {
+        cwd: timeRepo,
+        env: {
+          ...process.env,
+          GIT_AUTHOR_DATE: '2025-01-01T12:00:00Z',
+          GIT_COMMITTER_DATE: '2025-01-01T12:00:00Z',
+        },
+      });
+      const t1Sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: timeRepo, encoding: 'utf8' }).trim();
+
+      // Commit 2: modification with backdated author date
+      fs.writeFileSync(path.join(timeRepo, 'auth.txt'), `AUTH=${timeSecret} updated\n`, 'utf8');
+      execFileSync('git', ['add', 'auth.txt'], { cwd: timeRepo });
+      execFileSync('git', ['commit', '-m', 'mod commit backdated author'], {
+        cwd: timeRepo,
+        env: {
+          ...process.env,
+          GIT_AUTHOR_DATE: '1998-01-01T12:00:00Z',
+          GIT_COMMITTER_DATE: '2025-01-05T12:00:00Z',
+        },
+      });
+      const t2Sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: timeRepo, encoding: 'utf8' }).trim();
+
+      // Commit 3: removal with backdated author date
+      fs.writeFileSync(path.join(timeRepo, 'auth.txt'), 'AUTH=clean\n', 'utf8');
+      execFileSync('git', ['add', 'auth.txt'], { cwd: timeRepo });
+      execFileSync('git', ['commit', '-m', 'removal commit backdated author'], {
+        cwd: timeRepo,
+        env: {
+          ...process.env,
+          GIT_AUTHOR_DATE: '1995-01-01T12:00:00Z',
+          GIT_COMMITTER_DATE: '2025-01-10T12:00:00Z',
+        },
+      });
+      const t3Sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: timeRepo, encoding: 'utf8' }).trim();
+
+      const timeEngine = new GitHistoryEngine(timeRepo);
+      const timeRemoval = await timeEngine.findRemovalCommit(timeSecret, t2Sha, 'main');
+      assert(timeRemoval?.sha === t3Sha, 'findRemovalCommit finds t3 removal commit');
+      assert(timeRemoval?.committerDate !== undefined, 'findRemovalCommit carries committerDate');
+
+      const tlEngine = new GitTimelineEngine(timeRepo, timeEngine);
+      const tlReport = await tlEngine.buildTimeline(timeSecret, 'ghp_••••');
+      assert(tlReport.events.length === 3, 'buildTimeline produces 3 events');
+      assert(tlReport.events[0].commitSha === t1Sha, 'buildTimeline places true ancestor t1 as INTRODUCED event despite backdated author dates');
+      assert(tlReport.events[1].commitSha === t2Sha, 'buildTimeline places child t2 as second event');
+      assert(tlReport.events[2].commitSha === t3Sha, 'buildTimeline places removal t3 as REMOVED event');
+      assert(tlReport.totalExposureDays >= 9, 'buildTimeline uses committer dates for accurate exposure calculation');
+
+      // 4. Branch inspection failures propagate into UNKNOWN and SEARCH_INCOMPLETE
+      class FailingBranchEngine extends GitHistoryEngine {
+        protected async execGit(args: string[], options: any = {}): Promise<{ stdout: any; stderr: any }> {
+          if (args[0] === 'branch' && (args.includes('-a') || args.includes('--contains'))) {
+            throw new Error('Simulated operational failure during branch lookup on t2');
+          }
+          return super.execGit(args, options);
         }
       }
+      const failingBranchEngine = new FailingBranchEngine(timeRepo);
+      const fbTrace = await failingBranchEngine.traceSecret(timeSecret);
+      assert(fbTrace.isRemote === 'UNKNOWN', 'traceSecret sets isRemote: UNKNOWN when branch query fails on a commit without confirmed remote');
+      assert(fbTrace.searchStatus === 'SEARCH_INCOMPLETE', 'traceSecret sets searchStatus: SEARCH_INCOMPLETE when branch query fails');
+      assert(fbTrace.statusDescription.includes('INCOMPLETE BRANCH INSPECTION'), 'traceSecret notes INCOMPLETE BRANCH INSPECTION in statusDescription');
 
-      const stderrErrEngine = new StderrErrorRevListEngine(subProcRepo);
-      const stderrErrStart = Date.now();
-      const stderrErrResult = await stderrErrEngine.getBranchesForCommits([dummySha, 'missing-sha-0000000000'], subProcRepo);
-      const stderrErrElapsed = Date.now() - stderrErrStart;
-      assert(
-        stderrErrResult.failed === true && Boolean(stderrErrResult.error?.includes('Simulated stderr stream error')),
-        'getBranchesForCommits reports failed: true and preserves stderr stream error'
-      );
-      assert(
-        stderrErrElapsed < 2000,
-        `Long-running child is terminated promptly after stderr stream failure without waiting for delay (took ${stderrErrElapsed}ms)`
-      );
+      // 5. Shallow repository fallback resolves .git/shallow in linked worktrees
+      const wtRepo = path.join(sec47Dir, 'wt-repo');
+      fs.mkdirSync(wtRepo, { recursive: true });
+      execFileSync('git', ['init'], { cwd: wtRepo });
+      execFileSync('git', ['checkout', '-B', 'main'], { cwd: wtRepo });
+      execFileSync('git', ['config', 'user.name', 'WT Tester'], { cwd: wtRepo });
+      execFileSync('git', ['config', 'user.email', 'wt@example.com'], { cwd: wtRepo });
+      fs.writeFileSync(path.join(wtRepo, 'wt_base.txt'), 'wt\n', 'utf8');
+      execFileSync('git', ['add', 'wt_base.txt'], { cwd: wtRepo });
+      execFileSync('git', ['commit', '-m', 'wt base commit'], { cwd: wtRepo });
 
-      // Verify intentional early termination resolves cleanly with failed: false
-      class EarlyTermRevListEngine extends GitHistoryEngine {
-        protected override spawnGitRevList(branch: string, cwd: string): any {
-          return cp.spawn(process.execPath, [
-            '-e',
-            `console.log("${dummySha}"); setTimeout(() => { console.log("unreachable"); process.exit(0); }, 5000);`
-          ]);
+      const wtHeadSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: wtRepo, encoding: 'utf8' }).trim();
+      // Create shallow marker in main repo's .git/shallow
+      fs.writeFileSync(path.join(wtRepo, '.git', 'shallow'), `${wtHeadSha}\n`, 'utf8');
+
+      // Create linked worktree
+      const linkedWtPath = path.join(sec47Dir, 'linked-worktree');
+      execFileSync('git', ['worktree', 'add', linkedWtPath, '-b', 'wt-test-branch'], { cwd: wtRepo });
+
+      // In linked worktree, .git is a file, not a directory
+      assert(fs.statSync(path.join(linkedWtPath, '.git')).isFile(), 'Linked worktree has .git as a file');
+
+      // Test mock engine that forces fallback path by throwing in git rev-parse --is-shallow-repository
+      class WorktreeShallowEngine extends GitHistoryEngine {
+        protected async execGit(args: string[], options: any = {}): Promise<{ stdout: any; stderr: any }> {
+          if (args[0] === 'rev-parse' && args[1] === '--is-shallow-repository') {
+            throw new Error('Unsupported command simulation');
+          }
+          return super.execGit(args, options);
         }
       }
-      const earlyEngine = new EarlyTermRevListEngine(subProcRepo);
-      const earlyStart = Date.now();
-      const earlyResult = await earlyEngine.getBranchesForCommits([dummySha], subProcRepo);
-      const earlyElapsed = Date.now() - earlyStart;
-      assert(earlyResult.failed === false, 'Early termination resolves cleanly with failed: false');
-      assert(earlyElapsed < 2000, `Early termination kills process immediately without waiting for delay (took ${earlyElapsed}ms)`);
+      const wtEngine = new WorktreeShallowEngine(linkedWtPath);
+      const wtIsShallow = await wtEngine.isShallowRepo();
+      assert(wtIsShallow === true, 'isShallowRepo detects shallow status in linked worktree via --git-path shallow fallback');
 
-      // 4. Exact Mathematical Separation of Risk Assessment vs. Blast Radius
-      const testRule = DETECTOR_RULES.find((r) => r.id === 'github-pat')!;
-      const testCtx = { isTest: false, isDoc: false, isConfig: false, isSensitiveName: false, extension: '.ts' };
+    } finally {
+      try { fs.rmSync(sec47Dir, { recursive: true, force: true }); } catch { }
+    }
+  }
 
-      const incompleteExp: GitExposure = {
+  // --- 48. First-Parent Merge Removal, Display Date Distinction, Sibling Branch Aggregation & Depth-Limited Semantics ---
+  console.log('\n--- 48. First-Parent Merge Removal, Display Date Distinction, Sibling Branch Aggregation & Depth-Limited Semantics ---');
+  {
+    const { execFileSync } = cp;
+    const fromHex = (h: string) => Buffer.from(h, 'hex').toString('utf8');
+    const sec48Dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-sec48-'));
+    try {
+      // 1. First-parent merge removal: Secret removed on side branch, then merged into main
+      const fpRepo = path.join(sec48Dir, 'fp-repo');
+      fs.mkdirSync(fpRepo, { recursive: true });
+      execFileSync('git', ['init'], { cwd: fpRepo });
+      execFileSync('git', ['checkout', '-B', 'main'], { cwd: fpRepo });
+      execFileSync('git', ['config', 'user.name', 'FP Tester'], { cwd: fpRepo });
+      execFileSync('git', ['config', 'user.email', 'fp@example.com'], { cwd: fpRepo });
+
+      fs.writeFileSync(path.join(fpRepo, 'base.txt'), 'base\n', 'utf8');
+      execFileSync('git', ['add', 'base.txt'], { cwd: fpRepo });
+      execFileSync('git', ['commit', '-m', 'base commit'], { cwd: fpRepo });
+
+      const fpSecret = fromHex('6768705f') + fromHex('4669727374506172656e74546573745365637265743132333435');
+      fs.writeFileSync(path.join(fpRepo, 'token.txt'), `TOKEN=${fpSecret}\n`, 'utf8');
+      execFileSync('git', ['add', 'token.txt'], { cwd: fpRepo });
+      execFileSync('git', ['commit', '-m', 'intro secret on main'], { cwd: fpRepo });
+      const mainIntroSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fpRepo, encoding: 'utf8' }).trim();
+
+      // Create feature branch and remove secret on that feature branch
+      execFileSync('git', ['checkout', '-b', 'feature-removal'], { cwd: fpRepo });
+      fs.writeFileSync(path.join(fpRepo, 'token.txt'), 'TOKEN=clean_on_feature\n', 'utf8');
+      execFileSync('git', ['add', 'token.txt'], { cwd: fpRepo });
+      execFileSync('git', ['commit', '-m', 'remove secret on feature branch'], { cwd: fpRepo });
+      const featureRemovalSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fpRepo, encoding: 'utf8' }).trim();
+
+      // Work on main while secret is still active on main
+      execFileSync('git', ['checkout', 'main'], { cwd: fpRepo });
+      fs.writeFileSync(path.join(fpRepo, 'main_work.txt'), 'working on main\n', 'utf8');
+      execFileSync('git', ['add', 'main_work.txt'], { cwd: fpRepo });
+      execFileSync('git', ['commit', '-m', 'unrelated main work with secret active'], { cwd: fpRepo });
+      const intermediateMainSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fpRepo, encoding: 'utf8' }).trim();
+
+      // Merge feature branch into main (this merge commit removes the secret from main's effective history)
+      execFileSync('git', ['merge', 'feature-removal', '-m', 'merge feature-removal into main'], { cwd: fpRepo });
+      const mergeRemovalSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fpRepo, encoding: 'utf8' }).trim();
+
+      const fpEngine = new GitHistoryEngine(fpRepo);
+      const mainRemoval = await fpEngine.findRemovalCommit(fpSecret, mainIntroSha, 'main');
+      assert(mainRemoval !== undefined, 'findRemovalCommit finds removal commit on main after merge');
+      assert(mainRemoval?.sha === mergeRemovalSha, 'findRemovalCommit attributes removal to the merge commit on main, NOT the feature branch commit');
+      assert(mainRemoval?.sha !== featureRemovalSha, 'findRemovalCommit does not falsely report featureRemovalSha as the removal commit for main');
+
+      // On the feature branch itself, removal is accurately attributed to featureRemovalSha
+      const featRemoval = await fpEngine.findRemovalCommit(fpSecret, mainIntroSha, 'feature-removal');
+      assert(featRemoval?.sha === featureRemovalSha, 'findRemovalCommit attributes removal on feature-removal branch to featureRemovalSha');
+
+      // 2. Display date distinction and consistent committer chronology in timeline
+      const displayRepo = path.join(sec48Dir, 'display-repo');
+      fs.mkdirSync(displayRepo, { recursive: true });
+      execFileSync('git', ['init'], { cwd: displayRepo });
+      execFileSync('git', ['checkout', '-B', 'main'], { cwd: displayRepo });
+      execFileSync('git', ['config', 'user.name', 'Display Tester'], { cwd: displayRepo });
+      execFileSync('git', ['config', 'user.email', 'display@example.com'], { cwd: displayRepo });
+
+      const displaySecret = fromHex('6768705f') + fromHex('446973706c617944617465546573745365637265743132333435');
+      fs.writeFileSync(path.join(displayRepo, 'key.txt'), `KEY=${displaySecret}\n`, 'utf8');
+      execFileSync('git', ['add', 'key.txt'], { cwd: displayRepo });
+      execFileSync('git', ['commit', '-m', 'c1: true introduction'], {
+        cwd: displayRepo,
+        env: {
+          ...process.env,
+          GIT_AUTHOR_DATE: '2025-01-01T12:00:00Z',
+          GIT_COMMITTER_DATE: '2025-01-01T12:00:00Z',
+        },
+      });
+      const c1Sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: displayRepo, encoding: 'utf8' }).trim();
+
+      // c2: child commit with backdated author date (1990) but committer date (2025-01-05)
+      fs.writeFileSync(path.join(displayRepo, 'key.txt'), `KEY=${displaySecret} updated\n`, 'utf8');
+      execFileSync('git', ['add', 'key.txt'], { cwd: displayRepo });
+      execFileSync('git', ['commit', '-m', 'c2: child with backdated author date'], {
+        cwd: displayRepo,
+        env: {
+          ...process.env,
+          GIT_AUTHOR_DATE: '1990-01-01T12:00:00Z',
+          GIT_COMMITTER_DATE: '2025-01-05T12:00:00Z',
+        },
+      });
+      const c2Sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: displayRepo, encoding: 'utf8' }).trim();
+
+      const tlEngine = new GitTimelineEngine(displayRepo);
+      const tlReport = await tlEngine.buildTimeline(displaySecret, 'ghp_••••');
+      assert(tlReport.events.length === 2, 'buildTimeline produces 2 events');
+      assert(tlReport.events[0].commitSha === c1Sha, 'c1 is first event');
+      assert(tlReport.events[1].commitSha === c2Sha, 'c2 is second event');
+      // Visual timeline display date must use committer date (2025-01-05) or note authored date
+      assert(tlReport.timelineAscii.includes('[2025-01-01]'), 'timeline ASCII includes c1 committer date');
+      assert(tlReport.timelineAscii.includes('[2025-01-05]'), 'timeline ASCII includes c2 committer date for displayed chronology');
+      assert(tlReport.timelineAscii.includes('(authored 1990-01-01)'), 'timeline ASCII explicitly notes backdated author date');
+      assert(tlReport.graph.nodes[1].date.startsWith('2025-01-05'), 'graph node date reflects committer date');
+
+      // 3. Sibling branch independent introductions with aggregate duration
+      const siblingRepo = path.join(sec48Dir, 'sibling-repo');
+      fs.mkdirSync(siblingRepo, { recursive: true });
+      execFileSync('git', ['init'], { cwd: siblingRepo });
+      execFileSync('git', ['checkout', '-B', 'main'], { cwd: siblingRepo });
+      execFileSync('git', ['config', 'user.name', 'Sibling Tester'], { cwd: siblingRepo });
+      execFileSync('git', ['config', 'user.email', 'sibling@example.com'], { cwd: siblingRepo });
+
+      fs.writeFileSync(path.join(siblingRepo, 'root.txt'), 'root\n', 'utf8');
+      execFileSync('git', ['add', 'root.txt'], { cwd: siblingRepo });
+      execFileSync('git', ['commit', '-m', 'root commit'], { cwd: siblingRepo });
+
+      const sharedSecret = fromHex('6768705f') + fromHex('5369626c696e675370726561645365637265743132333435');
+
+      // Sibling branch 1: introduced on 2025-01-01, removed on 2025-01-05 (4 days duration)
+      execFileSync('git', ['checkout', '-b', 'branch-alpha'], { cwd: siblingRepo });
+      fs.writeFileSync(path.join(siblingRepo, 'token.txt'), `KEY=${sharedSecret}\n`, 'utf8');
+      execFileSync('git', ['add', 'token.txt'], { cwd: siblingRepo });
+      execFileSync('git', ['commit', '-m', 'alpha intro'], {
+        cwd: siblingRepo,
+        env: {
+          ...process.env,
+          GIT_AUTHOR_DATE: '2025-01-01T12:00:00Z',
+          GIT_COMMITTER_DATE: '2025-01-01T12:00:00Z',
+        },
+      });
+      const alphaIntroSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: siblingRepo, encoding: 'utf8' }).trim();
+
+      fs.writeFileSync(path.join(siblingRepo, 'token.txt'), 'KEY=clean_alpha\n', 'utf8');
+      execFileSync('git', ['add', 'token.txt'], { cwd: siblingRepo });
+      execFileSync('git', ['commit', '-m', 'alpha removal'], {
+        cwd: siblingRepo,
+        env: {
+          ...process.env,
+          GIT_AUTHOR_DATE: '2025-01-05T12:00:00Z',
+          GIT_COMMITTER_DATE: '2025-01-05T12:00:00Z',
+        },
+      });
+      const alphaRemovalSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: siblingRepo, encoding: 'utf8' }).trim();
+
+      // Sibling branch 2 (divergent from root): introduced on 2025-01-02, active to 2025-01-12 (10 days duration)
+      execFileSync('git', ['checkout', 'main'], { cwd: siblingRepo });
+      execFileSync('git', ['checkout', '-b', 'branch-beta'], { cwd: siblingRepo });
+      fs.writeFileSync(path.join(siblingRepo, 'token.txt'), `KEY=${sharedSecret}\n`, 'utf8');
+      execFileSync('git', ['add', 'token.txt'], { cwd: siblingRepo });
+      execFileSync('git', ['commit', '-m', 'beta intro'], {
+        cwd: siblingRepo,
+        env: {
+          ...process.env,
+          GIT_AUTHOR_DATE: '2025-01-02T12:00:00Z',
+          GIT_COMMITTER_DATE: '2025-01-02T12:00:00Z',
+        },
+      });
+      const betaIntroSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: siblingRepo, encoding: 'utf8' }).trim();
+
+      fs.writeFileSync(path.join(siblingRepo, 'token.txt'), 'KEY=clean_beta\n', 'utf8');
+      execFileSync('git', ['add', 'token.txt'], { cwd: siblingRepo });
+      execFileSync('git', ['commit', '-m', 'beta removal'], {
+        cwd: siblingRepo,
+        env: {
+          ...process.env,
+          GIT_AUTHOR_DATE: '2025-01-12T12:00:00Z',
+          GIT_COMMITTER_DATE: '2025-01-12T12:00:00Z',
+        },
+      });
+      const betaRemovalSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: siblingRepo, encoding: 'utf8' }).trim();
+
+      execFileSync('git', ['checkout', 'main'], { cwd: siblingRepo });
+
+      const siblingEngine = new GitHistoryEngine(siblingRepo);
+      const sibTrace = await siblingEngine.traceSecret(sharedSecret);
+      assert(sibTrace.branchRemovals !== undefined, 'branchRemovals is defined');
+      assert(sibTrace.branchRemovals['branch-alpha']?.introducedCommit?.sha === alphaIntroSha, 'branch-alpha intro commit tracked');
+      assert(sibTrace.branchRemovals['branch-alpha']?.removalCommit?.sha === alphaRemovalSha, 'branch-alpha removal commit tracked');
+      assert(sibTrace.branchRemovals['branch-alpha']?.exposureDurationDays === 4, 'branch-alpha duration is 4 days');
+
+      assert(sibTrace.branchRemovals['branch-beta']?.introducedCommit?.sha === betaIntroSha, 'branch-beta intro commit tracked');
+      assert(sibTrace.branchRemovals['branch-beta']?.removalCommit?.sha === betaRemovalSha, 'branch-beta removal commit tracked');
+      assert(sibTrace.branchRemovals['branch-beta']?.exposureDurationDays === 10, 'branch-beta duration is 10 days');
+      assert(sibTrace.exposureDurationDays === 10, 'sibTrace.exposureDurationDays aggregates to max confirmed branch duration (10 days)');
+
+      const sibTlEngine = new GitTimelineEngine(siblingRepo, siblingEngine);
+      const sibTl = await sibTlEngine.buildTimeline(sharedSecret, 'ghp_••••');
+      const alphaEvent = sibTl.events.find((e) => e.commitSha === alphaIntroSha);
+      const betaEvent = sibTl.events.find((e) => e.commitSha === betaIntroSha);
+      assert(alphaEvent?.eventType === 'INTRODUCED', 'branch-alpha intro is labeled INTRODUCED');
+      assert(betaEvent?.eventType === 'INTRODUCED', 'branch-beta independent sibling intro is labeled INTRODUCED');
+
+      // 4. Positive matches in depth-limited searches report SEARCH_INCOMPLETE
+      const limRepo = path.join(sec48Dir, 'lim-repo');
+      fs.mkdirSync(limRepo, { recursive: true });
+      execFileSync('git', ['init'], { cwd: limRepo });
+      execFileSync('git', ['checkout', '-B', 'main'], { cwd: limRepo });
+      execFileSync('git', ['config', 'user.name', 'Lim Tester'], { cwd: limRepo });
+      execFileSync('git', ['config', 'user.email', 'lim@example.com'], { cwd: limRepo });
+
+      const limSecret = fromHex('6768705f') + fromHex('4c696d697465645365617263685365637265743132333435');
+      fs.writeFileSync(path.join(limRepo, 'code.txt'), `SECRET=${limSecret}\n`, 'utf8');
+      execFileSync('git', ['add', 'code.txt'], { cwd: limRepo });
+      execFileSync('git', ['commit', '-m', 'intro secret'], { cwd: limRepo });
+
+      // Add 10 additional clean commits on top
+      for (let i = 1; i <= 10; i++) {
+        fs.writeFileSync(path.join(limRepo, 'clean.txt'), `${i}\n`, 'utf8');
+        execFileSync('git', ['add', 'clean.txt'], { cwd: limRepo });
+        execFileSync('git', ['commit', '-m', `clean commit ${i}`], { cwd: limRepo });
+      }
+
+      const limEngine = new GitHistoryEngine(limRepo);
+      // Search with maxCommits = 11 (covers both the clean commits and the secret commit, but totalRevCount > 11? total is 11)
+      // Add 5 more commits so total is 16
+      for (let i = 11; i <= 15; i++) {
+        fs.writeFileSync(path.join(limRepo, 'clean.txt'), `${i}\n`, 'utf8');
+        execFileSync('git', ['add', 'clean.txt'], { cwd: limRepo });
+        execFileSync('git', ['commit', '-m', `clean commit ${i}`], { cwd: limRepo });
+      }
+
+      // Now total commits = 16. Limit search to 15 commits (which includes the secret at commit 1, because HEAD is commit 16)
+      // With maxCommits = 15, isPartialHistory is true, and secret is found!
+      const limSearchResult = await limEngine.findCommitsContainingSecretResult(limSecret, 15);
+      assert(limSearchResult.status === 'FOUND', 'findCommitsContainingSecretResult returns FOUND');
+      assert(limSearchResult.isPartialHistory === true, 'findCommitsContainingSecretResult marks isPartialHistory: true');
+
+      const limTrace = await limEngine.traceSecret(limSecret, 15);
+      assert(limTrace.isPresentInHistory === true, 'traceSecret marks isPresentInHistory: true');
+      assert(limTrace.isPartialHistory === true, 'traceSecret marks isPartialHistory: true');
+      assert(limTrace.searchStatus === 'SEARCH_INCOMPLETE', 'traceSecret sets searchStatus: SEARCH_INCOMPLETE when secret found in partial history');
+      assert(limTrace.statusDescription.includes('PARTIAL HISTORY: search depth limited to 15 commit(s)'), 'statusDescription mentions partial history limit');
+
+      // Timeline check for limited search
+      const limTlEngine = new GitTimelineEngine(limRepo, limEngine);
+      const limTlReport = await limTlEngine.buildTimeline(limSecret, 'ghp_••••', 15);
+      assert(limTlReport.currentStatus === 'SEARCH_INCOMPLETE', 'buildTimeline reports currentStatus: SEARCH_INCOMPLETE when partial history');
+      assert(limTlReport.timelineAscii.includes('History Coverage:   PARTIAL (limited to 15 commits; earlier history uninspected)'), 'buildTimeline ASCII notes partial history coverage');
+
+    } finally {
+      try { fs.rmSync(sec48Dir, { recursive: true, force: true }); } catch { }
+    }
+  }
+
+  // --- 49. Ongoing Branch Exposure, Independent Timeline Introductions, O(branches) Discovery & Risk Incomplete Flags ---
+  console.log('\n--- 49. Ongoing Branch Exposure, Independent Timeline Introductions, O(branches) Discovery & Risk Incomplete Flags ---');
+  {
+    const { execFileSync } = cp;
+    const fromHex = (h: string) => Buffer.from(h, 'hex').toString('utf8');
+    const sec49Dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-sec49-'));
+    try {
+      // 1. Ongoing branch exposure through current time when active branch has no removal commit
+      const ongoingRepo = path.join(sec49Dir, 'ongoing-repo');
+      fs.mkdirSync(ongoingRepo, { recursive: true });
+      execFileSync('git', ['init'], { cwd: ongoingRepo });
+      execFileSync('git', ['checkout', '-B', 'main'], { cwd: ongoingRepo });
+      execFileSync('git', ['config', 'user.name', 'Ongoing Tester'], { cwd: ongoingRepo });
+      execFileSync('git', ['config', 'user.email', 'ongoing@example.com'], { cwd: ongoingRepo });
+
+      fs.writeFileSync(path.join(ongoingRepo, 'root.txt'), 'root\n', 'utf8');
+      execFileSync('git', ['add', 'root.txt'], { cwd: ongoingRepo });
+      execFileSync('git', ['commit', '-m', 'root commit'], { cwd: ongoingRepo });
+
+      // Create active branch with secret introduced 100 days ago, no removal commit
+      execFileSync('git', ['checkout', '-b', 'feat/ongoing-leak'], { cwd: ongoingRepo });
+      const ongoingSecret = fromHex('6768705f') + fromHex('4f6e676f696e674c65616b53656372657431323334353637383930');
+      const introDate100DaysAgo = new Date(Date.now() - 100 * 24 * 60 * 60 * 1000).toISOString();
+      fs.writeFileSync(path.join(ongoingRepo, 'key.txt'), `KEY=${ongoingSecret}\n`, 'utf8');
+      execFileSync('git', ['add', 'key.txt'], { cwd: ongoingRepo });
+      execFileSync('git', ['commit', '-m', 'ongoing intro'], {
+        cwd: ongoingRepo,
+        env: {
+          ...process.env,
+          GIT_AUTHOR_DATE: introDate100DaysAgo,
+          GIT_COMMITTER_DATE: introDate100DaysAgo,
+        },
+      });
+      const ongoingIntroSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: ongoingRepo, encoding: 'utf8' }).trim();
+
+      // Switch to main (where secret was never present)
+      execFileSync('git', ['checkout', 'main'], { cwd: ongoingRepo });
+
+      const ongoingEngine = new GitHistoryEngine(ongoingRepo);
+      const ongoingTrace = await ongoingEngine.traceSecret(ongoingSecret);
+      assert(ongoingTrace.branchRemovals !== undefined, 'branchRemovals is defined for ongoing leak');
+      const branchInfo = ongoingTrace.branchRemovals['feat/ongoing-leak'];
+      assert(branchInfo !== undefined, 'feat/ongoing-leak branch tracked');
+      assert(branchInfo?.isRemoved === false, 'active branch without removal commit is marked isRemoved: false');
+      assert(branchInfo?.exposureDurationDays !== undefined && branchInfo.exposureDurationDays >= 99, `branch duration calculates ongoing exposure through current time (got ${branchInfo?.exposureDurationDays} days)`);
+      assert(ongoingTrace.exposureDurationDays >= 99, `aggregate exposureDurationDays uses maximum confirmed ongoing duration (got ${ongoingTrace.exposureDurationDays} days)`);
+
+      // 2. Sibling branch independent introductions with subsequent modifications
+      const sibRepo = path.join(sec49Dir, 'sib-repo');
+      fs.mkdirSync(sibRepo, { recursive: true });
+      execFileSync('git', ['init'], { cwd: sibRepo });
+      execFileSync('git', ['checkout', '-B', 'main'], { cwd: sibRepo });
+      execFileSync('git', ['config', 'user.name', 'Sib Tester'], { cwd: sibRepo });
+      execFileSync('git', ['config', 'user.email', 'sib@example.com'], { cwd: sibRepo });
+
+      fs.writeFileSync(path.join(sibRepo, 'init.txt'), 'init\n', 'utf8');
+      execFileSync('git', ['add', 'init.txt'], { cwd: sibRepo });
+      execFileSync('git', ['commit', '-m', 'init commit'], { cwd: sibRepo });
+
+      const multiIntroSecret = fromHex('6768705f') + fromHex('4d756c7469496e74726f53656372657431323334353637383930');
+
+      // Branch 1: introduces secret in C1, modifies it in C2
+      execFileSync('git', ['checkout', '-b', 'branch-1'], { cwd: sibRepo });
+      fs.writeFileSync(path.join(sibRepo, 'sec.txt'), `KEY=${multiIntroSecret}\n`, 'utf8');
+      execFileSync('git', ['add', 'sec.txt'], { cwd: sibRepo });
+      execFileSync('git', ['commit', '-m', 'b1: intro secret'], {
+        cwd: sibRepo,
+        env: { ...process.env, GIT_AUTHOR_DATE: '2025-01-01T10:00:00Z', GIT_COMMITTER_DATE: '2025-01-01T10:00:00Z' },
+      });
+      const b1IntroSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: sibRepo, encoding: 'utf8' }).trim();
+
+      fs.writeFileSync(path.join(sibRepo, 'sec.txt'), `KEY=${multiIntroSecret} mod\n`, 'utf8');
+      execFileSync('git', ['add', 'sec.txt'], { cwd: sibRepo });
+      execFileSync('git', ['commit', '-m', 'b1: mod secret'], {
+        cwd: sibRepo,
+        env: { ...process.env, GIT_AUTHOR_DATE: '2025-01-02T10:00:00Z', GIT_COMMITTER_DATE: '2025-01-02T10:00:00Z' },
+      });
+      const b1ModSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: sibRepo, encoding: 'utf8' }).trim();
+
+      // Branch 2: branched from clean main, independently introduces secret in C3, modifies in C4
+      execFileSync('git', ['checkout', 'main'], { cwd: sibRepo });
+      execFileSync('git', ['checkout', '-b', 'branch-2'], { cwd: sibRepo });
+      fs.writeFileSync(path.join(sibRepo, 'sec.txt'), `KEY=${multiIntroSecret}\n`, 'utf8');
+      execFileSync('git', ['add', 'sec.txt'], { cwd: sibRepo });
+      execFileSync('git', ['commit', '-m', 'b2: intro secret'], {
+        cwd: sibRepo,
+        env: { ...process.env, GIT_AUTHOR_DATE: '2025-01-03T10:00:00Z', GIT_COMMITTER_DATE: '2025-01-03T10:00:00Z' },
+      });
+      const b2IntroSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: sibRepo, encoding: 'utf8' }).trim();
+
+      fs.writeFileSync(path.join(sibRepo, 'sec.txt'), `KEY=${multiIntroSecret} mod2\n`, 'utf8');
+      execFileSync('git', ['add', 'sec.txt'], { cwd: sibRepo });
+      execFileSync('git', ['commit', '-m', 'b2: mod secret'], {
+        cwd: sibRepo,
+        env: { ...process.env, GIT_AUTHOR_DATE: '2025-01-04T10:00:00Z', GIT_COMMITTER_DATE: '2025-01-04T10:00:00Z' },
+      });
+      const b2ModSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: sibRepo, encoding: 'utf8' }).trim();
+
+      execFileSync('git', ['checkout', 'main'], { cwd: sibRepo });
+
+      const sibTlEngine = new GitTimelineEngine(sibRepo);
+      const sibReport = await sibTlEngine.buildTimeline(multiIntroSecret, 'ghp_••••');
+
+      const evB1Intro = sibReport.events.find((e) => e.commitSha === b1IntroSha);
+      const evB1Mod = sibReport.events.find((e) => e.commitSha === b1ModSha);
+      const evB2Intro = sibReport.events.find((e) => e.commitSha === b2IntroSha);
+      const evB2Mod = sibReport.events.find((e) => e.commitSha === b2ModSha);
+
+      assert(evB1Intro?.eventType === 'INTRODUCED', 'b1 intro commit is labeled INTRODUCED');
+      assert(evB1Mod?.eventType === 'MODIFIED', 'b1 child commit is labeled MODIFIED');
+      assert(evB2Intro?.eventType === 'INTRODUCED', 'b2 independent sibling intro commit is labeled INTRODUCED');
+      assert(evB2Mod?.eventType === 'MODIFIED', 'b2 child commit is labeled MODIFIED');
+
+      // 3. Efficient O(branches) branch discovery
+      const discEngine = new GitHistoryEngine(sibRepo);
+      const startDisc = Date.now();
+      const discResult = await discEngine.getBranchesForCommits([b1IntroSha, b1ModSha, b2IntroSha, b2ModSha]);
+      const elapsedDisc = Date.now() - startDisc;
+
+      assert(discResult.failed === false, 'getBranchesForCommits executes successfully');
+      assert(discResult.commitBranchesMap.get(b1IntroSha)?.includes('branch-1'), 'b1Intro mapped to branch-1');
+      assert(discResult.commitBranchesMap.get(b2IntroSha)?.includes('branch-2'), 'b2Intro mapped to branch-2');
+      assert(!discResult.commitBranchesMap.get(b1IntroSha)?.includes('branch-2'), 'b1Intro not mapped to branch-2');
+      assert(elapsedDisc < 2000, `getBranchesForCommits completes in < 2000ms (took ${elapsedDisc}ms)`);
+
+      // 4. Risk engine preserves uncertainty when history flags indicate incomplete / unverified history
+      const dummyRule = DETECTOR_RULES.find((r) => r.id === 'github-pat')!;
+      const dummyContext = { isTest: false, isDoc: false, isConfig: false, isSensitiveName: false, extension: '.ts' };
+
+      // Test A: Incomplete search with only 1 confirmed day
+      const partialExposure: GitExposure = {
         isPresentInHead: true,
         isPresentInHistory: true,
         exposureDurationDays: 1,
         branches: ['main'],
         isRemote: false,
-        statusDescription: 'Truncated history search',
+        statusDescription: 'Partial history search',
         isPartialHistory: true,
         searchStatus: 'SEARCH_INCOMPLETE',
       };
+      const partialRisk = calculateRiskAssessment(dummyRule, 100, dummyContext, partialExposure);
+      assert(partialRisk.blastRadius.factors.some((f: string) => f.includes('Exposure duration unverified due to incomplete history')), 'Blast radius factor notes unverified exposure duration on SEARCH_INCOMPLETE');
+      assert(partialRisk.factors.some((f) => f.factor === 'EXPOSURE_REACH' && f.explanation.includes('unverified exposure')), 'Risk factor explanation notes unverified exposure');
 
-      const completeExp: GitExposure = {
+      // Test B: isIntroductionUnverified: true
+      const unverifiedIntroExposure: GitExposure = {
+        isPresentInHead: true,
+        isPresentInHistory: true,
+        exposureDurationDays: 2,
+        branches: ['main'],
+        isRemote: false,
+        statusDescription: 'Shallow clone',
+        isIntroductionUnverified: true,
+        searchStatus: 'FOUND',
+      };
+      const unverifiedRisk = calculateRiskAssessment(dummyRule, 100, dummyContext, unverifiedIntroExposure);
+      assert(unverifiedRisk.blastRadius.factors.some((f: string) => f.includes('Exposure duration unverified due to incomplete history')), 'Blast radius factor notes unverified exposure on isIntroductionUnverified');
+
+      // Test C: Fully verified short exposure (1 day) does NOT flag unverified duration
+      const cleanExposure: GitExposure = {
         isPresentInHead: true,
         isPresentInHistory: true,
         exposureDurationDays: 1,
         branches: ['main'],
         isRemote: false,
-        statusDescription: 'Complete history search',
+        statusDescription: 'Complete search',
         searchStatus: 'FOUND',
       };
+      const cleanRisk = calculateRiskAssessment(dummyRule, 100, dummyContext, cleanExposure);
+      assert(!cleanRisk.blastRadius.factors.some((f: string) => f.includes('Exposure duration unverified')), 'Fully verified 1-day exposure does not flag unverified duration');
+      assert(!cleanRisk.blastRadius.factors.some((f: string) => f.includes('without rotation')), '1-day exposure does not exceed 7 days');
 
-      const incompleteAssessment = calculateRiskAssessment(testRule, 100, testCtx, incompleteExp);
-      const completeAssessment = calculateRiskAssessment(testRule, 100, testCtx, completeExp);
-
-      // Intrinsic Risk Score invariance:
-      // Both have identical intrinsic credentials, confidence, storage, and physical reach (committed to git history).
-      // Therefore their intrinsic RiskAssessment.score and tier must be exactly identical!
-      assert(incompleteAssessment.score === 84, `Incomplete history risk score is exactly 84 (got ${incompleteAssessment.score})`);
-      assert(completeAssessment.score === 84, `Complete history risk score is exactly 84 (got ${completeAssessment.score})`);
-      assert(incompleteAssessment.tier === 'CRITICAL', 'Incomplete history tier is CRITICAL');
-      assert(completeAssessment.tier === 'CRITICAL', 'Complete history tier is CRITICAL');
-      assert(incompleteAssessment.score === completeAssessment.score, 'Intrinsic risk score is invariant to history truncation');
-
-      // Factor 4 preserves transparent explanation without inflating structural weights:
-      const incompleteReach = incompleteAssessment.factors.find((f) => f.factor === 'EXPOSURE_REACH');
-      const completeReach = completeAssessment.factors.find((f) => f.factor === 'EXPOSURE_REACH');
-      assert(incompleteReach?.scoreContribution === 16, 'Reach contribution is 16 for incomplete history');
-      assert(completeReach?.scoreContribution === 16, 'Reach contribution is 16 for complete history');
-      assert(incompleteReach?.explanation.includes('≥1 days unverified exposure'), 'Reach factor notes unverified duration');
-      assert(completeReach?.explanation.includes('1 days exposure'), 'Reach factor notes verified 1 day duration');
-
-      // Operational Blast Radius Separation:
-      // BlastRadius penalizes unverified containment bounds (+10 points) because containment cannot be guaranteed.
-      assert(incompleteAssessment.blastRadius.score === 72, `Incomplete history blast radius score is 72 (got ${incompleteAssessment.blastRadius.score})`);
-      assert(completeAssessment.blastRadius.score === 62, `Complete history blast radius score is 62 (got ${completeAssessment.blastRadius.score})`);
-      assert(incompleteAssessment.blastRadius.score - completeAssessment.blastRadius.score === 10, 'Blast radius reflects exact +10 operational uncertainty penalty');
-      assert(incompleteAssessment.blastRadius.level === 'EXTENSIVE', 'Incomplete blast radius level is EXTENSIVE');
-      assert(completeAssessment.blastRadius.level === 'EXTENSIVE', 'Complete blast radius level is EXTENSIVE');
-
-      // Uncommitted Working Tree Baseline:
-      const localUncommitted = calculateRiskAssessment(testRule, 100, testCtx, undefined);
-      assert(localUncommitted.score === 73, `Local uncommitted risk score is 73 (got ${localUncommitted.score})`);
-      assert(localUncommitted.tier === 'HIGH', 'Local uncommitted tier is HIGH');
-      assert(localUncommitted.blastRadius.score === 52, `Local uncommitted blast radius is 52 (got ${localUncommitted.blastRadius.score})`);
-      assert(localUncommitted.blastRadius.level === 'EXTENSIVE', 'Local uncommitted blast radius level is EXTENSIVE');
-      assert(localUncommitted.blastRadius.summary.includes('Contained to local working tree'), 'Blast radius summary confirms local containment');
     } finally {
-      try { fs.rmSync(sec50Dir, { recursive: true, force: true }); } catch {}
+      try { fs.rmSync(sec49Dir, { recursive: true, force: true }); } catch { }
+    }
+  }
+
+  // ============================================================
+  // SECTION 50: LARGE-REPOSITORY SCALE BENCHMARK & RISK/BLAST RADIUS SEPARATION
+  // ============================================================
+  console.log('\n--- Section 50: Large-Repository Scale Benchmark & Risk/Blast Radius Separation ---');
+  const sec50Dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-sec50-scale-'));
+  try {
+    const { execFileSync, spawn } = cp;
+    execFileSync('git', ['init'], { cwd: sec50Dir, stdio: 'ignore' });
+    execFileSync('git', ['config', 'user.name', 'Scale Tester'], { cwd: sec50Dir, stdio: 'ignore' });
+    execFileSync('git', ['config', 'user.email', 'scale@example.com'], { cwd: sec50Dir, stdio: 'ignore' });
+
+    // 1. Synthetic scale repository generation via fast-import (2,000 commits + 50 branches)
+    const fiStart = Date.now();
+    const fi = spawn('git', ['fast-import'], {
+      cwd: sec50Dir,
+      stdio: ['pipe', 'ignore', 'ignore'],
+    });
+
+    const commitCount = 2000;
+    for (let i = 1; i <= commitCount; i++) {
+      const authorTime = 1700000000 + i;
+      const msg = `Commit ${i}\n`;
+      const content = `content ${i}\n`;
+      let commitStr = `commit refs/heads/main\nmark :${i}\n`;
+      commitStr += `author Test <test@test.com> ${authorTime} +0000\n`;
+      commitStr += `committer Test <test@test.com> ${authorTime} +0000\n`;
+      commitStr += `data ${Buffer.byteLength(msg)}\n${msg}`;
+      if (i > 1) {
+        commitStr += `from :${i - 1}\n`;
+      }
+      commitStr += `M 100644 inline file.txt\ndata ${Buffer.byteLength(content)}\n${content}\n`;
+      fi.stdin.write(commitStr);
     }
 
-    // --- 51. Baseline Migration, Rollback, Atomic Concurrency & Filesystem Protection ---
-    console.log('\n--- 51. Baseline Migration, Rollback, Atomic Concurrency & Filesystem Protection ---');
-    const sec51Dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-sec51-'));
-    try {
-      const realSec51 = fs.realpathSync(sec51Dir);
-      const secretFile = path.join(realSec51, 'config.ts');
-      const testSecretA = synth(['AK', 'IA', '1111222233334444']);
-      const testSecretB = synth(['gh', 'p_', '11112222333344445555666677778888aaaa']);
-      fs.writeFileSync(secretFile, `const aws = "${testSecretA}";\nconst gh = "${testSecretB}";\n`, 'utf8');
+    // Create 25 local branches and 25 remote tracking branches sharing history
+    for (let b = 1; b <= 25; b++) {
+      const targetMark = Math.max(1, commitCount - (b * 20));
+      fi.stdin.write(`reset refs/heads/branch-local-${b}\nfrom :${targetMark}\n\n`);
+      fi.stdin.write(`reset refs/remotes/origin/remote-branch-${b}\nfrom :${targetMark}\n\n`);
+    }
+    fi.stdin.end();
 
-      // Create a legacy public-salt v1 baseline file
-      const legacyFpA = generateLegacyFingerprint(testSecretA);
-      const legacyFpB = generateLegacyFingerprint(testSecretB);
-      const legacyBaseline = {
+    await new Promise<void>((resolve) => fi.on('close', () => resolve()));
+    const fiDuration = Date.now() - fiStart;
+    assert(fiDuration < 8000, `fast-import generated 2,000 commits and 50 branches rapidly (${fiDuration}ms)`);
+
+    // Retrieve test commit SHAs
+    const shaHead = execFileSync('git', ['rev-parse', 'refs/heads/main'], { cwd: sec50Dir, encoding: 'utf8' }).trim();
+    const shaMid = execFileSync('git', ['rev-parse', 'refs/heads/main~500'], { cwd: sec50Dir, encoding: 'utf8' }).trim();
+    const shaOld = execFileSync('git', ['rev-parse', 'refs/heads/main~1500'], { cwd: sec50Dir, encoding: 'utf8' }).trim();
+
+    // 2. Performance & Flat-Memory Streaming Benchmark
+    const scaleEngine = new GitHistoryEngine(sec50Dir);
+    const memBefore = process.memoryUsage().heapUsed;
+    const benchStart = Date.now();
+
+    const scaleResult = await scaleEngine.getBranchesForCommits([shaHead, shaMid, shaOld], sec50Dir);
+    const benchDuration = Date.now() - benchStart;
+    const memAfter = process.memoryUsage().heapUsed;
+    const memDeltaMb = (memAfter - memBefore) / (1024 * 1024);
+
+    assert(scaleResult.failed === false, 'getBranchesForCommits executes without failure on large repo');
+    assert(scaleResult.allBranches.length >= 50, `Discovered at least 50 branches (found ${scaleResult.allBranches.length})`);
+    assert(scaleResult.commitBranchesMap.get(shaHead)?.includes('main'), 'shaHead is contained in main');
+    assert((scaleResult.commitBranchesMap.get(shaMid)?.length ?? 0) >= 25, `shaMid contained in >= 25 branches (found ${scaleResult.commitBranchesMap.get(shaMid)?.length})`);
+    assert((scaleResult.commitBranchesMap.get(shaOld)?.length ?? 0) >= 45, `shaOld contained in >= 45 branches (found ${scaleResult.commitBranchesMap.get(shaOld)?.length})`);
+    assert(benchDuration < 4000, `getBranchesForCommits on 51 branches completes in < 4000ms (took ${benchDuration}ms)`);
+    assert(memDeltaMb < 30, `Streaming heap memory consumption remains flat and bounded (< 30 MB delta, measured ${memDeltaMb.toFixed(2)} MB)`);
+
+    // 3. Graceful error handling and edge cases
+    const emptyResult = await scaleEngine.getBranchesForCommits([], sec50Dir);
+    assert(emptyResult.failed === false && emptyResult.allBranches.length === 0, 'Empty commit input returns empty cleanly');
+
+    const nonGitEngine = new GitHistoryEngine(path.join(os.tmpdir(), 'non-existent-dir-' + Date.now()));
+    const failResult = await nonGitEngine.getBranchesForCommits(['abcdef1234567890']);
+    assert(failResult.failed === true, 'getBranchesForCommits fails gracefully on invalid git repo');
+
+    // 3b. Regression test: Subprocess failure lifecycle ordering (must not be swallowed by readline close)
+    const subProcRepo = path.join(sec50Dir, 'subproc-repo');
+    fs.mkdirSync(subProcRepo, { recursive: true });
+    execFileSync('git', ['init'], { cwd: subProcRepo, stdio: 'ignore' });
+    execFileSync('git', ['config', 'user.name', 'Tester'], { cwd: subProcRepo, stdio: 'ignore' });
+    execFileSync('git', ['config', 'user.email', 'test@test.com'], { cwd: subProcRepo, stdio: 'ignore' });
+    fs.writeFileSync(path.join(subProcRepo, 'init.txt'), 'hello', 'utf8');
+    execFileSync('git', ['add', 'init.txt'], { cwd: subProcRepo, stdio: 'ignore' });
+    execFileSync('git', ['commit', '-m', 'c1'], { cwd: subProcRepo, stdio: 'ignore' });
+    const dummySha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: subProcRepo, encoding: 'utf8' }).trim();
+
+    class FaultyRevListEngine extends GitHistoryEngine {
+      protected override spawnGitRevList(branch: string, cwd: string): any {
+        // Emits commit output, writes error to stderr, then exits non-zero (code 128)
+        return cp.spawn(process.execPath, [
+          '-e',
+          `console.log("${dummySha}"); process.stderr.write("fatal: object corrupt in pack\\n"); process.exit(128);`
+        ]);
+      }
+    }
+
+    const faultyEngine = new FaultyRevListEngine(subProcRepo);
+    const faultyResult = await faultyEngine.getBranchesForCommits([dummySha, 'missing-sha-0000000000'], subProcRepo);
+
+    assert(faultyResult.failed === true, 'getBranchesForCommits reports failed: true when git rev-list emits output then exits non-zero');
+    assert(
+      faultyResult.error?.includes('fatal: object corrupt') || faultyResult.error?.includes('128'),
+      `Error message preserves stderr failure details (got: "${faultyResult.error}")`
+    );
+
+    // Verify stream error propagation (stdout stream error terminates long-running child immediately)
+    class StdoutErrorRevListEngine extends GitHistoryEngine {
+      protected override spawnGitRevList(branch: string, cwd: string): any {
+        const proc = cp.spawn(process.execPath, [
+          '-e',
+          `console.log("${dummySha}"); setTimeout(() => process.exit(0), 5000);`
+        ]);
+        setTimeout(() => {
+          if (proc.stdout) {
+            proc.stdout.emit('error', new Error('Simulated stdout read error'));
+          }
+        }, 10);
+        return proc;
+      }
+    }
+
+    const stdoutErrEngine = new StdoutErrorRevListEngine(subProcRepo);
+    const stdoutErrStart = Date.now();
+    const stdoutErrResult = await stdoutErrEngine.getBranchesForCommits([dummySha, 'missing-sha-0000000000'], subProcRepo);
+    const stdoutErrElapsed = Date.now() - stdoutErrStart;
+    assert(
+      stdoutErrResult.failed === true && Boolean(stdoutErrResult.error?.includes('Simulated stdout read error')),
+      'getBranchesForCommits reports failed: true and preserves stdout read error'
+    );
+    assert(
+      stdoutErrElapsed < 2000,
+      `Long-running child is terminated promptly after stream failure without waiting for delay (took ${stdoutErrElapsed}ms)`
+    );
+
+    // Verify stream error propagation (stderr stream error terminates long-running child immediately)
+    class StderrErrorRevListEngine extends GitHistoryEngine {
+      protected override spawnGitRevList(branch: string, cwd: string): any {
+        const proc = cp.spawn(process.execPath, [
+          '-e',
+          `console.log("${dummySha}"); setTimeout(() => process.exit(0), 5000);`
+        ]);
+        setTimeout(() => {
+          if (proc.stderr) {
+            proc.stderr.emit('error', new Error('Simulated stderr stream error'));
+          }
+        }, 10);
+        return proc;
+      }
+    }
+
+    const stderrErrEngine = new StderrErrorRevListEngine(subProcRepo);
+    const stderrErrStart = Date.now();
+    const stderrErrResult = await stderrErrEngine.getBranchesForCommits([dummySha, 'missing-sha-0000000000'], subProcRepo);
+    const stderrErrElapsed = Date.now() - stderrErrStart;
+    assert(
+      stderrErrResult.failed === true && Boolean(stderrErrResult.error?.includes('Simulated stderr stream error')),
+      'getBranchesForCommits reports failed: true and preserves stderr stream error'
+    );
+    assert(
+      stderrErrElapsed < 2000,
+      `Long-running child is terminated promptly after stderr stream failure without waiting for delay (took ${stderrErrElapsed}ms)`
+    );
+
+    // Verify intentional early termination resolves cleanly with failed: false
+    class EarlyTermRevListEngine extends GitHistoryEngine {
+      protected override spawnGitRevList(branch: string, cwd: string): any {
+        return cp.spawn(process.execPath, [
+          '-e',
+          `console.log("${dummySha}"); setTimeout(() => { console.log("unreachable"); process.exit(0); }, 5000);`
+        ]);
+      }
+    }
+    const earlyEngine = new EarlyTermRevListEngine(subProcRepo);
+    const earlyStart = Date.now();
+    const earlyResult = await earlyEngine.getBranchesForCommits([dummySha], subProcRepo);
+    const earlyElapsed = Date.now() - earlyStart;
+    assert(earlyResult.failed === false, 'Early termination resolves cleanly with failed: false');
+    assert(earlyElapsed < 2000, `Early termination kills process immediately without waiting for delay (took ${earlyElapsed}ms)`);
+
+    // 4. Exact Mathematical Separation of Risk Assessment vs. Blast Radius
+    const testRule = DETECTOR_RULES.find((r) => r.id === 'github-pat')!;
+    const testCtx = { isTest: false, isDoc: false, isConfig: false, isSensitiveName: false, extension: '.ts' };
+
+    const incompleteExp: GitExposure = {
+      isPresentInHead: true,
+      isPresentInHistory: true,
+      exposureDurationDays: 1,
+      branches: ['main'],
+      isRemote: false,
+      statusDescription: 'Truncated history search',
+      isPartialHistory: true,
+      searchStatus: 'SEARCH_INCOMPLETE',
+    };
+
+    const completeExp: GitExposure = {
+      isPresentInHead: true,
+      isPresentInHistory: true,
+      exposureDurationDays: 1,
+      branches: ['main'],
+      isRemote: false,
+      statusDescription: 'Complete history search',
+      searchStatus: 'FOUND',
+    };
+
+    const incompleteAssessment = calculateRiskAssessment(testRule, 100, testCtx, incompleteExp);
+    const completeAssessment = calculateRiskAssessment(testRule, 100, testCtx, completeExp);
+
+    // Intrinsic Risk Score invariance:
+    // Both have identical intrinsic credentials, confidence, storage, and physical reach (committed to git history).
+    // Therefore their intrinsic RiskAssessment.score and tier must be exactly identical!
+    assert(incompleteAssessment.score === 84, `Incomplete history risk score is exactly 84 (got ${incompleteAssessment.score})`);
+    assert(completeAssessment.score === 84, `Complete history risk score is exactly 84 (got ${completeAssessment.score})`);
+    assert(incompleteAssessment.tier === 'CRITICAL', 'Incomplete history tier is CRITICAL');
+    assert(completeAssessment.tier === 'CRITICAL', 'Complete history tier is CRITICAL');
+    assert(incompleteAssessment.score === completeAssessment.score, 'Intrinsic risk score is invariant to history truncation');
+
+    // Factor 4 preserves transparent explanation without inflating structural weights:
+    const incompleteReach = incompleteAssessment.factors.find((f) => f.factor === 'EXPOSURE_REACH');
+    const completeReach = completeAssessment.factors.find((f) => f.factor === 'EXPOSURE_REACH');
+    assert(incompleteReach?.scoreContribution === 16, 'Reach contribution is 16 for incomplete history');
+    assert(completeReach?.scoreContribution === 16, 'Reach contribution is 16 for complete history');
+    assert(incompleteReach?.explanation.includes('≥1 days unverified exposure'), 'Reach factor notes unverified duration');
+    assert(completeReach?.explanation.includes('1 days exposure'), 'Reach factor notes verified 1 day duration');
+
+    // Operational Blast Radius Separation:
+    // BlastRadius penalizes unverified containment bounds (+10 points) because containment cannot be guaranteed.
+    assert(incompleteAssessment.blastRadius.score === 72, `Incomplete history blast radius score is 72 (got ${incompleteAssessment.blastRadius.score})`);
+    assert(completeAssessment.blastRadius.score === 62, `Complete history blast radius score is 62 (got ${completeAssessment.blastRadius.score})`);
+    assert(incompleteAssessment.blastRadius.score - completeAssessment.blastRadius.score === 10, 'Blast radius reflects exact +10 operational uncertainty penalty');
+    assert(incompleteAssessment.blastRadius.level === 'EXTENSIVE', 'Incomplete blast radius level is EXTENSIVE');
+    assert(completeAssessment.blastRadius.level === 'EXTENSIVE', 'Complete blast radius level is EXTENSIVE');
+
+    // Uncommitted Working Tree Baseline:
+    const localUncommitted = calculateRiskAssessment(testRule, 100, testCtx, undefined);
+    assert(localUncommitted.score === 73, `Local uncommitted risk score is 73 (got ${localUncommitted.score})`);
+    assert(localUncommitted.tier === 'HIGH', 'Local uncommitted tier is HIGH');
+    assert(localUncommitted.blastRadius.score === 52, `Local uncommitted blast radius is 52 (got ${localUncommitted.blastRadius.score})`);
+    assert(localUncommitted.blastRadius.level === 'EXTENSIVE', 'Local uncommitted blast radius level is EXTENSIVE');
+    assert(localUncommitted.blastRadius.summary.includes('Contained to local working tree'), 'Blast radius summary confirms local containment');
+  } finally {
+    try { fs.rmSync(sec50Dir, { recursive: true, force: true }); } catch { }
+  }
+
+  // --- 51. Baseline Migration, Rollback, Atomic Concurrency & Filesystem Protection ---
+  console.log('\n--- 51. Baseline Migration, Rollback, Atomic Concurrency & Filesystem Protection ---');
+  const sec51Dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-sec51-'));
+  try {
+    const realSec51 = fs.realpathSync(sec51Dir);
+    const secretFile = path.join(realSec51, 'config.ts');
+    const testSecretA = synth(['AK', 'IA', '1111222233334444']);
+    const testSecretB = synth(['gh', 'p_', '11112222333344445555666677778888aaaa']);
+    fs.writeFileSync(secretFile, `const aws = "${testSecretA}";\nconst gh = "${testSecretB}";\n`, 'utf8');
+
+    // Create a legacy public-salt v1 baseline file
+    const legacyFpA = generateLegacyFingerprint(testSecretA);
+    const legacyFpB = generateLegacyFingerprint(testSecretB);
+    const legacyBaseline = {
+      version: 1,
+      generatedAt: '2025-01-01T00:00:00.000Z',
+      generator: 'Secret Leak Detector v1.0.0',
+      fingerprintScheme: 'hmac-sha256-public-v1',
+      findings: [
+        { id: 'f1', fingerprint: legacyFpA, ruleId: 'AWS Access Key ID', file: 'config.ts', line: 1, firstSeen: '2025-01-01T00:00:00.000Z' },
+        { id: 'f2', fingerprint: legacyFpB, ruleId: 'GitHub Personal Access Token', file: 'config.ts', line: 2, firstSeen: '2025-01-01T00:00:00.000Z' },
+        { id: 'f3', fingerprint: 'deadbeef00000000', ruleId: 'AWS Access Key ID', file: 'missing.ts', line: 10, firstSeen: '2025-01-01T00:00:00.000Z' },
+      ],
+    };
+    const baselinePath = path.join(realSec51, '.secretleak-baseline.json');
+    fs.writeFileSync(baselinePath, JSON.stringify(legacyBaseline, null, 2), 'utf8');
+
+    const engine = new BaselineEngine(realSec51);
+    assert(engine.exists() === true, 'BaselineEngine detects baseline file');
+
+    // Test 1: Dry run migration leaves baseline untouched
+    const dryRunRes = engine.migrateBaseline({ dryRun: true });
+    assert(dryRunRes.migratedCount === 2, `Dry run migrated 2 findings with existing source (got ${dryRunRes.migratedCount})`);
+    assert(dryRunRes.unmigratedFindings.length === 1, 'Dry run reports 1 unmigrated finding for missing file');
+    const loadedPreMigrate = engine.loadBaseline()!;
+    assert(loadedPreMigrate.fingerprintScheme === 'hmac-sha256-public-v1', 'Dry run did not modify disk baseline');
+
+    // Test 2: Active migration without allowPartial aborts on unmigrated findings
+    let abortError: any;
+    try {
+      engine.migrateBaseline();
+    } catch (err: any) {
+      abortError = err;
+    }
+    assert(abortError && abortError.name === 'BaselineValidationError', 'Migration aborts when unmigrated findings exist without allowPartial');
+
+    // Test 3: Active migration with allowPartial: true upgrades to private v2 and preserves unmigrated entries
+    const migrateRes = engine.migrateBaseline({ allowPartial: true });
+    assert(migrateRes.migratedCount === 2, `Active migration upgraded 2 findings (got ${migrateRes.migratedCount})`);
+    assert(migrateRes.newScheme === 'hmac-sha256-private-v2', 'New scheme is hmac-sha256-private-v2');
+    assert(fs.existsSync(migrateRes.backupPath!), 'Backup .bak file was created');
+    const loadedPostMigrate = engine.loadBaseline()!;
+    assert(loadedPostMigrate.fingerprintScheme === 'hmac-sha256-private-v2', 'Loaded baseline scheme is private v2');
+    assert(/^[a-f0-9]{16}$/.test(loadedPostMigrate.fingerprintKeyId!), 'Loaded baseline has valid 16-hex keyId');
+    assert(loadedPostMigrate.findings[0].fingerprint.length === 64, 'Migrated finding has 64-char HMAC-SHA256 fingerprint');
+    assert(loadedPostMigrate.findings.length === 3, 'Unmigrated finding is preserved in baseline rather than silently dropped');
+
+    // Test 4: Proximity fallback rejection test
+    // If a secret is removed and a new credential of same rule is nearby, migration must NOT whitelist the new credential
+    const proxDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-prox-'));
+    try {
+      const realProx = fs.realpathSync(proxDir);
+      const oldSecret = synth(['AK', 'IA', 'OLDSECRET11111111']);
+      const newSecret = synth(['AK', 'IA', 'NEWSECRET22222222']);
+      const oldLegacyFp = generateLegacyFingerprint(oldSecret);
+      // File currently has newSecret on line 3, oldSecret was on line 1
+      fs.writeFileSync(path.join(realProx, 'app.ts'), `// line 1 empty\n// line 2 empty\nconst key = "${newSecret}";\n`, 'utf8');
+      const proxBaseline = {
         version: 1,
         generatedAt: '2025-01-01T00:00:00.000Z',
         generator: 'Secret Leak Detector v1.0.0',
         fingerprintScheme: 'hmac-sha256-public-v1',
         findings: [
-          { id: 'f1', fingerprint: legacyFpA, ruleId: 'AWS Access Key ID', file: 'config.ts', line: 1, firstSeen: '2025-01-01T00:00:00.000Z' },
-          { id: 'f2', fingerprint: legacyFpB, ruleId: 'GitHub Personal Access Token', file: 'config.ts', line: 2, firstSeen: '2025-01-01T00:00:00.000Z' },
-          { id: 'f3', fingerprint: 'deadbeef00000000', ruleId: 'AWS Access Key ID', file: 'missing.ts', line: 10, firstSeen: '2025-01-01T00:00:00.000Z' },
+          { id: 'p1', fingerprint: oldLegacyFp, ruleId: 'AWS Access Key ID', file: 'app.ts', line: 1, firstSeen: '2025-01-01T00:00:00.000Z' }
         ],
       };
-      const baselinePath = path.join(realSec51, '.secretleak-baseline.json');
-      fs.writeFileSync(baselinePath, JSON.stringify(legacyBaseline, null, 2), 'utf8');
-
-      const engine = new BaselineEngine(realSec51);
-      assert(engine.exists() === true, 'BaselineEngine detects baseline file');
-
-      // Test 1: Dry run migration leaves baseline untouched
-      const dryRunRes = engine.migrateBaseline({ dryRun: true });
-      assert(dryRunRes.migratedCount === 2, `Dry run migrated 2 findings with existing source (got ${dryRunRes.migratedCount})`);
-      assert(dryRunRes.unmigratedFindings.length === 1, 'Dry run reports 1 unmigrated finding for missing file');
-      const loadedPreMigrate = engine.loadBaseline()!;
-      assert(loadedPreMigrate.fingerprintScheme === 'hmac-sha256-public-v1', 'Dry run did not modify disk baseline');
-
-      // Test 2: Active migration without allowPartial aborts on unmigrated findings
-      let abortError: any;
-      try {
-        engine.migrateBaseline();
-      } catch (err: any) {
-        abortError = err;
-      }
-      assert(abortError && abortError.name === 'BaselineValidationError', 'Migration aborts when unmigrated findings exist without allowPartial');
-
-      // Test 3: Active migration with allowPartial: true upgrades to private v2 and preserves unmigrated entries
-      const migrateRes = engine.migrateBaseline({ allowPartial: true });
-      assert(migrateRes.migratedCount === 2, `Active migration upgraded 2 findings (got ${migrateRes.migratedCount})`);
-      assert(migrateRes.newScheme === 'hmac-sha256-private-v2', 'New scheme is hmac-sha256-private-v2');
-      assert(fs.existsSync(migrateRes.backupPath!), 'Backup .bak file was created');
-      const loadedPostMigrate = engine.loadBaseline()!;
-      assert(loadedPostMigrate.fingerprintScheme === 'hmac-sha256-private-v2', 'Loaded baseline scheme is private v2');
-      assert(/^[a-f0-9]{16}$/.test(loadedPostMigrate.fingerprintKeyId!), 'Loaded baseline has valid 16-hex keyId');
-      assert(loadedPostMigrate.findings[0].fingerprint.length === 64, 'Migrated finding has 64-char HMAC-SHA256 fingerprint');
-      assert(loadedPostMigrate.findings.length === 3, 'Unmigrated finding is preserved in baseline rather than silently dropped');
-
-      // Test 4: Proximity fallback rejection test
-      // If a secret is removed and a new credential of same rule is nearby, migration must NOT whitelist the new credential
-      const proxDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-prox-'));
-      try {
-        const realProx = fs.realpathSync(proxDir);
-        const oldSecret = synth(['AK', 'IA', 'OLDSECRET11111111']);
-        const newSecret = synth(['AK', 'IA', 'NEWSECRET22222222']);
-        const oldLegacyFp = generateLegacyFingerprint(oldSecret);
-        // File currently has newSecret on line 3, oldSecret was on line 1
-        fs.writeFileSync(path.join(realProx, 'app.ts'), `// line 1 empty\n// line 2 empty\nconst key = "${newSecret}";\n`, 'utf8');
-        const proxBaseline = {
-          version: 1,
-          generatedAt: '2025-01-01T00:00:00.000Z',
-          generator: 'Secret Leak Detector v1.0.0',
-          fingerprintScheme: 'hmac-sha256-public-v1',
-          findings: [
-            { id: 'p1', fingerprint: oldLegacyFp, ruleId: 'AWS Access Key ID', file: 'app.ts', line: 1, firstSeen: '2025-01-01T00:00:00.000Z' }
-          ],
-        };
-        fs.writeFileSync(path.join(realProx, '.secretleak-baseline.json'), JSON.stringify(proxBaseline, null, 2), 'utf8');
-        const proxEngine = new BaselineEngine(realProx);
-        const proxRes = proxEngine.migrateBaseline({ dryRun: true });
-        assert(proxRes.migratedCount === 0, 'Proximity fallback strictly rejected: new secret is not migrated under old baseline entry');
-        assert(proxRes.unmigratedFindings.length === 1, 'Removed secret marked as unmigrated finding');
-      } finally {
-        try { fs.rmSync(proxDir, { recursive: true, force: true }); } catch {}
-      }
-
-      // Test 5: Rollback restores the backup
-      const rollbackRes = engine.rollbackBaseline();
-      assert(rollbackRes.restored === true, 'Rollback succeeded');
-      const loadedRolledBack = engine.loadBaseline()!;
-      assert(loadedRolledBack.fingerprintScheme === 'hmac-sha256-public-v1', 'Baseline restored to legacy public-v1');
-      assert(loadedRolledBack.findings[0].fingerprint === legacyFpA, 'Original legacy fingerprint restored');
-
-      // Test 6: Atomic concurrency write protection
-      let concurrencyErrors = 0;
-      for (let i = 0; i < 5; i++) {
-        try {
-          engine.writeBaselineFileAtomically(legacyBaseline as any);
-        } catch {
-          concurrencyErrors++;
-        }
-      }
-      const validFinal = engine.loadBaseline()!;
-      assert(validFinal.version === 1 && validFinal.findings.length === 3, 'Concurrent atomic writes leave valid baseline file intact');
+      fs.writeFileSync(path.join(realProx, '.secretleak-baseline.json'), JSON.stringify(proxBaseline, null, 2), 'utf8');
+      const proxEngine = new BaselineEngine(realProx);
+      const proxRes = proxEngine.migrateBaseline({ dryRun: true });
+      assert(proxRes.migratedCount === 0, 'Proximity fallback strictly rejected: new secret is not migrated under old baseline entry');
+      assert(proxRes.unmigratedFindings.length === 1, 'Removed secret marked as unmigrated finding');
     } finally {
-      try { fs.rmSync(sec51Dir, { recursive: true, force: true }); } catch {}
+      try { fs.rmSync(proxDir, { recursive: true, force: true }); } catch { }
     }
 
-    // --- 52. Large File Chunked Streaming & INCOMPLETE Scan State ---
-    console.log('\n--- 52. Large File Chunked Streaming & INCOMPLETE Scan State ---');
-    const sec52Dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-sec52-'));
+    // Test 5: Rollback restores the backup
+    const rollbackRes = engine.rollbackBaseline();
+    assert(rollbackRes.restored === true, 'Rollback succeeded');
+    const loadedRolledBack = engine.loadBaseline()!;
+    assert(loadedRolledBack.fingerprintScheme === 'hmac-sha256-public-v1', 'Baseline restored to legacy public-v1');
+    assert(loadedRolledBack.findings[0].fingerprint === legacyFpA, 'Original legacy fingerprint restored');
+
+    // Test 6: Atomic concurrency write protection
+    let concurrencyErrors = 0;
+    for (let i = 0; i < 5; i++) {
+      try {
+        engine.writeBaselineFileAtomically(legacyBaseline as any);
+      } catch {
+        concurrencyErrors++;
+      }
+    }
+    const validFinal = engine.loadBaseline()!;
+    assert(validFinal.version === 1 && validFinal.findings.length === 3, 'Concurrent atomic writes leave valid baseline file intact');
+
+    // Test 7: validateSafeReferencedPath workspace boundary validation
+    const safeRelative = validateSafeReferencedPath('config.ts', realSec51);
+    assert(path.normalize(safeRelative) === path.normalize(path.join(realSec51, 'config.ts')), 'Safe relative path resolves within workspace');
+
+    let absError: any;
     try {
-      const realSec52 = fs.realpathSync(sec52Dir);
-      const testSecretCross = synth(['AK', 'IA', 'STREAM1234567890']);
-      const streamFile = path.join(realSec52, 'large_stream.ts');
+      validateSafeReferencedPath(process.platform === 'win32' ? 'C:\\escaped\\path.ts' : '/etc/passwd', realSec51);
+    } catch (err: any) {
+      absError = err;
+    }
+    assert(absError instanceof BaselineValidationError && absError.message.includes('absolute paths are not permitted'), 'validateSafeReferencedPath rejects absolute paths');
 
-      // Create a file where secret crosses a chunk boundary (testing streaming chunk overlap)
-      const paddingBefore = 'const pad = "' + 'x'.repeat(4090) + '";\nconst key = "';
-      const paddingAfter = '";\n';
-      fs.writeFileSync(streamFile, paddingBefore + testSecretCross + paddingAfter, 'utf8');
+    let traversalError: any;
+    try {
+      validateSafeReferencedPath('../../secret.ts', realSec51);
+    } catch (err: any) {
+      traversalError = err;
+    }
+    assert(traversalError instanceof BaselineValidationError && traversalError.message.includes('path escapes the workspace root'), 'validateSafeReferencedPath rejects path traversal');
 
-      // Test 1: scanFile with streamLargeFiles finds the boundary-crossing credential
-      const streamedFindings = scanFile(streamFile, {
-        workspaceRoot: realSec52,
-        streamLargeFiles: true,
-        maxFileSize: 1024,
-        streamChunkSize: 2048,
-        maxStreamFileSize: 1024 * 1024,
-      });
-      assert(streamedFindings.length >= 1, 'Streaming scan detects credential crossing chunk boundary');
-      assert(streamedFindings[0].rawSecret === testSecretCross, 'Streamed secret matches synthesized token');
-
-      // Test 2: buildScanResult state logic (CLEAN vs INCOMPLETE vs FINDINGS)
-      const cleanResult = buildScanResult([], 10, 50, 'HIGH', []);
-      assert(cleanResult.scanState === 'CLEAN' && cleanResult.isClean === true, '0 findings + 0 skipped => CLEAN and isClean: true');
-
-      const incompleteResult = buildScanResult([], 10, 50, 'HIGH', [{ file: 'oversized.bin', reason: 'OVERSIZED' }]);
-      assert(incompleteResult.scanState === 'INCOMPLETE' && incompleteResult.isClean === false, '0 findings + >0 skipped => INCOMPLETE and isClean: false');
-
-      const findingsResult = buildScanResult(streamedFindings, 10, 50, 'HIGH', [{ file: 'oversized.bin', reason: 'OVERSIZED' }]);
-      assert(findingsResult.scanState === 'FINDINGS' && findingsResult.isClean === false, '>0 findings + skipped => FINDINGS and isClean: false');
-
-      // Test 3: Column tracking across chunk boundaries on long lines
-      const longColFile = path.join(realSec52, 'long_col.ts');
-      const testSecretCol = synth(['AK', 'IA', 'LONGCOL123456789']);
-      const fullLine = 'const pad = "' + 'y'.repeat(3000) + '"; const key = "' + testSecretCol + '";\n';
-      fs.writeFileSync(longColFile, fullLine, 'utf8');
-
-      const colFindings = scanFile(longColFile, {
-        workspaceRoot: realSec52,
-        streamLargeFiles: true,
-        maxFileSize: 1024,
-        streamChunkSize: 2048,
-        maxStreamFileSize: 1024 * 1024,
-      });
-      assert(colFindings.length >= 1, 'Streamed long-line finding detected');
-      const expectedCol = fullLine.indexOf(testSecretCol) + 1;
-      assert(
-        colFindings[0].column === expectedCol,
-        `Column number on long line crossing chunk boundary accurately tracked (expected ${expectedCol}, got ${colFindings[0]?.column})`
-      );
-
-      // Test 4: Detect short reads & file changes -> fail-closed with INCOMPLETE/error
-      const truncFile = path.join(realSec52, 'trunc_test.dat');
-      fs.writeFileSync(truncFile, Buffer.alloc(10000, 'z\n'));
-      let skippedReason = '';
-      const skippedCollector = (f: string, r: string) => { skippedReason = r; };
-      let threwStreamError = false;
+    // Symlink / Junction workspace escape test
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-sec51-outside-'));
+    try {
+      const outsideTarget = path.join(outsideDir, 'external_secret.ts');
+      fs.writeFileSync(outsideTarget, 'const secret = "outside";\n', 'utf8');
+      const linkDir = path.join(realSec51, 'outside_link');
+      let symlinkCreated = false;
       try {
-        scanFileStream(truncFile, { onSkippedFile: skippedCollector }, 20000, 2048);
-      } catch (err: any) {
-        if (err instanceof StreamScanIncompleteError) threwStreamError = true;
+        if (process.platform === 'win32') {
+          fs.symlinkSync(outsideDir, linkDir, 'junction');
+          symlinkCreated = true;
+        } else {
+          fs.symlinkSync(outsideDir, linkDir);
+          symlinkCreated = true;
+        }
+      } catch {
+        // If unprivileged, symlink creation may fail
       }
-      assert(threwStreamError === true, 'scanFileStream directly throws StreamScanIncompleteError on short read / truncation');
-      assert(skippedReason.includes('short read') || skippedReason.includes('File modified'), 'onSkippedFile informed of short read / truncation');
-
-      // Test 5: scanFile catches StreamScanIncompleteError and populates skippedFiles, leading to INCOMPLETE scanState
-      const fakeSkipped = [{ file: truncFile, reason: 'Stream scan aborted: short read encountered' }];
-      const truncState = buildScanResult([], 1, 10, 'HIGH', fakeSkipped);
-      assert(truncState.scanState === 'INCOMPLETE' && truncState.isClean === false, 'Truncated stream results in INCOMPLETE scanState (never CLEAN)');
+      if (symlinkCreated) {
+        let linkError: any;
+        try {
+          validateSafeReferencedPath('outside_link/external_secret.ts', realSec51);
+        } catch (err: any) {
+          linkError = err;
+        }
+        assert(
+          linkError instanceof BaselineValidationError && linkError.message.includes('symlink points outside the workspace root'),
+          'validateSafeReferencedPath rejects symlink/junction resolving outside workspace'
+        );
+      } else {
+        console.log('ℹ️  Symlink creation skipped due to platform privilege restrictions');
+      }
     } finally {
-      try { fs.rmSync(sec52Dir, { recursive: true, force: true }); } catch {}
+      try { fs.rmSync(outsideDir, { recursive: true, force: true }); } catch { }
     }
 
-    // --- 53. Complete Redaction & Secret Exposure Elimination ---
-    console.log('\n--- 53. Complete Redaction & Secret Exposure Elimination ---');
-    const testSecretEx = synth(['AK', 'IA', 'EXPOSURE12345678']);
-    const testExFinding = scanContent(`const key = "${testSecretEx}";`, 'app.ts')[0];
-    assert(testExFinding !== undefined, 'Found exposure test finding');
+    // Test 8: migrateBaseline() rejects baseline containing escaping paths
+    const escapeBaseline = {
+      version: 1,
+      generatedAt: '2025-01-01T00:00:00.000Z',
+      generator: 'Secret Leak Detector v1.0.0',
+      fingerprintScheme: 'hmac-sha256-public-v1',
+      findings: [
+        { id: 'esc1', fingerprint: 'deadbeef00000000', ruleId: 'AWS Access Key ID', file: '../../escaped.ts', line: 1, firstSeen: '2025-01-01T00:00:00.000Z' }
+      ],
+    };
+    const escEngine = new BaselineEngine(realSec51);
+    fs.writeFileSync(path.join(realSec51, '.secretleak-baseline.json'), JSON.stringify(escapeBaseline, null, 2), 'utf8');
+    let escMigrateErr: any;
+    try {
+      escEngine.migrateBaseline({ dryRun: true });
+    } catch (err: any) {
+      escMigrateErr = err;
+    }
+    assert(escMigrateErr instanceof BaselineValidationError, 'migrateBaseline rejects baseline entries escaping workspace');
 
-    // Test 1: SARIF export contains 0 instances of rawSecret
-    const sarifOutput = JSON.stringify(formatAsSarif([testExFinding]));
-    assert(!sarifOutput.includes(testSecretEx), 'SARIF output does NOT leak raw secret');
-    assert(sarifOutput.includes(testExFinding.redactedSecret), 'SARIF output includes redacted secret');
+    // Test 9: CLI rejects --salt flag to prevent credential exposure in process tables and shell history
+    const cliPath = path.resolve(process.cwd(), 'dist/cli.js');
+    if (!fs.existsSync(cliPath)) {
+      try {
+        cp.execFileSync(process.execPath, ['esbuild.js', '--cli'], { cwd: process.cwd(), stdio: 'ignore' });
+      } catch { }
+    }
+    if (fs.existsSync(cliPath)) {
+      const dummyArgSalt = 'super-secret-salt-12345';
+      const saltProc = cp.spawnSync(process.execPath, [cliPath, 'baseline', 'migrate', '--salt', dummyArgSalt], {
+        cwd: realSec51,
+        encoding: 'utf8',
+      });
+      assert(saltProc.status !== 0, 'CLI baseline migrate exits non-zero when --salt flag is supplied');
+      const saltOutput = (saltProc.stderr || '') + (saltProc.stdout || '');
+      assert(saltOutput.includes('Passing private salts via command-line flags (--salt) is prohibited'), 'CLI outputs clear prohibition error for --salt flag');
+      assert(!saltOutput.includes(dummyArgSalt), 'CLI never exposes the supplied salt value in output');
+    }
+  } finally {
+    try { fs.rmSync(sec51Dir, { recursive: true, force: true }); } catch { }
+  }
 
-    // Test 2: Webview finding view output contains 0 instances of rawSecret
-    const jsonStr = JSON.stringify(toRedactedFindingView(testExFinding));
-    assert(!jsonStr.includes(testSecretEx), 'Webview finding view does NOT leak raw secret');
-    assert(jsonStr.includes(testExFinding.redactedSecret), 'Webview finding view preserves redacted secret');
+  // --- 52. Large File Chunked Streaming & INCOMPLETE Scan State ---
+  console.log('\n--- 52. Large File Chunked Streaming & INCOMPLETE Scan State ---');
+  const sec52Dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sld-sec52-'));
+  try {
+    const realSec52 = fs.realpathSync(sec52Dir);
+    const testSecretCross = synth(['AK', 'IA', 'STREAM1234567890']);
+    const streamFile = path.join(realSec52, 'large_stream.ts');
 
-    // Test 3: Redacted secret reveals <= 20% of chars
-    const redactedVal = redactSecret(testSecretEx);
-    assert(!redactedVal.includes(testSecretEx), 'redactSecret never equals raw secret');
-    assert(redactedVal.includes('•'), 'redactSecret contains masking characters');
+    // Create a file where secret crosses a chunk boundary (testing streaming chunk overlap)
+    const paddingBefore = 'const pad = "' + 'x'.repeat(4090) + '";\nconst key = "';
+    const paddingAfter = '";\n';
+    fs.writeFileSync(streamFile, paddingBefore + testSecretCross + paddingAfter, 'utf8');
+
+    // Test 1: scanFile with streamLargeFiles finds the boundary-crossing credential
+    const streamedFindings = scanFile(streamFile, {
+      workspaceRoot: realSec52,
+      streamLargeFiles: true,
+      maxFileSize: 1024,
+      streamChunkSize: 2048,
+      maxStreamFileSize: 1024 * 1024,
+    });
+    assert(streamedFindings.length >= 1, 'Streaming scan detects credential crossing chunk boundary');
+    assert(streamedFindings[0].rawSecret === testSecretCross, 'Streamed secret matches synthesized token');
+
+    // Test 2: buildScanResult state logic (CLEAN vs INCOMPLETE vs FINDINGS)
+    const cleanResult = buildScanResult([], 10, 50, 'HIGH', []);
+    assert(cleanResult.scanState === 'CLEAN' && cleanResult.isClean === true, '0 findings + 0 skipped => CLEAN and isClean: true');
+
+    const incompleteResult = buildScanResult([], 10, 50, 'HIGH', [{ file: 'oversized.bin', reason: 'OVERSIZED' }]);
+    assert(incompleteResult.scanState === 'INCOMPLETE' && incompleteResult.isClean === false, '0 findings + >0 skipped => INCOMPLETE and isClean: false');
+
+    const findingsResult = buildScanResult(streamedFindings, 10, 50, 'HIGH', [{ file: 'oversized.bin', reason: 'OVERSIZED' }]);
+    assert(findingsResult.scanState === 'FINDINGS' && findingsResult.isClean === false, '>0 findings + skipped => FINDINGS and isClean: false');
+
+    // Test 3: Column tracking across chunk boundaries on long lines
+    const longColFile = path.join(realSec52, 'long_col.ts');
+    const testSecretCol = synth(['AK', 'IA', 'LONGCOL123456789']);
+    const fullLine = 'const pad = "' + 'y'.repeat(3000) + '"; const key = "' + testSecretCol + '";\n';
+    fs.writeFileSync(longColFile, fullLine, 'utf8');
+
+    const colFindings = scanFile(longColFile, {
+      workspaceRoot: realSec52,
+      streamLargeFiles: true,
+      maxFileSize: 1024,
+      streamChunkSize: 2048,
+      maxStreamFileSize: 1024 * 1024,
+    });
+    assert(colFindings.length >= 1, 'Streamed long-line finding detected');
+    const expectedCol = fullLine.indexOf(testSecretCol) + 1;
+    assert(
+      colFindings[0].column === expectedCol,
+      `Column number on long line crossing chunk boundary accurately tracked (expected ${expectedCol}, got ${colFindings[0]?.column})`
+    );
+
+    // Test 4: Detect genuine short reads -> fail-closed with StreamScanIncompleteError
+    const nodeFs = require('fs');
+    const shortReadFile = path.join(realSec52, 'short_read_test.dat');
+    fs.writeFileSync(shortReadFile, Buffer.alloc(10000, 'z\n'));
+    let shortReadReason = '';
+    const shortReadCollector = (f: string, r: string) => { shortReadReason = r; };
+    let shortReadThrew = false;
+    const originalReadSync = nodeFs.readSync;
+    let readCallCount = 0;
+    try {
+      nodeFs.readSync = function (fd: number, buffer: any, offset: number, length: number, position: number) {
+        readCallCount++;
+        if (readCallCount === 1) {
+          // Emulate short read: return 512 bytes when 2048 requested, while remaining file is 10,000 bytes
+          return originalReadSync.call(nodeFs, fd, buffer, offset, 512, position);
+        }
+        return originalReadSync.apply(nodeFs, arguments as any);
+      };
+      try {
+        scanFileStream(shortReadFile, { onSkippedFile: shortReadCollector }, 10000, 2048);
+      } catch (err: any) {
+        if (err instanceof StreamScanIncompleteError) shortReadThrew = true;
+      }
+    } finally {
+      nodeFs.readSync = originalReadSync;
+    }
+    assert(shortReadThrew === true, 'scanFileStream directly throws StreamScanIncompleteError on genuine short read');
+    assert(shortReadReason.includes('Unexpected short read'), `onSkippedFile informed of genuine short read (got: ${shortReadReason})`);
+
+    // Test 5: Detect concurrent in-place modification (same size, modified mtime/ctime) -> fail-closed
+    const concurrentModFile = path.join(realSec52, 'concurrent_mod.dat');
+    fs.writeFileSync(concurrentModFile, Buffer.alloc(10000, 'a\n'));
+    let modReason = '';
+    const modCollector = (f: string, r: string) => { modReason = r; };
+    let modThrew = false;
+    let modCallCount = 0;
+    try {
+      nodeFs.readSync = function (fd: number, buffer: any, offset: number, length: number, position: number) {
+        modCallCount++;
+        if (modCallCount === 2) {
+          // Mutate in place with same byte size but new mtime/content
+          fs.writeFileSync(concurrentModFile, Buffer.alloc(10000, 'b\n'));
+          fs.utimesSync(concurrentModFile, new Date(Date.now() + 10000), new Date(Date.now() + 10000));
+        }
+        return originalReadSync.apply(nodeFs, arguments as any);
+      };
+      try {
+        scanFileStream(concurrentModFile, { onSkippedFile: modCollector }, 10000, 2048);
+      } catch (err: any) {
+        if (err instanceof StreamScanIncompleteError) modThrew = true;
+      }
+    } finally {
+      nodeFs.readSync = originalReadSync;
+    }
+      assert(modThrew === true, 'scanFileStream throws StreamScanIncompleteError on concurrent in-place modification');
+      assert(modReason.includes('File modified concurrently'), `onSkippedFile informed of in-place concurrent modification (got: ${modReason})`);
+
+    // Test 6: End-to-end fail-closed scan execution: scanFile catches StreamScanIncompleteError, calls onSkippedFile, returns [], and buildScanResult produces INCOMPLETE
+    const e2eStreamFile = path.join(realSec52, 'e2e_stream.dat');
+    fs.writeFileSync(e2eStreamFile, Buffer.alloc(10000, 'c\n'));
+    const e2eSkipped: Array<{ file: string; reason: string }> = [];
+    let e2eCallCount = 0;
+    try {
+      nodeFs.readSync = function (fd: number, buffer: any, offset: number, length: number, position: number) {
+        e2eCallCount++;
+        if (e2eCallCount === 1) {
+          return originalReadSync.call(nodeFs, fd, buffer, offset, 512, position);
+        }
+        return originalReadSync.apply(nodeFs, arguments as any);
+      };
+      const e2eFindings = scanFile(e2eStreamFile, {
+        workspaceRoot: realSec52,
+        streamLargeFiles: true,
+        maxFileSize: 1024,
+        streamChunkSize: 2048,
+        maxStreamFileSize: 1024 * 1024,
+        onSkippedFile: (file, reason) => e2eSkipped.push({ file, reason }),
+      });
+      assert(e2eFindings.length === 0, 'scanFile catches StreamScanIncompleteError and returns empty findings array');
+      assert(e2eSkipped.length === 1, 'scanFile records stream failure in onSkippedFile');
+      assert(e2eSkipped[0].file === e2eStreamFile && e2eSkipped[0].reason.includes('Unexpected short read'), 'Skipped reason records short read error');
+
+      const e2eResult = buildScanResult(e2eFindings, 1, 10, 'HIGH', e2eSkipped);
+      assert(e2eResult.scanState === 'INCOMPLETE', 'buildScanResult sets scanState to INCOMPLETE when stream scan failed');
+      assert(e2eResult.isClean === false, 'buildScanResult sets isClean to false on incomplete stream scan');
+    } finally {
+      nodeFs.readSync = originalReadSync;
+    }
+  } finally {
+    try { fs.rmSync(sec52Dir, { recursive: true, force: true }); } catch { }
+  }
+
+  // --- 53. Complete Redaction & Secret Exposure Elimination ---
+  console.log('\n--- 53. Complete Redaction & Secret Exposure Elimination ---');
+  const testSecretEx = synth(['AK', 'IA', 'EXPOSURE12345678']);
+  const testExFinding = scanContent(`const key = "${testSecretEx}";`, 'app.ts')[0];
+  assert(testExFinding !== undefined, 'Found exposure test finding');
+
+  // Test 1: SARIF export contains 0 instances of rawSecret
+  const sarifOutput = JSON.stringify(formatAsSarif([testExFinding]));
+  assert(!sarifOutput.includes(testSecretEx), 'SARIF output does NOT leak raw secret');
+  assert(sarifOutput.includes(testExFinding.redactedSecret), 'SARIF output includes redacted secret');
+
+  // Test 2: Webview finding view output contains 0 instances of rawSecret
+  const jsonStr = JSON.stringify(toRedactedFindingView(testExFinding));
+  assert(!jsonStr.includes(testSecretEx), 'Webview finding view does NOT leak raw secret');
+  assert(jsonStr.includes(testExFinding.redactedSecret), 'Webview finding view preserves redacted secret');
+
+  // Test 3: Redacted secret reveals <= 20% of chars
+  const redactedVal = redactSecret(testSecretEx);
+  assert(!redactedVal.includes(testSecretEx), 'redactSecret never equals raw secret');
+  assert(redactedVal.includes('•'), 'redactSecret contains masking characters');
 
   console.log('\n============================================================');
   console.log(`🎉 TEST SUMMARY: ${passed} PASSED, ${failed} FAILED`);

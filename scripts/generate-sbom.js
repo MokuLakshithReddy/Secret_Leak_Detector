@@ -17,6 +17,56 @@ const rootDir = path.resolve(__dirname, '..');
 const packageJsonPath = path.join(rootDir, 'package.json');
 const packageLockPath = path.join(rootDir, 'package-lock.json');
 
+function formatNpmPurl(pkgName, version) {
+  const cleanVer = encodeURIComponent(version || '0.0.0');
+  if (pkgName.startsWith('@')) {
+    const slashIdx = pkgName.indexOf('/');
+    if (slashIdx !== -1) {
+      const scope = pkgName.substring(0, slashIdx).replace(/^@/, '%40');
+      const name = pkgName.substring(slashIdx + 1);
+      return `pkg:npm/${scope}/${encodeURIComponent(name)}@${cleanVer}`;
+    }
+  }
+  return `pkg:npm/${encodeURIComponent(pkgName)}@${cleanVer}`;
+}
+
+function parseNpmIntegrity(integrity) {
+  if (!integrity || typeof integrity !== 'string') return undefined;
+  const match = integrity.match(/^(sha1|sha256|sha384|sha512)-([A-Za-z0-9+/=]+)$/);
+  if (!match) return undefined;
+  const algName = match[1];
+  const b64 = match[2];
+  const hex = Buffer.from(b64, 'base64').toString('hex').toLowerCase();
+  const algMap = {
+    sha1: 'SHA-1',
+    sha256: 'SHA-256',
+    sha384: 'SHA-384',
+    sha512: 'SHA-512',
+  };
+  return [
+    {
+      alg: algMap[algName] || algName.toUpperCase(),
+      content: hex,
+    },
+  ];
+}
+
+function formatLicense(licenseStr) {
+  if (!licenseStr || typeof licenseStr !== 'string') return undefined;
+  const trimmed = licenseStr.trim();
+  if (trimmed.startsWith('SEE LICENSE') || trimmed.startsWith('SEE-LICENSE')) {
+    return [{ license: { name: trimmed } }];
+  }
+  // Check for compound SPDX license expressions (e.g., '(MIT OR GPL-3.0-or-later)', '(MIT AND Zlib)', 'Apache-2.0 WITH LLVM-exception')
+  if (/\b(OR|AND|WITH)\b/.test(trimmed) || (/^\(.*\)$/.test(trimmed) && trimmed.includes(' '))) {
+    return [{ expression: trimmed }];
+  }
+  if (/^[A-Za-z0-9_.-]+$/.test(trimmed)) {
+    return [{ license: { id: trimmed } }];
+  }
+  return [{ license: { name: trimmed } }];
+}
+
 function computeFileSha256(filePath) {
   if (!fs.existsSync(filePath)) {
     throw new Error(`Cannot compute SHA-256: file not found at ${filePath}`);
@@ -79,7 +129,7 @@ function generateSbom(outputPath) {
       if (!pkgPath || pkgPath === '' || !pkgPath.includes('node_modules/')) continue;
       const depName = pkgPath.substring(pkgPath.lastIndexOf('node_modules/') + 'node_modules/'.length);
       const version = depMeta.version || '0.0.0';
-      const purl = `pkg:npm/${encodeURIComponent(depName).replace('%40', '@')}@${version}`;
+      const purl = formatNpmPurl(depName, version);
 
       if (seenPurls.has(purl)) continue;
       seenPurls.add(purl);
@@ -96,19 +146,8 @@ function generateSbom(outputPath) {
         description: isDirect
           ? `Direct build-time toolchain dependency (${depName})`
           : `Transitive toolchain dependency (${depName})`,
-        licenses: depMeta.license ? [{ license: { id: depMeta.license } }] : undefined,
-        hashes: depMeta.integrity
-          ? [
-              {
-                alg: depMeta.integrity.startsWith('sha512-')
-                  ? 'SHA-512'
-                  : depMeta.integrity.startsWith('sha1-')
-                  ? 'SHA-1'
-                  : 'SHA-256',
-                content: depMeta.integrity.replace(/^sha\d+-/, ''),
-              },
-            ]
-          : undefined,
+        licenses: formatLicense(depMeta.license),
+        hashes: parseNpmIntegrity(depMeta.integrity),
         externalReferences: depMeta.resolved
           ? [
               {
@@ -159,12 +198,13 @@ function generateSbom(outputPath) {
   return bom;
 }
 
-function verifySbom(sbomPath) {
+async function verifySbom(sbomPath) {
   const target = sbomPath || path.join(rootDir, 'sbom.cyclonedx.json');
   if (!fs.existsSync(target)) {
     throw new Error(`SBOM file not found at ${target}. Run 'npm run sbom' to generate.`);
   }
-  const content = JSON.parse(fs.readFileSync(target, 'utf8'));
+  const rawText = fs.readFileSync(target, 'utf8');
+  const content = JSON.parse(rawText);
   if (content.bomFormat !== 'CycloneDX' || content.specVersion !== '1.5') {
     throw new Error(`Invalid SBOM format: expected CycloneDX 1.5, got ${content.bomFormat} ${content.specVersion}`);
   }
@@ -172,6 +212,7 @@ function verifySbom(sbomPath) {
     throw new Error('SBOM contains no component entries.');
   }
 
+  // 1. Verify runtime distribution bundle hashes
   for (const comp of content.components) {
     if (comp.type === 'file' && comp.name.startsWith('dist/')) {
       const absPath = path.join(rootDir, comp.name);
@@ -185,13 +226,74 @@ function verifySbom(sbomPath) {
       }
     }
   }
-  console.log(`✅ SBOM verification passed: all runtime file hashes match disk artifacts.`);
+
+  // 2. Validate all component PURLs and integrity hashes
+  for (const comp of content.components) {
+    if (comp.type === 'library') {
+      if (!comp.purl || typeof comp.purl !== 'string') {
+        throw new Error(`Component '${comp.name}' is missing a valid purl.`);
+      }
+      if (comp.name.startsWith('@')) {
+        if (!/^pkg:npm\/%40[a-z0-9_.-]+\/[a-z0-9_.-]+@[^@]+$/i.test(comp.purl)) {
+          throw new Error(
+            `Malformed scoped npm PURL '${comp.purl}' for '${comp.name}': expected 'pkg:npm/%40scope/name@version'.`
+          );
+        }
+      } else {
+        if (!/^pkg:npm\/[a-z0-9_.-]+@[^@]+$/i.test(comp.purl)) {
+          throw new Error(
+            `Malformed non-scoped npm PURL '${comp.purl}' for '${comp.name}': expected 'pkg:npm/name@version'.`
+          );
+        }
+      }
+
+      if (comp.hashes) {
+        for (const h of comp.hashes) {
+          if (!/^([a-fA-F0-9]{32}|[a-fA-F0-9]{40}|[a-fA-F0-9]{64}|[a-fA-F0-9]{96}|[a-fA-F0-9]{128})$/.test(h.content)) {
+            throw new Error(
+              `Malformed integrity hash for '${comp.name}' (${h.alg}): hash must be lowercase hexadecimal, found non-hex string '${h.content}'.`
+            );
+          }
+        }
+      }
+      if (comp.licenses) {
+        for (const lic of comp.licenses) {
+          if (lic.expression) {
+            if (typeof lic.expression !== 'string' || lic.expression.trim().length === 0) {
+              throw new Error(`Component '${comp.name}' has invalid empty license expression.`);
+            }
+          } else if (lic.license) {
+            if (!lic.license.id && !lic.license.name) {
+              throw new Error(`Component '${comp.name}' has license entry with neither id nor name.`);
+            }
+          } else {
+            throw new Error(`Component '${comp.name}' has invalid license choice (neither expression nor license).`);
+          }
+        }
+      }
+    }
+  }
+
+  // 3. Official CycloneDX 1.5 JSON Strict Schema Validation (Fail-Closed)
+  // Must strictly enforce schema compliance; any failure to load or execute validator is fatal.
+  const cdx = require('@cyclonedx/cyclonedx-library');
+  const validator = new cdx.Validation.JsonStrictValidator(cdx.Spec.Version.v1dot5);
+  const errors = await validator.validate(rawText);
+  if (errors && errors.length > 0) {
+    throw new Error(
+      `CycloneDX 1.5 schema validation failed with ${errors.length} error(s):\n` +
+        errors.map((e) => `  - ${e.instancePath || '/'}: ${e.message} (schema: ${e.schemaPath})`).join('\n')
+    );
+  }
+  console.log(`✅ CycloneDX 1.5 JSON strict schema validation passed.`);
+
+  console.log(`✅ SBOM verification passed: all runtime file hashes match disk artifacts, PURLs conform to standard, and hashes are valid hexadecimal.`);
 }
 
-function main() {
+async function main() {
   const args = process.argv.slice(2);
   if (args.includes('--verify')) {
-    verifySbom(args[args.indexOf('--verify') + 1]);
+    await verifySbom(args[args.indexOf('--verify') + 1]);
     return;
   }
   const outIndex = args.indexOf('--output');
@@ -199,9 +301,7 @@ function main() {
   generateSbom(targetOut);
 }
 
-try {
-  main();
-} catch (err) {
+main().catch((err) => {
   console.error(`❌ SBOM error: ${err.message || err}`);
   process.exit(1);
-}
+});
