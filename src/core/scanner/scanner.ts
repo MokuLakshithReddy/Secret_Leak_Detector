@@ -607,14 +607,7 @@ export function scanFileStream(
       if (bytesRead < readLength) break;
     }
 
-    // Post-scan stability check: ensure file was not mutated during processing
-    const finalStat = fs.fstatSync(fd);
-    if (finalStat.size !== fileSize || finalStat.mtimeMs !== initialMtime || finalStat.ctimeMs !== initialCtime || finalStat.ino !== initialIno) {
-      const reason = `File modified concurrently during stream scan`;
-      options.onSkippedFile?.(filePath, reason);
-      throw new StreamScanIncompleteError(filePath, reason);
-    }
-
+    // Post-scan stability check: verify the path on disk was not removed, unlinked, or replaced
     let pathStat: fs.Stats;
     try {
       pathStat = fs.statSync(filePath);
@@ -626,6 +619,14 @@ export function scanFileStream(
 
     if (pathStat.ino !== initialIno || pathStat.size !== fileSize || pathStat.mtimeMs !== initialMtime) {
       const reason = `File replaced or modified concurrently on disk during stream scan`;
+      options.onSkippedFile?.(filePath, reason);
+      throw new StreamScanIncompleteError(filePath, reason);
+    }
+
+    // Verify open file descriptor was not mutated in place concurrently
+    const finalStat = fs.fstatSync(fd);
+    if (finalStat.size !== fileSize || finalStat.mtimeMs !== initialMtime || finalStat.ctimeMs !== initialCtime || finalStat.ino !== initialIno) {
+      const reason = `File modified concurrently during stream scan`;
       options.onSkippedFile?.(filePath, reason);
       throw new StreamScanIncompleteError(filePath, reason);
     }
