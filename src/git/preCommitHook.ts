@@ -213,8 +213,9 @@ if [ "$SLD_IGNORE_SKIPPED" = "1" ] || [ "$(git config --bool secret-leak-detecto
 fi
 
 FAIL_ON_SKIPPED=""
+STRICT_ENV_VALUE=$(printf '%s' "$SLD_STRICT" | tr '[:upper:]' '[:lower:]')
 if [ "$SLD_IGNORE_SKIPPED" != "1" ] && [ "$(git config --bool secret-leak-detector.ignore-skipped 2>/dev/null)" != "true" ] && [ "$(git config --bool secret-leak-detector.strict 2>/dev/null)" != "false" ] && [ "$(git config --bool secret-leak-detector.fail-on-skipped 2>/dev/null)" != "false" ]; then
-  if [ "$SLD_FAIL_ON_SKIPPED" = "1" ] || [ "$SLD_FAIL_ON_SKIPPED_DEFAULT" = "1" ] || [ "$SLD_STRICT" = "1" ] || [ "$(git config --bool secret-leak-detector.fail-on-skipped 2>/dev/null)" = "true" ] || [ "$(git config --bool secret-leak-detector.strict 2>/dev/null)" = "true" ]; then
+  if [ "$SLD_FAIL_ON_SKIPPED" = "1" ] || [ "$SLD_FAIL_ON_SKIPPED_DEFAULT" = "1" ] || [ "$STRICT_ENV_VALUE" = "1" ] || [ "$STRICT_ENV_VALUE" = "true" ] || [ "$(git config --bool secret-leak-detector.fail-on-skipped 2>/dev/null)" = "true" ] || [ "$(git config --bool secret-leak-detector.strict 2>/dev/null)" = "true" ]; then
     FAIL_ON_SKIPPED="--fail-on-skipped"
   fi
 fi
