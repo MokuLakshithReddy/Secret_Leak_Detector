@@ -210,10 +210,16 @@ Even if a secret is deleted from the current file, Secret Leak Detector traces G
 - Checks contaminated branch reachability (`git branch -a --contains`) and remote tracking status (`origin/*`).
 
 ```bash
-# Provide secret safely via stdin or SLD_SECRET to avoid shell history and process table exposure:
-$ echo "$CREDENTIAL_TO_INSPECT" | secret-leak-detector trace -
-# Or via environment variable:
+# Provide secret safely via stdin (preferred) or SLD_SECRET to avoid shell history and process table exposure:
+# 1. Pipe via stdin (avoids shell history, audit logs, and 'ps aux' process table disclosure):
+$ printf '%s' "$CREDENTIAL_TO_INSPECT" | secret-leak-detector trace -
+
+# 2. Or via environment variable (inject transiently using a secrets manager like Vault or 1Password):
 $ SLD_SECRET="$CREDENTIAL_TO_INSPECT" secret-leak-detector trace
+
+# Security Note: Using `printf '%s'` instead of `echo` prevents trailing newlines and shell escape expansion.
+# Environment variables avoid shell history but may be visible in /proc/<pid>/environ.
+# For zero-leak policy enforcement, set SLD_REJECT_CLI_SECRETS=1 or SLD_STRICT=true to reject direct arguments.
 
 ============================================================
 🔍 GIT PROVENANCE & BLAST RADIUS TRACE
@@ -266,15 +272,15 @@ npx secret-leak-detector scan . --scan-build-artifacts
 npx secret-leak-detector history --max 100
 
 # Trace provenance and blast radius of a credential (safely via stdin or SLD_SECRET)
-echo "$CREDENTIAL" | npx secret-leak-detector trace -
+printf '%s' "$CREDENTIAL" | npx secret-leak-detector trace -
 # Or: SLD_SECRET="$CREDENTIAL" npx secret-leak-detector trace
 
 # Output exposure DAG timeline with reachability & merge awareness
-echo "$CREDENTIAL" | npx secret-leak-detector timeline -
+printf '%s' "$CREDENTIAL" | npx secret-leak-detector timeline -
 # Or: SLD_SECRET="$CREDENTIAL" npx secret-leak-detector timeline
 
 # Export formal Git DAG Exposure Graph (nodes, edges, branch reachability)
-echo "$CREDENTIAL" | npx secret-leak-detector graph - --json
+printf '%s' "$CREDENTIAL" | npx secret-leak-detector graph - --json
 # Or: SLD_SECRET="$CREDENTIAL" npx secret-leak-detector graph --json
 
 # Interactive controlled remediation (patch preview & .env extraction)
