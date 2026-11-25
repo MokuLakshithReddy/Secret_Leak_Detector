@@ -180,8 +180,8 @@ function selfTest() {
     runGitForTest(['config', 'user.name', 'SLD CI Test'], tempRoot);
     runGitForTest(['config', 'user.email', 'sld-ci-test@example.invalid'], tempRoot);
 
-    fs.writeFileSync(path.join(tempRoot, '.gitignore'), '.sld/\\n', 'utf8');
-    fs.writeFileSync(path.join(tempRoot, 'README.txt'), 'Clean baseline fixture.\\n', 'utf8');
+    fs.writeFileSync(path.join(tempRoot, '.gitignore'), '.sld/\n', 'utf8');
+    fs.writeFileSync(path.join(tempRoot, 'README.txt'), 'Clean baseline fixture.\n', 'utf8');
     runGitForTest(['add', '--', '.gitignore', 'README.txt'], tempRoot);
     runGitForTest(['commit', '-m', 'baseline fixture'], tempRoot);
     const baseSha = String(git(['rev-parse', 'HEAD'], tempRoot, { encoding: 'utf8' })).trim();
