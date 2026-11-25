@@ -1,58 +1,53 @@
 # Secret Leak Detector
 
-VS Code extension and CLI tool for detecting, tracing, and remediating credential leaks in Git repositories.
+VS Code extension and CLI for detecting, tracing, blocking, and remediating credential leaks in Git repositories.
 
-## Deliverables
+## Main deliverables
 
-1. **VS Code Extension** — real-time in-editor secret scanning, diagnostics, sidebar tree, Git commit protection, and one-click remediation.
-2. **CLI** — terminal-based scanning, SARIF export, history tracing, and baseline management.
+1. **VS Code extension** — editor diagnostics, findings tree, security dashboard, Git commit protection, and guarded remediation.
+2. **CLI** — workspace and staged scans, SARIF export, Git history tracing, baselines, remediation, verification, and hook lifecycle management.
 
-## Project Structure
+## Repository layout
 
-```
-src/
-  extension.ts          VS Code extension entry point
-  core/                 Scanner engine, detectors, entropy, risk, baseline, SARIF, remediation, verification
-  cli/                  CLI entry point (src/cli/index.ts)
-  diagnostics/          VS Code DiagnosticsCollection integration
-  git/                  GitService (staged-blob scan), pre-commit hook builder
-  sidebar/              Activity bar tree view provider
-  webview/              In-editor Security Dashboard (WebviewPanel, nonce-based CSP)
-  engine/               Re-export shims for core modules
-  types.ts              Re-export of core/types
-test/                   Comprehensive security engineering test suite (668 tests across core, hook, and manifest suites)
-evaluation/             Multi-scanner benchmarks and real-world corpus
-  benchmarks/           Reproducible benchmark runners
-  datasets/             Corpus generators and ground-truth labels
-scripts/                Development and diagnostic helper scripts
-docs/                   Threat model, benchmarks, and architecture documentation
-samples/                Example files for manual testing
-esbuild.js              Build script — produces dist/cli.js and dist/extension.js
-package.json            Extension manifest, CLI bin, scripts, and devDependencies
-tsconfig.json           TypeScript compiler settings (strict, node target)
-.vscodeignore           Controls what is packaged in the .vsix
-.secretleak-baseline.json  Baseline of known findings in the repository itself
-```
+- `src/extension.ts` — VS Code extension entry point.
+- `src/core/` — scanner, detectors, entropy, context analysis, evidence, risk, baseline, history, SARIF, remediation, and verification.
+- `src/cli/index.ts` — CLI entry point.
+- `src/diagnostics/`, `src/sidebar/`, `src/webview/` — editor diagnostics and UI.
+- `src/git/` — Git integration, staged-blob scanning, and pre-commit hook generation.
+- `src/engine/` and `src/types.ts` — compatibility re-exports; keep new implementation in `src/core/`.
+- `test/` — core, adversarial, Git-hook, manifest, and VS Code integration tests.
+- `evaluation/` — reproducible benchmarks, generated/held-out corpora, reports, and external-review protocol.
+- `scripts/` — packaging, SBOM, demo, and CI helper scripts.
+- `.secretleak-baseline.json` — repository-owned finding baseline. Its private fingerprint key must never be committed.
 
-## Build
+## Development and validation
+
+Run from the repository root with Node.js 22 and npm:
 
 ```bash
-npm run build       # production build of cli + extension
-npm run watch       # watch mode for extension development
-npm test            # build + run all 771 core unit/AST/evidence tests across 50 sections (828 tests total including git-hook and manifest suites)
-npm run package     # produce secret-leak-detector-x.y.z.vsix
+npm ci
+npm run lint
+npm run build
+npm test
+npm run test:changed-scan
+npm run test:git-hook
+npm run test:manifest
+npm run test:vscode
+npm run benchmark:gate
+npm run benchmark:heldout
+npm run verify:package
+npm run verify:sbom
 ```
 
-## Technology
+Test totals are emitted by the checked-out test runner. Do not copy fixed historical counts into documentation; the suite evolves as tests are added.
 
-- Language: TypeScript 5, compiled with esbuild (not tsc) for extension and CLI bundles
-- Extension host: VS Code API ^1.85.0 (CommonJS, external: vscode)
-- CLI: Node.js 18+, platform: node, no external runtime dependencies
-- Dev: `@vscode/vsce` for packaging, TypeScript for type checking
+## Security rules for contributors
 
-## Coding Conventions
-
-- All source lives under `src/` or `test/` or `evaluation/`.
-- The scanner engine is in `src/core/` — keep it free of VS Code imports so the CLI can use it directly.
-- Use `execFileSync`/`execFile` (argument arrays) for all child process invocations. Never interpolate user-controlled data into shell strings.
-- Test credentials in test files must be synthesised at runtime using the `synth(parts)` helper (array join), never written as plain literals, so the repository's own scanner does not flag them.
+- Keep the scanner core independent of VS Code imports so the CLI can reuse it.
+- Use `execFile` / `execFileSync` with argument arrays for child processes. Do not interpolate untrusted input into shell commands.
+- Test credentials must be synthesized at runtime (for example, by joining string fragments), never committed as realistic literals.
+- Never print or serialize `rawSecret`. Use redacted representations in CLI output, logs, SARIF, telemetry, and UI.
+- Never commit `.sld/salt`, `SLD_SALT`, baseline signing material, or other private credentials.
+- Dependabot and fork PRs do not receive the private baseline key. Their CI path scans only changed files and must fail closed on scanner errors.
+- Do not claim independent accuracy validation until an eligible external reviewer has completed and signed the protocol in `evaluation/REVIEW_GUIDE.md`. Internal tests and benchmarks are not third-party validation.
+- Generated runtime bundles under `dist/` are build outputs and must not be committed.
