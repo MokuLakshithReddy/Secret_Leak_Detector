@@ -237,7 +237,8 @@
     "test:manifest": "npx ts-node --project tsconfig.json test/integration/vscodeExtensionHost.test.ts",
     "verify:package": "node scripts/verify-npm-package.js",
     "sbom": "node scripts/generate-sbom.js",
-    "verify:sbom": "node scripts/generate-sbom.js --verify"
+    "verify:sbom": "node scripts/generate-sbom.js --verify",
+    "test:changed-scan": "node scripts/scan-changed-files.js --self-test"
   },
   "devDependencies": {
     "@cyclonedx/cyclonedx-library": "^10.5.1",
